@@ -454,11 +454,7 @@ for (const t of ["leads", "admissions", "appointments", "support", "faculty"]) {
 app.post("/api/webhook/botsailor", (req, res) => {
   console.log("BotSailor Webhook Data:", req.body);
 
-  res.json({
-    success: true,
-    message: "BotSailor webhook received",
-    data: req.body
-  });
+  res.status(200).json({ status: "ok" });
 });
 
 app.listen(PORT, () => console.log(`Guruvidya Phase 3 backend running on ${PORT}`));
