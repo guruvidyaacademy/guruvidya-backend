@@ -457,7 +457,7 @@ app.post("/api/webhook/botsailor", (req, res) => {
   const lead = {
     id: counters.leads++,
     name: payload.name || "WhatsApp Lead",
-    mobile: payload.phone || payload.subscriber_id || "",
+    mobile: String(payload.phone || payload.subscriber_id || "").split("-")[0],
     course: payload.course || "ACCA",
     priority: "hot",
     status: "new",
