@@ -452,9 +452,31 @@ for (const t of ["leads", "admissions", "appointments", "support", "faculty"]) {
 }
 
 app.post("/api/webhook/botsailor", (req, res) => {
-  console.log("BotSailor Webhook Data:", req.body);
+  const payload = req.body || {};
 
-  res.status(200).json({ status: "ok" });
+  const lead = {
+    id: counters.leads++,
+    name: payload.name || "WhatsApp Lead",
+    mobile: payload.phone || payload.subscriber_id || "",
+    course: payload.course || "ACCA",
+    priority: "hot",
+    status: "new",
+    owner: "Counselor 1",
+    note: `Source: botsailor_whatsapp | Subscriber ID: ${payload.subscriber_id || ""}`,
+    source: "botsailor_whatsapp",
+    subscriber_id: payload.subscriber_id || "",
+    created_at: new Date().toISOString().replace("T", " ").slice(0, 19)
+  };
+
+  db.leads.unshift(lead);
+
+  console.log("BotSailor Lead Saved:", lead);
+
+  res.status(200).json({
+    status: "ok",
+    message: "Lead saved from BotSailor",
+    lead
+  });
 });
 
 app.listen(PORT, () => console.log(`Guruvidya Phase 3 backend running on ${PORT}`));
