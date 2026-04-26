@@ -1,13 +1,8 @@
 {
-  "name": "guruvidya-backend-full-upgrade",
-  "version": "2.0.0",
+  "name": "guruvidya-backend-phase2",
+  "version": "3.0.0",
   "type": "module",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^4.19.2"
-  }
+  "scripts": {"start": "node server.js"},
+  "dependencies": {"cors": "^2.8.5", "express": "^4.19.2"}
 }

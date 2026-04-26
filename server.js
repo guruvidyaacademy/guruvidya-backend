@@ -8,156 +8,101 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-let counters = {
-  leads: 1,
-  admissions: 1,
-  appointments: 1,
-  support: 1,
-  faculty: 1,
-  alerts: 1
+let counters = { leads:1, admissions:1, appointments:1, support:1, faculty:1, alerts:1, reminders:1, whatsapp_logs:1 };
+const db = { leads:[], admissions:[], appointments:[], support:[], faculty:[], alerts:[], reminders:[], whatsapp_logs:[] };
+
+let config = {
+  autoAssign: true,
+  whatsappEnabled: false,
+  botsailorApiUrl: "",
+  botsailorToken: "",
+  followupDays: [2,3,5],
+  counselors: ["Counselor 1","Counselor 2","Reception"],
+  nextCounselorIndex: 0
 };
 
-const db = {
-  leads: [],
-  admissions: [],
-  appointments: [],
-  support: [],
-  faculty: [],
-  alerts: []
-};
+const now = () => new Date().toISOString().replace("T"," ").slice(0,19);
+const nextId = (t) => counters[t]++;
 
-const now = () => new Date().toISOString().replace("T", " ").slice(0, 19);
-const nextId = (table) => counters[table]++;
-
-function addAlert(type, title, payload = {}) {
-  const alert = { id: nextId("alerts"), type, title, payload, created_at: now() };
-  db.alerts.unshift(alert);
-  return alert;
+function addAlert(type, title, payload={}) {
+  const a = { id: nextId("alerts"), type, title, payload, created_at: now() };
+  db.alerts.unshift(a);
+  return a;
 }
-
-function normalizeActionBody(body = {}) {
-  return {
-    status: body.status || "new",
-    owner: body.owner || "Unassigned",
-    note: body.note || body.admin_note || "",
-    sendNotification: body.sendNotification !== false,
-    sendWhatsapp: body.sendWhatsapp === true
-  };
+function calcPriority(p) {
+  const txt = `${p.course||""} ${p.issue||""} ${p.note||""} ${p.description||""}`.toLowerCase();
+  if (txt.includes("acca") || txt.includes("urgent") || txt.includes("payment")) return "hot";
+  if (txt.includes("ca") || txt.includes("cma") || txt.includes("call")) return "warm";
+  return "cold";
 }
-
-function publicInsert(table, payload) {
-  const record = {
-    id: nextId(table),
-    ...payload,
-    status: payload.status || (table === "appointments" ? "requested" : "new"),
-    owner: payload.owner || "Unassigned",
-    note: payload.note || "",
-    admin_note: payload.admin_note || "",
-    created_at: now()
-  };
+function autoOwner() {
+  if (!config.autoAssign || !config.counselors.length) return "Unassigned";
+  const owner = config.counselors[config.nextCounselorIndex % config.counselors.length];
+  config.nextCounselorIndex++;
+  return owner;
+}
+function addReminder(table, record, days=2, reason="follow_up") {
+  const due = new Date(Date.now() + days*86400000).toISOString().slice(0,10);
+  const r = { id: nextId("reminders"), table, record_id: record.id, name: record.name||"", mobile: record.mobile||"", owner: record.owner||"Unassigned", reason, due_date: due, status:"pending", created_at: now() };
+  db.reminders.unshift(r);
+  addAlert("followup_reminder", `Follow-up reminder created`, r);
+  return r;
+}
+function whatsappLog(table, record, template="update") {
+  const w = { id: nextId("whatsapp_logs"), table, record_id: record.id, mobile: record.mobile||"", template, status: config.whatsappEnabled ? "ready_to_send" : "placeholder_only", message: `Guruvidya update: ${record.name||"Student"}, status ${record.status}, assigned to ${record.owner}`, created_at: now() };
+  db.whatsapp_logs.unshift(w);
+  addAlert("whatsapp_trigger", "WhatsApp trigger generated", w);
+  return w;
+}
+function insert(table, payload) {
+  const record = { id: nextId(table), ...payload, priority: payload.priority || calcPriority(payload), status: payload.status || (table==="appointments" ? "requested" : "new"), owner: payload.owner || autoOwner(), note: payload.note || "", admin_note: payload.admin_note || "", created_at: now() };
   db[table].unshift(record);
-  addAlert(`${table}_created`, `New ${table} received`, { id: record.id, name: record.name, mobile: record.mobile, course: record.course });
+  addAlert(`${table}_created`, `New ${table} received`, { id: record.id, name: record.name, mobile: record.mobile, owner: record.owner, priority: record.priority });
+  if (["leads","admissions","appointments"].includes(table)) addReminder(table, record, config.followupDays[0] || 2);
+  whatsappLog(table, record, `${table}_created`);
   return record;
 }
 
-app.get("/health", (req, res) => res.json({ success: true, message: "OK" }));
+app.get("/health", (req,res)=>res.json({success:true,message:"OK",phase:"2"}));
 
-app.post("/api/public/enquiry", (req, res) => {
-  const record = publicInsert("leads", {
-    name: req.body.name || "",
-    mobile: req.body.mobile || req.body.phone || req.body.whatsapp || "",
-    course: req.body.course || "",
+app.get("/api/admin/config", (req,res)=>res.json({success:true,data:config}));
+app.post("/api/admin/config", (req,res)=>{ config={...config,...req.body}; addAlert("config_updated","Automation config updated",req.body); res.json({success:true,data:config}); });
+
+app.get("/api/admin/counselor-stats", (req,res)=>{
+  const all = ["leads","admissions","appointments","support","faculty"].flatMap(t=>db[t].map(r=>({...r,table:t})));
+  const names = Array.from(new Set([...config.counselors,"Unassigned",...all.map(r=>r.owner||"Unassigned")]));
+  const data = names.map(owner => {
+    const rows = all.filter(r => (r.owner||"Unassigned") === owner);
+    return { owner, total: rows.length, hot: rows.filter(r=>r.priority==="hot").length, warm: rows.filter(r=>r.priority==="warm").length, cold: rows.filter(r=>r.priority==="cold").length, converted: rows.filter(r=>["converted","completed","resolved","selected"].includes(r.status)).length, follow_up: rows.filter(r=>["follow_up","contacted","interested","confirmed","in_progress"].includes(r.status)).length };
   });
-  res.json({ success: true, data: record });
+  res.json({success:true,data});
 });
 
-app.post("/api/public/admission-enquiry", (req, res) => {
-  const record = publicInsert("admissions", {
-    name: req.body.name || "",
-    mobile: req.body.mobile || req.body.phone || "",
-    email: req.body.email || "",
-    course: req.body.course || "",
-  });
-  res.json({ success: true, data: record });
-});
+app.post("/api/public/enquiry", (req,res)=>res.json({success:true,data:insert("leads",{name:req.body.name||"",mobile:req.body.mobile||req.body.phone||req.body.whatsapp||"",course:req.body.course||"",note:req.body.note||""})}));
+app.post("/api/public/admission-enquiry", (req,res)=>res.json({success:true,data:insert("admissions",{name:req.body.name||"",mobile:req.body.mobile||req.body.phone||"",email:req.body.email||"",course:req.body.course||"",note:req.body.note||""})}));
+app.post("/api/public/appointment-request", (req,res)=>res.json({success:true,data:insert("appointments",{name:req.body.name||"",mobile:req.body.mobile||req.body.phone||"",course:req.body.course||"",datetime:req.body.datetime||req.body.date||"",note:req.body.note||""})}));
+app.post("/api/public/support-request", (req,res)=>res.json({success:true,data:insert("support",{name:req.body.name||"",mobile:req.body.mobile||req.body.phone||"",issue:req.body.issue||"",description:req.body.description||req.body.message||"",owner:req.body.owner||"Technical"})}));
+app.post("/api/public/faculty-interest", (req,res)=>res.json({success:true,data:insert("faculty",{name:req.body.name||"",mobile:req.body.mobile||req.body.phone||"",course:req.body.course||"",mode:req.body.mode||"",owner:req.body.owner||"HR"})}));
 
-app.post("/api/public/appointment-request", (req, res) => {
-  const record = publicInsert("appointments", {
-    name: req.body.name || "",
-    mobile: req.body.mobile || req.body.phone || "",
-    course: req.body.course || "",
-    datetime: req.body.datetime || req.body.date || "",
-  });
-  res.json({ success: true, data: record });
-});
-
-app.post("/api/public/support-request", (req, res) => {
-  const record = publicInsert("support", {
-    name: req.body.name || "",
-    mobile: req.body.mobile || req.body.phone || "",
-    issue: req.body.issue || "",
-    description: req.body.description || req.body.message || "",
-  });
-  res.json({ success: true, data: record });
-});
-
-app.post("/api/public/faculty-interest", (req, res) => {
-  const record = publicInsert("faculty", {
-    name: req.body.name || "",
-    mobile: req.body.mobile || req.body.phone || "",
-    course: req.body.course || "",
-    mode: req.body.mode || "",
-  });
-  res.json({ success: true, data: record });
-});
-
-app.get("/api/admin/leads", (req, res) => res.json({ success: true, data: db.leads }));
-app.get("/api/admin/admissions", (req, res) => res.json({ success: true, data: db.admissions }));
-app.get("/api/admin/appointments", (req, res) => res.json({ success: true, data: db.appointments }));
-app.get("/api/admin/support", (req, res) => res.json({ success: true, data: db.support }));
-app.get("/api/admin/faculty", (req, res) => res.json({ success: true, data: db.faculty }));
-app.get("/api/admin/alerts", (req, res) => res.json({ success: true, data: db.alerts }));
-
-for (const table of ["leads","admissions","appointments","support","faculty"]) {
-  app.post(`/api/admin/${table}/:id/action`, (req, res) => {
-    const id = Number(req.params.id);
-    const item = db[table].find(r => Number(r.id) === id);
-    if (!item) return res.status(404).json({ success: false, message: "Record not found" });
-
-    const oldStatus = item.status;
-    const oldOwner = item.owner;
-    const action = normalizeActionBody(req.body);
-
-    item.status = action.status;
-    item.owner = action.owner;
-    item.note = action.note;
-    item.admin_note = action.note;
+for (const t of ["leads","admissions","appointments","support","faculty","alerts","reminders","whatsapp_logs"]) {
+  app.get(`/api/admin/${t}`, (req,res)=>res.json({success:true,data:db[t]||[]}));
+}
+for (const t of ["leads","admissions","appointments","support","faculty"]) {
+  app.post(`/api/admin/${t}/:id/action`, (req,res)=>{
+    const item = db[t].find(r=>Number(r.id)===Number(req.params.id));
+    if (!item) return res.status(404).json({success:false,message:"Record not found"});
+    const oldStatus = item.status, oldOwner = item.owner;
+    item.status = req.body.status || item.status || "new";
+    item.owner = req.body.owner || item.owner || "Unassigned";
+    item.priority = req.body.priority || item.priority || "cold";
+    item.note = req.body.note || "";
+    item.admin_note = item.note;
     item.updated_at = now();
-
-    if (action.sendNotification) {
-      addAlert(`${table}_action`, `${table} updated`, {
-        id: item.id,
-        name: item.name,
-        mobile: item.mobile,
-        oldStatus,
-        newStatus: item.status,
-        oldOwner,
-        newOwner: item.owner,
-        note: item.note
-      });
-    }
-
-    if (action.sendWhatsapp) {
-      addAlert("whatsapp_placeholder", "WhatsApp trigger placeholder", {
-        table,
-        id: item.id,
-        mobile: item.mobile,
-        message: `Guruvidya update: status ${item.status}, assigned to ${item.owner}`
-      });
-    }
-
-    res.json({ success: true, message: `${table} updated`, data: item });
+    if (req.body.sendNotification !== false) addAlert(`${t}_action`, `${t} updated`, {id:item.id,name:item.name,mobile:item.mobile,oldStatus,newStatus:item.status,oldOwner,newOwner:item.owner,note:item.note});
+    if (req.body.createReminder || ["follow_up","interested","contacted"].includes(item.status)) addReminder(t,item,Number(req.body.reminderDays||2));
+    if (req.body.sendWhatsapp) whatsappLog(t,item,`${t}_action`);
+    res.json({success:true,message:`${t} updated`,data:item});
   });
 }
 
-app.listen(PORT, () => console.log(`Guruvidya backend running on port ${PORT}`));
+app.listen(PORT,()=>console.log(`Guruvidya Phase 2 backend running on ${PORT}`));
