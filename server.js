@@ -451,7 +451,7 @@ for (const t of ["leads", "admissions", "appointments", "support", "faculty"]) {
   });
 }
 
-app.post("/api/webhook/botsailor", (req, res) => {
+app.post("/api/webhook/botsailor", async (req, res) => {
   const payload = req.body || {};
 
   const lead = {
