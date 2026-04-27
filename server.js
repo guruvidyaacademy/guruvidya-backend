@@ -1,6 +1,6 @@
 import express from "express";
 import cors from "cors";
-
+import axios from "axios";
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -470,6 +470,11 @@ app.post("/api/webhook/botsailor", (req, res) => {
 
   db.leads.unshift(lead);
 
+await sendWhatsAppMessage(
+  lead.mobile,
+  `Hi ${lead.name}, Guruvidya se connect karne ke liye thanks! 🎓`
+);
+  
   console.log("BotSailor Lead Saved:", lead);
 
   res.status(200).json({
@@ -478,5 +483,23 @@ app.post("/api/webhook/botsailor", (req, res) => {
     lead
   });
 });
+
+async function sendWhatsAppMessage(phone, message) {
+  try {
+    const response = await axios.post(
+      "https://botsailor.com/api/v1/whatsapp/send",
+      {
+        apiToken: process.env.BOTSAILOR_API_KEY,
+        phone_number_id: process.env.BOTSAILOR_INSTANCE_ID,
+        phone_number: phone,
+        message: message,
+      }
+    );
+
+    console.log("WhatsApp Sent:", response.data);
+  } catch (error) {
+    console.log("WhatsApp Error:", error.response?.data || error.message);
+  }
+}
 
 app.listen(PORT, () => console.log(`Guruvidya Phase 3 backend running on ${PORT}`));
