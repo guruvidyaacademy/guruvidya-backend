@@ -457,24 +457,23 @@ app.post("/api/webhook/botsailor", async (req, res) => {
   const lead = {
     id: counters.leads++,
     name: payload.name || "WhatsApp Lead",
-    mobile: String(payload.phone || payload.subscriber_id || "").split("-")[0],
+    mobile: String(payload.phone || payload.subscriber_id || ""),
     course: payload.course || "ACCA",
     priority: "hot",
     status: "new",
     owner: "Counselor 1",
     note: `Source: botsailor_whatsapp | Subscriber ID: ${payload.subscriber_id || ""}`,
-    source: "botsailor_whatsapp",
-    subscriber_id: payload.subscriber_id || "",
     created_at: new Date().toISOString().replace("T", " ").slice(0, 19)
   };
 
   db.leads.unshift(lead);
 
-await sendWhatsAppMessage(
+  // ✅ WhatsApp auto message
+ await sendWhatsAppMessage(
   lead.mobile,
-  `Hi ${lead.name}, Guruvidya se connect karne ke liye thanks! 🎓`
+  `Hi ${lead.name}, Thanks for connecting to Guruvidya 🎓`
 );
-  
+
   console.log("BotSailor Lead Saved:", lead);
 
   res.status(200).json({
