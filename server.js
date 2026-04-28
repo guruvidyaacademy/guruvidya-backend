@@ -72,7 +72,9 @@ if (duplicate.enquiry_count >= 3) {
   duplicate.priority = "very hot";
 }
 
-duplicate.next_followup = now();
+const next = new Date();
+next.setDate(next.getDate() + 1); // next day follow-up
+duplicate.next_followup = next.toISOString().slice(0, 19).replace("T", " ");
 // 🔥 NEW ADD END
 
 const duplicateNote = `Duplicate updated in ${table}`;
