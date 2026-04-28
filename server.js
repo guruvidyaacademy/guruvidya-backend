@@ -63,9 +63,13 @@ async function insertUnique(table, payload, options = {}) {
     if (payload.description) duplicate.description = payload.description;
     if (payload.mode) duplicate.mode = payload.mode;
 
-    duplicate.status = options.duplicateStatus || "re-enquiry";
+   duplicate.status = options.duplicateStatus || "re-enquiry";
 duplicate.last_enquiry_at = now();
 duplicate.enquiry_count = (duplicate.enquiry_count || 1) + 1;
+
+// 🔥 AI behaviour add karo yahin
+duplicate.lead_score = (duplicate.lead_score || 50) + 10;
+duplicate.next_best_action = "Call again - high intent";
 
 // 🔥 NEW ADD START
 if (duplicate.enquiry_count >= 3) {
@@ -549,17 +553,23 @@ app.post("/api/webhook/botsailor", async (req, res) => {
   }
 
   const lead = {
-    id: counters.leads++,
-    name: payload.name || "WhatsApp Lead",
-    mobile: mobile,
-    course: payload.course || "ACCA",
-    priority: "hot",
-    status: "new",
-    owner: "Counselor 1",
-    note: `Source: botsailor_whatsapp | Subscriber ID: ${payload.subscriber_id || ""}`,
-    created_at: new Date().toISOString().replace("T", " ").slice(0, 19)
-  };
+  id: counters.leads++,
+  name: payload.name || "WhatsApp Lead",
+  mobile: mobile,
+  course: payload.course || "ACCA",
+  priority: "hot",
+  status: "new",
+  owner: "Counselor 1",
 
+  // 🔥 NEW ADD START
+  lead_score: 50,
+  lead_stage: "new",
+  next_best_action: "Call within 24 hours",
+  // 🔥 NEW ADD END
+
+  note: `Source: botsailor_whatsapp | Subscriber ID: ${payload.subscriber_id || ""}`,
+  created_at: new Date().toISOString().replace("T", " ").slice(0, 19)
+};
   db.leads.unshift(lead);
 
   await sendWhatsAppMessage(
