@@ -514,7 +514,7 @@ if (existingLead) {
   // ✅ WhatsApp auto message
  await sendWhatsAppMessage(
   lead.mobile,
-  `Hi ${lead.name}, You’ve made a great choice! 🎯 `
+  `Hi ${lead.name}, You’ve made a great choice! 🎯`
 );
 
   console.log("BotSailor Lead Saved:", lead);
