@@ -64,7 +64,18 @@ async function insertUnique(table, payload, options = {}) {
     if (payload.mode) duplicate.mode = payload.mode;
 
     duplicate.status = options.duplicateStatus || "re-enquiry";
-    const duplicateNote = `Duplicate updated in ${table}`;
+duplicate.last_enquiry_at = now();
+duplicate.enquiry_count = (duplicate.enquiry_count || 1) + 1;
+
+// 🔥 NEW ADD START
+if (duplicate.enquiry_count >= 3) {
+  duplicate.priority = "very hot";
+}
+
+duplicate.next_followup = now();
+// 🔥 NEW ADD END
+
+const duplicateNote = `Duplicate updated in ${table}`;
 if (!(duplicate.note || "").includes(duplicateNote)) {
   duplicate.note = (duplicate.note || "") + ` | ${duplicateNote}`;
 }
