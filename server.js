@@ -454,17 +454,60 @@ for (const t of ["leads", "admissions", "appointments", "support", "faculty"]) {
 app.post("/api/webhook/botsailor", async (req, res) => {
   const payload = req.body || {};
 
-  const lead = {
-    id: counters.leads++,
-    name: payload.name || "WhatsApp Lead",
-    mobile: String(payload.phone || payload.subscriber_id || ""),
-    course: payload.course || "ACCA",
-    priority: "hot",
-    status: "new",
-    owner: "Counselor 1",
-    note: `Source: botsailor_whatsapp | Subscriber ID: ${payload.subscriber_id || ""}`,
-    created_at: new Date().toISOString().replace("T", " ").slice(0, 19)
-  };
+  // 🔥 Duplicate Lead Check Start
+
+// Normalize mobile number
+const mobile = String(payload.phone || payload.subscriber_id || "").replace(/\D/g, "");
+
+const now = new Date();
+const DUPLICATE_DAYS = 15;
+
+// Find existing lead with same mobile within 15 days
+const existingLead = db.leads.find(l => {
+  if (!l.mobile) return false;
+
+  const leadMobile = String(l.mobile).replace(/\D/g, "");
+  if (leadMobile !== mobile) return false;
+
+  const leadDate = new Date(l.created_at);
+  const diffDays = (now - leadDate) / (1000 * 60 * 60 * 24);
+
+  return diffDays <= DUPLICATE_DAYS;
+});
+
+if (existingLead) {
+  existingLead.updated_at = now.toISOString().replace("T", " ").slice(0, 19);
+
+  // Update course if user selects again
+  if (payload.course) {
+    existingLead.course = payload.course;
+  }
+
+  // Mark as re-enquiry
+  existingLead.status = "re-enquiry";
+
+  existingLead.note = (existingLead.note || "") + " | Re-enquiry within 15 days";
+
+  return res.status(200).json({
+    status: "ok",
+    message: "Duplicate lead updated",
+    lead: existingLead
+  });
+}
+
+// 🔥 Duplicate Lead Check End
+  
+ const lead = {
+  id: counters.leads++,
+  name: payload.name || "WhatsApp Lead",
+  mobile: mobile, // 👈 IMPORTANT (clean number)
+  course: payload.course || "ACCA",
+  priority: "hot",
+  status: "new",
+  owner: "Counselor 1",
+  note: `Source: botsailor_whatsapp | Subscriber ID: ${payload.subscriber_id || ""}`,
+  created_at: new Date().toISOString().replace("T", " ").slice(0, 19)
+};
 
   db.leads.unshift(lead);
 
