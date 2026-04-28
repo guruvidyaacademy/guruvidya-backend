@@ -496,11 +496,53 @@ if (existingLead) {
 }
 
 // 🔥 Duplicate Lead Check End
+
+// ✅ DUPLICATE LEAD CHECK START
+
+const mobile = String(payload.phone || payload.subscriber_id || "").replace(/\D/g, "");
+
+const now = new Date();
+const DUPLICATE_DAYS = 15;
+
+const existingLead = db.leads.find(l => {
+  if (!l.mobile) return false;
+
+  const leadMobile = String(l.mobile).replace(/\D/g, "");
+  if (leadMobile !== mobile) return false;
+
+  const leadDate = new Date(l.created_at);
+  const diffDays = (now - leadDate) / (1000 * 60 * 60 * 24);
+
+  return diffDays <= DUPLICATE_DAYS;
+});
+
+if (existingLead) {
+  existingLead.updated_at = now.toISOString().replace("T", " ").slice(0, 19);
+
+  if (payload.course && payload.course !== existingLead.course) {
+    existingLead.note = (existingLead.note || "") + 
+      ` | Course changed: ${existingLead.course} → ${payload.course}`;
+    
+    existingLead.course = payload.course;
+  }
+
+  existingLead.status = "re-enquiry";
+
+  existingLead.note = (existingLead.note || "") + " | Re-enquiry within 15 days";
+
+  return res.status(200).json({
+    status: "ok",
+    message: "Duplicate lead updated",
+    lead: existingLead
+  });
+}
+
+// ✅ DUPLICATE LEAD CHECK END
   
  const lead = {
   id: counters.leads++,
   name: payload.name || "WhatsApp Lead",
-  mobile: mobile, // 👈 IMPORTANT (clean number)
+  mobile: mobile,   // ✅ YEH KARNA HAI
   course: payload.course || "ACCA",
   priority: "hot",
   status: "new",
