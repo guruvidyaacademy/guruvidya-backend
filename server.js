@@ -308,6 +308,32 @@ app.post("/api/admin/config", (req, res) => {
   res.json({ success: true, data: config });
 });
 
+app.get("/api/admin/pipeline", (req, res) => {
+  const leads = db.leads;
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  const data = {
+    new_leads: leads.filter(l => l.lead_stage === "new" || l.status === "new"),
+    
+    hot_leads: leads.filter(l => l.priority === "hot"),
+    
+    very_hot_leads: leads.filter(l => l.priority === "very hot"),
+    
+    re_enquiry: leads.filter(l => l.status === "re-enquiry"),
+    
+    followup_today: leads.filter(l => 
+      l.next_followup && l.next_followup.startsWith(today)
+    ),
+
+    no_response: leads.filter(l => l.enquiry_count === 1),
+
+    converted: leads.filter(l => l.status === "converted")
+  };
+
+  res.json({ success: true, data });
+});
+
 // Integration Panel APIs
 app.get("/api/admin/integrations", (req, res) => {
   res.json({
