@@ -31,6 +31,48 @@ const db = {
   integration_logs: []
 };
 
+// ✅ GLOBAL DUPLICATE CODE START
+function cleanMobile(v = "") {
+  return String(v || "").replace(/\D/g, "");
+}
+
+function findDuplicate(table, mobile, extraCheck = null) {
+  const cm = cleanMobile(mobile);
+  return db[table].find(r => {
+    if (cleanMobile(r.mobile) !== cm) return false;
+    if (extraCheck && !extraCheck(r)) return false;
+    return true;
+  });
+}
+
+async function insertUnique(table, payload, options = {}) {
+  const mobile = cleanMobile(payload.mobile || payload.phone || payload.whatsapp || "");
+  const duplicate = findDuplicate(table, mobile, options.extraCheck);
+
+  if (duplicate) {
+    duplicate.updated_at = new Date().toISOString().replace("T", " ").slice(0, 19);
+
+    if (payload.course && payload.course !== duplicate.course) {
+      duplicate.note = (duplicate.note || "") + 
+        ` | Course changed: ${duplicate.course || ""} → ${payload.course}`;
+      
+      duplicate.course = payload.course;
+    }
+
+    if (payload.issue) duplicate.issue = payload.issue;
+    if (payload.description) duplicate.description = payload.description;
+    if (payload.mode) duplicate.mode = payload.mode;
+
+    duplicate.status = options.duplicateStatus || "re-enquiry";
+    duplicate.note = (duplicate.note || "") + ` | Duplicate updated in ${table}`;
+
+    return duplicate;
+  }
+
+  return await insert(table, { ...payload, mobile });
+}
+// ✅ GLOBAL DUPLICATE CODE END
+
 let config = {
   autoAssign: true,
 
@@ -333,7 +375,7 @@ app.get("/api/admin/counselor-stats", (req, res) => {
 app.post("/api/public/enquiry", async (req, res) =>
   res.json({
     success: true,
-    data: await insert("leads", {
+    data: await insertUnique("leads", {
       name: req.body.name || "",
       mobile: req.body.mobile || req.body.phone || req.body.whatsapp || "",
       course: req.body.course || "",
@@ -345,7 +387,7 @@ app.post("/api/public/enquiry", async (req, res) =>
 app.post("/api/public/admission-enquiry", async (req, res) =>
   res.json({
     success: true,
-    data: await insert("admissions", {
+    data: await insertUnique("admissions", {
       name: req.body.name || "",
       mobile: req.body.mobile || req.body.phone || "",
       email: req.body.email || "",
@@ -371,7 +413,7 @@ app.post("/api/public/appointment-request", async (req, res) =>
 app.post("/api/public/support-request", async (req, res) =>
   res.json({
     success: true,
-    data: await insert("support", {
+    data: await insertUnique("support", {
       name: req.body.name || "",
       mobile: req.body.mobile || req.body.phone || "",
       issue: req.body.issue || "",
@@ -384,7 +426,7 @@ app.post("/api/public/support-request", async (req, res) =>
 app.post("/api/public/faculty-interest", async (req, res) =>
   res.json({
     success: true,
-    data: await insert("faculty", {
+    data: await insertUnique("faculty", {
       name: req.body.name || "",
       mobile: req.body.mobile || req.body.phone || "",
       course: req.body.course || "",
