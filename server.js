@@ -64,7 +64,10 @@ async function insertUnique(table, payload, options = {}) {
     if (payload.mode) duplicate.mode = payload.mode;
 
     duplicate.status = options.duplicateStatus || "re-enquiry";
-    duplicate.note = (duplicate.note || "") + ` | Duplicate updated in ${table}`;
+    const duplicateNote = `Duplicate updated in ${table}`;
+if (!(duplicate.note || "").includes(duplicateNote)) {
+  duplicate.note = (duplicate.note || "") + ` | ${duplicateNote}`;
+}
 
     return duplicate;
   }
