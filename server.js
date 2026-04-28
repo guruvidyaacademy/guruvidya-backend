@@ -454,110 +454,60 @@ for (const t of ["leads", "admissions", "appointments", "support", "faculty"]) {
 app.post("/api/webhook/botsailor", async (req, res) => {
   const payload = req.body || {};
 
-  // 🔥 Duplicate Lead Check Start
+  const mobile = String(payload.phone || payload.subscriber_id || "").replace(/\D/g, "");
+  const nowTime = new Date();
+  const DUPLICATE_DAYS = 15;
 
-// Normalize mobile number
-const mobile = String(payload.phone || payload.subscriber_id || "").replace(/\D/g, "");
+  const existingLead = db.leads.find(l => {
+    if (!l.mobile) return false;
 
-const now = new Date();
-const DUPLICATE_DAYS = 15;
+    const leadMobile = String(l.mobile).replace(/\D/g, "");
+    if (leadMobile !== mobile) return false;
 
-// Find existing lead with same mobile within 15 days
-const existingLead = db.leads.find(l => {
-  if (!l.mobile) return false;
+    const leadDate = new Date(l.created_at);
+    const diffDays = (nowTime - leadDate) / (1000 * 60 * 60 * 24);
 
-  const leadMobile = String(l.mobile).replace(/\D/g, "");
-  if (leadMobile !== mobile) return false;
+    return diffDays <= DUPLICATE_DAYS;
+  });
 
-  const leadDate = new Date(l.created_at);
-  const diffDays = (now - leadDate) / (1000 * 60 * 60 * 24);
+  if (existingLead) {
+    existingLead.updated_at = nowTime.toISOString().replace("T", " ").slice(0, 19);
 
-  return diffDays <= DUPLICATE_DAYS;
-});
+    if (payload.course && payload.course !== existingLead.course) {
+      existingLead.note =
+        (existingLead.note || "") +
+        ` | Course changed: ${existingLead.course} → ${payload.course}`;
+      existingLead.course = payload.course;
+    }
 
-if (existingLead) {
-  existingLead.updated_at = now.toISOString().replace("T", " ").slice(0, 19);
+    existingLead.status = "re-enquiry";
+    existingLead.note = (existingLead.note || "") + " | Re-enquiry within 15 days";
 
-  // Update course if user selects again
-  if (payload.course) {
-    existingLead.course = payload.course;
+    return res.status(200).json({
+      status: "ok",
+      message: "Duplicate lead updated",
+      lead: existingLead
+    });
   }
 
-  // Mark as re-enquiry
-  existingLead.status = "re-enquiry";
-
-  existingLead.note = (existingLead.note || "") + " | Re-enquiry within 15 days";
-
-  return res.status(200).json({
-    status: "ok",
-    message: "Duplicate lead updated",
-    lead: existingLead
-  });
-}
-
-// 🔥 Duplicate Lead Check End
-
-// ✅ DUPLICATE LEAD CHECK START
-
-const mobile = String(payload.phone || payload.subscriber_id || "").replace(/\D/g, "");
-
-const now = new Date();
-const DUPLICATE_DAYS = 15;
-
-const existingLead = db.leads.find(l => {
-  if (!l.mobile) return false;
-
-  const leadMobile = String(l.mobile).replace(/\D/g, "");
-  if (leadMobile !== mobile) return false;
-
-  const leadDate = new Date(l.created_at);
-  const diffDays = (now - leadDate) / (1000 * 60 * 60 * 24);
-
-  return diffDays <= DUPLICATE_DAYS;
-});
-
-if (existingLead) {
-  existingLead.updated_at = now.toISOString().replace("T", " ").slice(0, 19);
-
-  if (payload.course && payload.course !== existingLead.course) {
-    existingLead.note = (existingLead.note || "") + 
-      ` | Course changed: ${existingLead.course} → ${payload.course}`;
-    
-    existingLead.course = payload.course;
-  }
-
-  existingLead.status = "re-enquiry";
-
-  existingLead.note = (existingLead.note || "") + " | Re-enquiry within 15 days";
-
-  return res.status(200).json({
-    status: "ok",
-    message: "Duplicate lead updated",
-    lead: existingLead
-  });
-}
-
-// ✅ DUPLICATE LEAD CHECK END
-  
- const lead = {
-  id: counters.leads++,
-  name: payload.name || "WhatsApp Lead",
-  mobile: mobile,   // ✅ YEH KARNA HAI
-  course: payload.course || "ACCA",
-  priority: "hot",
-  status: "new",
-  owner: "Counselor 1",
-  note: `Source: botsailor_whatsapp | Subscriber ID: ${payload.subscriber_id || ""}`,
-  created_at: new Date().toISOString().replace("T", " ").slice(0, 19)
-};
+  const lead = {
+    id: counters.leads++,
+    name: payload.name || "WhatsApp Lead",
+    mobile: mobile,
+    course: payload.course || "ACCA",
+    priority: "hot",
+    status: "new",
+    owner: "Counselor 1",
+    note: `Source: botsailor_whatsapp | Subscriber ID: ${payload.subscriber_id || ""}`,
+    created_at: new Date().toISOString().replace("T", " ").slice(0, 19)
+  };
 
   db.leads.unshift(lead);
 
-  // ✅ WhatsApp auto message
- await sendWhatsAppMessage(
-  lead.mobile,
-  `Hi ${lead.name}, You’ve made a great choice! 🎯`
-);
+  await sendWhatsAppMessage(
+    lead.mobile,
+    `Hi ${lead.name}, You’ve made a great choice! 🎯`
+  );
 
   console.log("BotSailor Lead Saved:", lead);
 
