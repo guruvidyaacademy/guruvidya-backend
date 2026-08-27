@@ -96,6 +96,49 @@ async function initDatabase() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP
       );
+            CREATE TABLE IF NOT EXISTS alerts (
+        id SERIAL PRIMARY KEY,
+        type TEXT,
+        title TEXT,
+        payload JSONB DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS reminders (
+        id SERIAL PRIMARY KEY,
+        table_name TEXT,
+        record_id INTEGER,
+        name TEXT,
+        mobile TEXT,
+        owner TEXT,
+        reason TEXT,
+        due_date DATE,
+        status TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS whatsapp_logs (
+        id SERIAL PRIMARY KEY,
+        table_name TEXT,
+        record_id INTEGER,
+        mobile TEXT,
+        template TEXT,
+        status TEXT,
+        message TEXT,
+        response JSONB DEFAULT '{}'::jsonb,
+        error TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS integration_logs (
+        id SERIAL PRIMARY KEY,
+        channel TEXT,
+        action TEXT,
+        status TEXT,
+        payload JSONB DEFAULT '{}'::jsonb,
+        response JSONB DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
     `);
 
     console.log("✅ PostgreSQL tables ready");
@@ -733,21 +776,33 @@ for (const t of ["admissions", "appointments", "support", "faculty"]) {
   });
 }
 
-// These modules are still temporary/in-memory for now
+// PostgreSQL listing APIs for alerts, reminders, WhatsApp logs and integration logs
 for (const t of [
   "alerts",
   "reminders",
   "whatsapp_logs",
   "integration_logs"
 ]) {
-  app.get(`/api/admin/${t}`, (req, res) => {
-    res.json({
-      success: true,
-      data: db[t] || []
-    });
+  app.get(`/api/admin/${t}`, async (req, res) => {
+    try {
+      const result = await pool.query(
+        `SELECT * FROM ${t} ORDER BY id DESC`
+      );
+
+      res.json({
+        success: true,
+        data: result.rows
+      });
+    } catch (err) {
+      console.error(`❌ ${t} fetch error:`, err.message);
+
+      res.status(500).json({
+        success: false,
+        message: `Failed to fetch ${t}`
+      });
+    }
   });
 }
-
 // Action Panel APIs
 for (const t of ["leads", "admissions", "appointments", "support", "faculty"]) {
   app.post(`/api/admin/${t}/:id/action`, async (req, res) => {
