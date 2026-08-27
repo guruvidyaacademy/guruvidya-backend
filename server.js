@@ -272,24 +272,46 @@ let config = {
 const now = () => new Date().toISOString().replace("T", " ").slice(0, 19);
 const nextId = (t) => counters[t]++;
 
-function addAlert(type, title, payload = {}) {
-  const a = { id: nextId("alerts"), type, title, payload, created_at: now() };
-  db.alerts.unshift(a);
-  return a;
-}
+async function addAlert(type, title, payload = {}) {
+  try {
+    const result = await pool.query(
+      `INSERT INTO alerts (type, title, payload, created_at)
+       VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+       RETURNING *`,
+      [type, title, JSON.stringify(payload)]
+    );
 
-function addIntegrationLog(channel, action, status, payload = {}, response = {}) {
-  const log = {
-    id: nextId("integration_logs"),
-    channel,
-    action,
-    status,
-    payload,
-    response,
-    created_at: now()
-  };
-  db.integration_logs.unshift(log);
-  return log;
+    const a = result.rows[0];
+    db.alerts.unshift(a);
+    return a;
+  } catch (err) {
+    console.error("❌ Alert PostgreSQL insert error:", err.message);
+    throw err;
+  }
+}
+async function addIntegrationLog(channel, action, status, payload = {}, response = {}) {
+  try {
+    const result = await pool.query(
+      `INSERT INTO integration_logs
+       (channel, action, status, payload, response, created_at)
+       VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+       RETURNING *`,
+      [
+        channel,
+        action,
+        status,
+        JSON.stringify(payload),
+        JSON.stringify(response)
+      ]
+    );
+
+    const log = result.rows[0];
+    db.integration_logs.unshift(log);
+    return log;
+  } catch (err) {
+    console.error("❌ Integration Log PostgreSQL insert error:", err.message);
+    throw err;
+  }
 }
 
 function calcPriority(p) {
@@ -306,25 +328,44 @@ function autoOwner() {
   return owner;
 }
 
-function addReminder(table, record, days = 2, reason = "follow_up") {
-  const due = new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
-  const r = {
-    id: nextId("reminders"),
-    table,
-    record_id: record.id,
-    name: record.name || "",
-    mobile: record.mobile || "",
-    owner: record.owner || "Unassigned",
-    reason,
-    due_date: due,
-    status: "pending",
-    created_at: now()
-  };
-  db.reminders.unshift(r);
-  addAlert("followup_reminder", "Follow-up reminder created", r);
-  return r;
-}
+async function addReminder(table, record, days = 2, reason = "follow_up") {
+  try {
+    const due = new Date(Date.now() + days * 86400000)
+      .toISOString()
+      .slice(0, 10);
 
+    const result = await pool.query(
+      `INSERT INTO reminders
+       (table_name, record_id, name, mobile, owner, reason, due_date, status, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
+       RETURNING *`,
+      [
+        table,
+        record.id,
+        record.name || "",
+        record.mobile || "",
+        record.owner || "Unassigned",
+        reason,
+        due,
+        "pending"
+      ]
+    );
+
+    const r = result.rows[0];
+    db.reminders.unshift(r);
+
+    await addAlert(
+      "followup_reminder",
+      "Follow-up reminder created",
+      r
+    );
+
+    return r;
+  } catch (err) {
+    console.error("❌ Reminder PostgreSQL insert error:", err.message);
+    throw err;
+  }
+}
 async function sendBotSailorMessage(record, template = "update") {
   if (!config.whatsappEnabled) {
     return { success: false, status: "disabled", message: "WhatsApp disabled" };
@@ -392,26 +433,41 @@ Owner: ${record.owner || "Unassigned"}`;
 async function whatsappLog(table, record, template = "update") {
   const result = await sendBotSailorMessage(record, template);
 
-  const w = {
-    id: nextId("whatsapp_logs"),
-    table,
-    record_id: record.id,
-    mobile: record.mobile || "",
-    template,
-    status: result.status || "placeholder_only",
-    message:
-      result.message ||
-      `Guruvidya update: ${record.name || "Student"}, status ${record.status}, assigned to ${record.owner}`,
-    response: result.response || {},
-    error: result.error || "",
-    created_at: now()
-  };
+  try {
+    const pgResult = await pool.query(
+      `INSERT INTO whatsapp_logs
+       (table_name, record_id, mobile, template, status, message, response, error, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
+       RETURNING *`,
+      [
+        table,
+        record.id,
+        record.mobile || "",
+        template,
+        result.status || "placeholder_only",
+        result.message ||
+          `Guruvidya update: ${record.name || "Student"}, status ${record.status}, assigned to ${record.owner}`,
+        JSON.stringify(result.response || {}),
+        result.error || ""
+      ]
+    );
 
-  db.whatsapp_logs.unshift(w);
-  addAlert("whatsapp_trigger", "WhatsApp trigger processed", w);
-  return w;
+    const w = pgResult.rows[0];
+
+    db.whatsapp_logs.unshift(w);
+
+    await addAlert(
+      "whatsapp_trigger",
+      "WhatsApp trigger processed",
+      w
+    );
+
+    return w;
+  } catch (err) {
+    console.error("❌ WhatsApp Log PostgreSQL insert error:", err.message);
+    throw err;
+  }
 }
-
 async function insert(table, payload) {
   const record = {
     id: nextId(table),
@@ -638,9 +694,25 @@ app.post("/api/admin/integrations/botsailor/test", async (req, res) => {
   });
 });
 
-app.get("/api/admin/integration-logs", (req, res) =>
-  res.json({ success: true, data: db.integration_logs })
-);
+app.get("/api/admin/integration-logs", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM integration_logs ORDER BY id DESC"
+    );
+
+    res.json({
+      success: true,
+      data: result.rows
+    });
+  } catch (err) {
+    console.error("Integration logs fetch error:", err.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch integration logs"
+    });
+  }
+});
 
 // Counselor stats
 app.get("/api/admin/counselor-stats", (req, res) => {
@@ -803,48 +875,115 @@ for (const t of [
     }
   });
 }
-// Action Panel APIs
+// Action Panel APIs - PostgreSQL based
 for (const t of ["leads", "admissions", "appointments", "support", "faculty"]) {
   app.post(`/api/admin/${t}/:id/action`, async (req, res) => {
-    const item = db[t].find((r) => Number(r.id) === Number(req.params.id));
+    try {
+      const id = Number(req.params.id);
 
-    if (!item) return res.status(404).json({ success: false, message: "Record not found" });
+      const currentResult = await pool.query(
+        `SELECT * FROM ${t} WHERE id = $1`,
+        [id]
+      );
 
-    const oldStatus = item.status;
-    const oldOwner = item.owner;
+      if (currentResult.rows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Record not found"
+        });
+      }
 
-    item.status = req.body.status || item.status || "new";
-    item.owner = req.body.owner || item.owner || "Unassigned";
-    item.priority = req.body.priority || item.priority || "cold";
-    item.note = req.body.note || "";
-    item.admin_note = item.note;
-    item.updated_at = now();
+      const item = currentResult.rows[0];
 
-    if (req.body.sendNotification !== false) {
-      addAlert(`${t}_action`, `${t} updated`, {
-        id: item.id,
-        name: item.name,
-        mobile: item.mobile,
-        oldStatus,
-        newStatus: item.status,
-        oldOwner,
-        newOwner: item.owner,
-        note: item.note
+      const oldStatus = item.status;
+      const oldOwner = item.owner;
+
+      const newStatus = req.body.status || item.status || "new";
+      const newOwner = req.body.owner || item.owner || "Unassigned";
+      const newPriority = req.body.priority || item.priority || "cold";
+      const newNote =
+        req.body.note !== undefined ? req.body.note : (item.note || "");
+
+      const updatedResult = await pool.query(
+        `UPDATE ${t}
+         SET status = $1,
+             owner = $2,
+             priority = $3,
+             note = $4,
+             admin_note = $5,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $6
+         RETURNING *`,
+        [
+          newStatus,
+          newOwner,
+          newPriority,
+          newNote,
+          newNote,
+          id
+        ]
+      );
+
+      const updatedItem = updatedResult.rows[0];
+
+      // Sync memory copy if available
+      const index = db[t].findIndex((r) => Number(r.id) === id);
+
+      if (index !== -1) {
+        db[t][index] = {
+          ...db[t][index],
+          ...updatedItem
+        };
+      }
+
+      if (req.body.sendNotification !== false) {
+        await addAlert(`${t}_action`, `${t} updated`, {
+          id: updatedItem.id,
+          name: updatedItem.name,
+          mobile: updatedItem.mobile,
+          oldStatus,
+          newStatus: updatedItem.status,
+          oldOwner,
+          newOwner: updatedItem.owner,
+          note: updatedItem.note
+        });
+      }
+
+      if (
+        req.body.createReminder ||
+        ["follow_up", "interested", "contacted"].includes(updatedItem.status)
+      ) {
+        await addReminder(
+          t,
+          updatedItem,
+          Number(req.body.reminderDays || 2)
+        );
+      }
+
+      if (req.body.sendWhatsapp) {
+        await whatsappLog(
+          t,
+          updatedItem,
+          `${t}_action`
+        );
+      }
+
+      res.json({
+        success: true,
+        message: `${t} updated`,
+        data: updatedItem
+      });
+
+    } catch (err) {
+      console.error(`❌ ${t} action error:`, err.message);
+
+      res.status(500).json({
+        success: false,
+        message: `Failed to update ${t}`
       });
     }
-
-    if (req.body.createReminder || ["follow_up", "interested", "contacted"].includes(item.status)) {
-      addReminder(t, item, Number(req.body.reminderDays || 2));
-    }
-
-    if (req.body.sendWhatsapp) {
-      await whatsappLog(t, item, `${t}_action`);
-    }
-
-    res.json({ success: true, message: `${t} updated`, data: item });
   });
 }
-
 app.post("/api/webhook/botsailor", async (req, res) => {
   const payload = req.body || {};
 
@@ -852,57 +991,85 @@ app.post("/api/webhook/botsailor", async (req, res) => {
   const nowTime = new Date();
   const DUPLICATE_DAYS = 15;
 
-  const existingLead = db.leads.find(l => {
-    if (!l.mobile) return false;
+ // Check duplicate lead from PostgreSQL within last 15 days
+const duplicateResult = await pool.query(
+  `SELECT *
+   FROM leads
+   WHERE regexp_replace(COALESCE(mobile, ''), '\\D', '', 'g') = $1
+     AND created_at >= CURRENT_TIMESTAMP - INTERVAL '15 days'
+   ORDER BY created_at DESC
+   LIMIT 1`,
+  [mobile]
+);
 
-    const leadMobile = String(l.mobile).replace(/\D/g, "");
-    if (leadMobile !== mobile) return false;
+if (duplicateResult.rows.length > 0) {
+  const existingLead = duplicateResult.rows[0];
 
-    const leadDate = new Date(l.created_at);
-    const diffDays = (nowTime - leadDate) / (1000 * 60 * 60 * 24);
+  let updatedCourse = existingLead.course;
+  let updatedNote = existingLead.note || "";
 
-    return diffDays <= DUPLICATE_DAYS;
-  });
-
-  if (existingLead) {
-    existingLead.updated_at = nowTime.toISOString().replace("T", " ").slice(0, 19);
-
-    if (payload.course && payload.course !== existingLead.course) {
-      existingLead.note =
-        (existingLead.note || "") +
-        ` | Course changed: ${existingLead.course} → ${payload.course}`;
-      existingLead.course = payload.course;
-    }
-
-    existingLead.status = "re-enquiry";
-    existingLead.note = (existingLead.note || "") + " | Re-enquiry within 15 days";
-
-    return res.status(200).json({
-      status: "ok",
-      message: "Duplicate lead updated",
-      lead: existingLead
-    });
+  if (payload.course && payload.course !== existingLead.course) {
+    updatedNote += ` | Course changed: ${existingLead.course} → ${payload.course}`;
+    updatedCourse = payload.course;
   }
 
-  const lead = {
-  id: counters.leads++,
-  name: payload.name || "WhatsApp Lead",
-  mobile: mobile,
-  course: payload.course || "ACCA",
-  priority: "hot",
-  status: "new",
-  owner: "Counselor 1",
+  updatedNote += " | Re-enquiry within 15 days";
 
-  // 🔥 NEW ADD START
-  lead_score: 50,
-  lead_stage: "new",
-  next_best_action: "Call within 24 hours",
-  // 🔥 NEW ADD END
+  const updateResult = await pool.query(
+    `UPDATE leads
+     SET course = $1,
+         status = 're-enquiry',
+         note = $2,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = $3
+     RETURNING *`,
+    [updatedCourse, updatedNote, existingLead.id]
+  );
 
-  note: `Source: botsailor_whatsapp | Subscriber ID: ${payload.subscriber_id || ""}`,
-  created_at: new Date().toISOString().replace("T", " ").slice(0, 19)
-};
-  db.leads.unshift(lead);
+  const updatedLead = updateResult.rows[0];
+// Keep memory copy in sync after duplicate update
+const memoryIndex = db.leads.findIndex(
+  (l) => Number(l.id) === Number(updatedLead.id)
+);
+
+if (memoryIndex !== -1) {
+  db.leads[memoryIndex] = updatedLead;
+} else {
+  db.leads.unshift(updatedLead);
+}
+  return res.status(200).json({
+    status: "ok",
+    message: "Duplicate lead updated",
+    lead: updatedLead
+  });
+}
+
+// Create new lead permanently in PostgreSQL
+const newLeadResult = await pool.query(
+  `INSERT INTO leads
+   (name, mobile, course, priority, status, owner, lead_score, lead_stage,
+    next_best_action, note, created_at, updated_at)
+   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+   RETURNING *`,
+  [
+    payload.name || "WhatsApp Lead",
+    mobile,
+    payload.course || "ACCA",
+    "hot",
+    "new",
+    "Counselor 1",
+    50,
+    "new",
+    "Call within 24 hours",
+    `Source: botsailor_whatsapp | Subscriber ID: ${payload.subscriber_id || ""}`
+  ]
+);
+
+const lead = newLeadResult.rows[0];
+
+// Keep memory copy in sync
+db.leads.unshift(lead);
 
   await sendWhatsAppMessage(
     lead.mobile,
