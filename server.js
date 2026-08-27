@@ -14,6 +14,97 @@ const pool = new Pool({
 pool.query("SELECT NOW()")
   .then(() => console.log("✅ PostgreSQL connected successfully"))
   .catch((err) => console.error("❌ PostgreSQL connection error:", err.message));
+async function initDatabase() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS leads (
+        id SERIAL PRIMARY KEY,
+        name TEXT,
+        mobile TEXT,
+        course TEXT,
+        priority TEXT,
+        status TEXT,
+        owner TEXT,
+        note TEXT,
+        admin_note TEXT,
+        lead_score INTEGER DEFAULT 50,
+        lead_stage TEXT,
+        next_best_action TEXT,
+        enquiry_count INTEGER DEFAULT 1,
+        next_followup TIMESTAMP,
+        last_enquiry_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS admissions (
+        id SERIAL PRIMARY KEY,
+        name TEXT,
+        mobile TEXT,
+        email TEXT,
+        course TEXT,
+        priority TEXT,
+        status TEXT,
+        owner TEXT,
+        note TEXT,
+        admin_note TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS appointments (
+        id SERIAL PRIMARY KEY,
+        name TEXT,
+        mobile TEXT,
+        course TEXT,
+        datetime TEXT,
+        priority TEXT,
+        status TEXT,
+        owner TEXT,
+        note TEXT,
+        admin_note TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS support (
+        id SERIAL PRIMARY KEY,
+        name TEXT,
+        mobile TEXT,
+        issue TEXT,
+        description TEXT,
+        priority TEXT,
+        status TEXT,
+        owner TEXT,
+        note TEXT,
+        admin_note TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS faculty (
+        id SERIAL PRIMARY KEY,
+        name TEXT,
+        mobile TEXT,
+        course TEXT,
+        mode TEXT,
+        priority TEXT,
+        status TEXT,
+        owner TEXT,
+        note TEXT,
+        admin_note TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP
+      );
+    `);
+
+    console.log("✅ PostgreSQL tables ready");
+  } catch (err) {
+    console.error("❌ PostgreSQL table setup error:", err.message);
+  }
+}
+
+initDatabase();
 const app = express();
 app.use(cors());
 app.use(express.json());
