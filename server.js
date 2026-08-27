@@ -380,7 +380,59 @@ async function insert(table, payload) {
     admin_note: payload.admin_note || "",
     created_at: now()
   };
+// ✅ Save new lead permanently in PostgreSQL
+if (table === "leads") {
+  try {
+    const pgResult = await pool.query(
+      `INSERT INTO leads
+      (
+        name,
+        mobile,
+        course,
+        priority,
+        status,
+        owner,
+        note,
+        admin_note,
+        lead_score,
+        lead_stage,
+        next_best_action,
+        enquiry_count,
+        next_followup,
+        last_enquiry_at,
+        created_at
+      )
+      VALUES
+      ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+      RETURNING *`,
+      [
+        record.name || "",
+        record.mobile || "",
+        record.course || "",
+        record.priority || "hot",
+        record.status || "new",
+        record.owner || "Counselor 1",
+        record.note || "",
+        record.admin_note || "",
+        record.lead_score ?? 50,
+        record.lead_stage || "new",
+        record.next_best_action || "",
+        record.enquiry_count ?? 1,
+        record.next_followup || null,
+        record.last_enquiry_at || null,
+        record.created_at
+      ]
+    );
 
+    // PostgreSQL ka permanent ID use karo
+    record.id = pgResult.rows[0].id;
+
+    console.log("✅ Lead saved to PostgreSQL:", record.id);
+  } catch (err) {
+    console.error("❌ PostgreSQL lead insert error:", err.message);
+    throw err;
+  }
+}
   db[table].unshift(record);
 
   addAlert(`${table}_created`, `New ${table} received`, {
@@ -585,10 +637,28 @@ app.post("/api/public/faculty-interest", async (req, res) =>
     })
   })
 );
+// PostgreSQL Leads Listing API
+app.get("/api/admin/leads", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM leads ORDER BY id DESC"
+    );
 
+    res.json({
+      success: true,
+      data: result.rows
+    });
+  } catch (err) {
+    console.error("Leads fetch error:", err.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch leads"
+    });
+  }
+});
 // Admin listing APIs
 for (const t of [
-  "leads",
   "admissions",
   "appointments",
   "support",
