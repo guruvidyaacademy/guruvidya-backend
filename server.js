@@ -1,6 +1,19 @@
 import express from "express";
 import cors from "cors";
 import axios from "axios";
+import pg from "pg";
+
+const { Pool } = pg;
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false
+  }
+});
+pool.query("SELECT NOW()")
+  .then(() => console.log("✅ PostgreSQL connected successfully"))
+  .catch((err) => console.error("❌ PostgreSQL connection error:", err.message));
 const app = express();
 app.use(cors());
 app.use(express.json());
