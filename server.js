@@ -433,6 +433,58 @@ if (table === "leads") {
     throw err;
   }
 }
+// ✅ Save admissions, appointments, support and faculty permanently in PostgreSQL
+if (["admissions", "appointments", "support", "faculty"].includes(table)) {
+  try {
+    const columnsByTable = {
+      admissions: [
+        "name", "mobile", "email", "course", "priority",
+        "status", "owner", "note", "admin_note"
+      ],
+
+      appointments: [
+        "name", "mobile", "course", "datetime", "priority",
+        "status", "owner", "note", "admin_note"
+      ],
+
+      support: [
+        "name", "mobile", "issue", "description", "priority",
+        "status", "owner", "note", "admin_note"
+      ],
+
+      faculty: [
+        "name", "mobile", "course", "mode", "priority",
+        "status", "owner", "note", "admin_note"
+      ]
+    };
+
+    const columns = columnsByTable[table];
+
+    const values = columns.map((col) => {
+      if (col === "priority") return record[col] || "warm";
+      if (col === "status") return record[col] || "new";
+      if (col === "owner") return record[col] || "Counselor 1";
+      return record[col] || "";
+    });
+
+    const placeholders = values.map((_, i) => `$${i + 1}`).join(", ");
+
+    const pgResult = await pool.query(
+      `INSERT INTO ${table} (${columns.join(", ")})
+       VALUES (${placeholders})
+       RETURNING *`,
+      values
+    );
+
+    record.id = pgResult.rows[0].id;
+
+    console.log(`✅ ${table} saved to PostgreSQL:`, record.id);
+  } catch (err) {
+    console.error(`❌ PostgreSQL ${table} insert error:`, err.message);
+    throw err;
+  }
+}
+  
   db[table].unshift(record);
 
   addAlert(`${table}_created`, `New ${table} received`, {
@@ -657,18 +709,43 @@ app.get("/api/admin/leads", async (req, res) => {
     });
   }
 });
-// Admin listing APIs
+// Admin listing APIs - PostgreSQL permanent data
+
+for (const t of ["admissions", "appointments", "support", "faculty"]) {
+  app.get(`/api/admin/${t}`, async (req, res) => {
+    try {
+      const result = await pool.query(
+        `SELECT * FROM ${t} ORDER BY id DESC`
+      );
+
+      res.json({
+        success: true,
+        data: result.rows
+      });
+    } catch (err) {
+      console.error(`❌ ${t} fetch error:`, err.message);
+
+      res.status(500).json({
+        success: false,
+        message: `Failed to fetch ${t}`
+      });
+    }
+  });
+}
+
+// These modules are still temporary/in-memory for now
 for (const t of [
-  "admissions",
-  "appointments",
-  "support",
-  "faculty",
   "alerts",
   "reminders",
   "whatsapp_logs",
   "integration_logs"
 ]) {
-  app.get(`/api/admin/${t}`, (req, res) => res.json({ success: true, data: db[t] || [] }));
+  app.get(`/api/admin/${t}`, (req, res) => {
+    res.json({
+      success: true,
+      data: db[t] || []
+    });
+  });
 }
 
 // Action Panel APIs
