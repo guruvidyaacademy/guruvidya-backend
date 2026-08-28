@@ -624,40 +624,84 @@ app.get("/api/admin/pipeline", async (req, res) => {
     const leads = result.rows;
     const today = new Date().toISOString().slice(0, 10);
 
+    const normalize = (value) =>
+      String(value || "").trim().toLowerCase();
+
+    const isToday = (value) => {
+      if (!value) return false;
+
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return false;
+
+      return date.toISOString().slice(0, 10) === today;
+    };
+
+    // Converted
+    const converted = leads.filter(
+      (l) => normalize(l.status) === "converted"
+    );
+
+    // Re-Enquiry
+    const reEnquiry = leads.filter(
+      (l) => normalize(l.status) === "re-enquiry"
+    );
+
+    // Follow-up due today
+    const followupToday = leads.filter(
+      (l) =>
+        isToday(l.next_followup) &&
+        !["converted", "re-enquiry"].includes(normalize(l.status))
+    );
+
+    // No Response
+    const noResponse = leads.filter(
+      (l) =>
+        normalize(l.status) === "no_response" &&
+        !isToday(l.next_followup)
+    );
+
+    // Very Hot
+    const veryHotLeads = leads.filter(
+      (l) =>
+        normalize(l.priority) === "very hot" &&
+        !["converted", "re-enquiry", "no_response"].includes(
+          normalize(l.status)
+        ) &&
+        !isToday(l.next_followup)
+    );
+
+    // Hot
+    const hotLeads = leads.filter(
+      (l) =>
+        normalize(l.priority) === "hot" &&
+        !["converted", "re-enquiry", "no_response"].includes(
+          normalize(l.status)
+        ) &&
+        !isToday(l.next_followup)
+    );
+
+    // New
+    const newLeads = leads.filter(
+      (l) =>
+        (
+          normalize(l.lead_stage) === "new" ||
+          normalize(l.status) === "new"
+        ) &&
+        !["hot", "very hot"].includes(normalize(l.priority)) &&
+        !["converted", "re-enquiry", "no_response"].includes(
+          normalize(l.status)
+        ) &&
+        !isToday(l.next_followup)
+    );
+
     const data = {
-      new_leads: leads.filter(
-        (l) => l.lead_stage === "new" || l.status === "new"
-      ),
-
-      hot_leads: leads.filter(
-        (l) => l.priority === "hot"
-      ),
-
-      very_hot_leads: leads.filter(
-        (l) => l.priority === "very hot"
-      ),
-
-      re_enquiry: leads.filter(
-        (l) => l.status === "re-enquiry"
-      ),
-
-      followup_today: leads.filter((l) => {
-        if (!l.next_followup) return false;
-
-        const followupDate = new Date(l.next_followup)
-          .toISOString()
-          .slice(0, 10);
-
-        return followupDate === today;
-      }),
-
-      no_response: leads.filter(
-        (l) => Number(l.enquiry_count) === 1
-      ),
-
-      converted: leads.filter(
-        (l) => l.status === "converted"
-      )
+      new_leads: newLeads,
+      hot_leads: hotLeads,
+      very_hot_leads: veryHotLeads,
+      re_enquiry: reEnquiry,
+      followup_today: followupToday,
+      no_response: noResponse,
+      converted
     };
 
     res.json({
