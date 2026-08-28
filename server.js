@@ -660,15 +660,33 @@ app.get("/api/admin/pipeline", async (req, res) => {
         !isToday(l.next_followup)
     );
 
-    // Very Hot
-    const veryHotLeads = leads.filter(
-      (l) =>
-        normalize(l.priority) === "very hot" &&
-        !["converted", "re-enquiry", "no_response"].includes(
-          normalize(l.status)
-        ) &&
-        !isToday(l.next_followup)
-    );
+   // Very Hot
+const veryHotLeads = leads.filter(
+  (l) =>
+    normalize(l.priority) === "very hot" &&
+    ![
+      "converted",
+      "re-enquiry",
+      "no_response",
+      "not_interested",
+      "closed"
+    ].includes(normalize(l.status)) &&
+    !isToday(l.next_followup)
+);
+
+// Hot
+const hotLeads = leads.filter(
+  (l) =>
+    normalize(l.priority) === "hot" &&
+    ![
+      "converted",
+      "re-enquiry",
+      "no_response",
+      "not_interested",
+      "closed"
+    ].includes(normalize(l.status)) &&
+    !isToday(l.next_followup)
+);
 
     // Hot
     const hotLeads = leads.filter(
