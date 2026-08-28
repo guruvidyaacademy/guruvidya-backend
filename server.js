@@ -672,13 +672,17 @@ app.get("/api/admin/pipeline", async (req, res) => {
 
     // Hot
     const hotLeads = leads.filter(
-      (l) =>
-        normalize(l.priority) === "hot" &&
-        !["converted", "re-enquiry", "no_response"].includes(
-          normalize(l.status)
-        ) &&
-        !isToday(l.next_followup)
-    );
+  (l) =>
+    normalize(l.priority) === "hot" &&
+    ![
+      "converted",
+      "re-enquiry",
+      "no_response",
+      "not_interested",
+      "closed"
+    ].includes(normalize(l.status)) &&
+    !isToday(l.next_followup)
+);
 
     // New
     const newLeads = leads.filter(
