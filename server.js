@@ -641,10 +641,11 @@ app.get("/api/admin/pipeline", async (req, res) => {
       (l) => normalize(l.status) === "converted"
     );
 
-    // Re-Enquiry
-    const reEnquiry = leads.filter(
-      (l) => normalize(l.status) === "re-enquiry"
-    );
+   const reEnquiry = leads.filter(
+  (l) =>
+    normalize(l.status) === "re-enquiry" &&
+    normalize(l.priority) !== "very hot"
+);
 
     // Follow-up due today
     const followupToday = leads.filter(
@@ -695,10 +696,13 @@ const hotLeads = leads.filter(
           normalize(l.lead_stage) === "new" ||
           normalize(l.status) === "new"
         ) &&
-        !["hot", "very hot"].includes(normalize(l.priority)) &&
-        !["converted", "re-enquiry", "no_response"].includes(
-          normalize(l.status)
-        ) &&
+        ![
+  "converted",
+  "re-enquiry",
+  "no_response",
+  "not_interested",
+  "closed"
+].includes(normalize(l.status)) &&
         !isToday(l.next_followup)
     );
 
@@ -1178,37 +1182,77 @@ if (duplicateResult.rows.length > 0) {
   let updatedNote = existingLead.note || "";
 
   if (payload.course && payload.course !== existingLead.course) {
-    updatedNote += ` | Course changed: ${existingLead.course} → ${payload.course}`;
+    updatedNote += ` | Course changed: ${existingLead.course || ""} → ${payload.course}`;
     updatedCourse = payload.course;
   }
 
   updatedNote += " | Re-enquiry within 15 days";
 
+  // enquiry count increase
+  const newEnquiryCount =
+    Number(existingLead.enquiry_count || 1) + 1;
+
+  // lead score increase
+  const newLeadScore =
+    Number(existingLead.lead_score || 50) + 10;
+
+  // 3rd enquiry onwards = Very Hot
+  const newPriority =
+    newEnquiryCount >= 3
+      ? "very hot"
+      : existingLead.priority || "hot";
+
+  // Next day follow-up
+  const nextFollowup = new Date();
+  nextFollowup.setDate(nextFollowup.getDate() + 1);
+
   const updateResult = await pool.query(
     `UPDATE leads
      SET course = $1,
          status = 're-enquiry',
-         note = $2,
+         priority = $2,
+         note = $3,
+         enquiry_count = $4,
+         lead_score = $5,
+         last_enquiry_at = CURRENT_TIMESTAMP,
+         next_followup = $6,
+         next_best_action = $7,
          updated_at = CURRENT_TIMESTAMP
-     WHERE id = $3
+     WHERE id = $8
      RETURNING *`,
-    [updatedCourse, updatedNote, existingLead.id]
+    [
+      updatedCourse,
+      newPriority,
+      updatedNote,
+      newEnquiryCount,
+      newLeadScore,
+      nextFollowup,
+      newEnquiryCount >= 3
+        ? "Call immediately - very high intent"
+        : "Call again - re-enquiry",
+      existingLead.id
+    ]
   );
 
   const updatedLead = updateResult.rows[0];
-// Keep memory copy in sync after duplicate update
-const memoryIndex = db.leads.findIndex(
-  (l) => Number(l.id) === Number(updatedLead.id)
-);
 
-if (memoryIndex !== -1) {
-  db.leads[memoryIndex] = updatedLead;
-} else {
-  db.leads.unshift(updatedLead);
-}
+  // Keep memory copy in sync
+  const memoryIndex = db.leads.findIndex(
+    (l) => Number(l.id) === Number(updatedLead.id)
+  );
+
+  if (memoryIndex !== -1) {
+    db.leads[memoryIndex] = updatedLead;
+  } else {
+    db.leads.unshift(updatedLead);
+  }
+
   return res.status(200).json({
     status: "ok",
-    message: "Duplicate lead updated",
+    message:
+      newEnquiryCount >= 3
+        ? "Duplicate lead updated - Very Hot"
+        : "Duplicate lead updated - Re-Enquiry",
     lead: updatedLead
   });
 }
