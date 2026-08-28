@@ -1201,38 +1201,43 @@ if (duplicateResult.rows.length > 0) {
     newEnquiryCount >= 3
       ? "very hot"
       : existingLead.priority || "hot";
-
+const newStatus =
+  newEnquiryCount >= 3
+    ? "very_hot"
+    : "re-enquiry";
+  
   // Next day follow-up
   const nextFollowup = new Date();
   nextFollowup.setDate(nextFollowup.getDate() + 1);
 
-  const updateResult = await pool.query(
-    `UPDATE leads
-     SET course = $1,
-         status = 're-enquiry',
-         priority = $2,
-         note = $3,
-         enquiry_count = $4,
-         lead_score = $5,
-         last_enquiry_at = CURRENT_TIMESTAMP,
-         next_followup = $6,
-         next_best_action = $7,
-         updated_at = CURRENT_TIMESTAMP
-     WHERE id = $8
-     RETURNING *`,
-    [
-      updatedCourse,
-      newPriority,
-      updatedNote,
-      newEnquiryCount,
-      newLeadScore,
-      nextFollowup,
-      newEnquiryCount >= 3
-        ? "Call immediately - very high intent"
-        : "Call again - re-enquiry",
-      existingLead.id
-    ]
-  );
+ const updateResult = await pool.query(
+  `UPDATE leads
+   SET course = $1,
+       status = $2,
+       priority = $3,
+       note = $4,
+       enquiry_count = $5,
+       lead_score = $6,
+       last_enquiry_at = CURRENT_TIMESTAMP,
+       next_followup = $7,
+       next_best_action = $8,
+       updated_at = CURRENT_TIMESTAMP
+   WHERE id = $9
+   RETURNING *`,
+  [
+    updatedCourse,
+    newStatus,
+    newPriority,
+    updatedNote,
+    newEnquiryCount,
+    newLeadScore,
+    nextFollowup,
+    newEnquiryCount >= 3
+      ? "Call immediately - very high intent"
+      : "Call again - re-enquiry",
+    existingLead.id
+  ]
+);
 
   const updatedLead = updateResult.rows[0];
 
