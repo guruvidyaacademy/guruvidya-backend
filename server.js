@@ -997,7 +997,7 @@ for (const t of ["leads", "admissions", "appointments", "support", "faculty"]) {
 
       let updatedResult;
 
-      // Leads have extra editable fields
+      // Leads ke extra editable fields
       if (t === "leads") {
         const newName =
           req.body.name !== undefined
@@ -1015,10 +1015,11 @@ for (const t of ["leads", "admissions", "appointments", "support", "faculty"]) {
             : item.course || "";
 
         const newNextFollowup =
-          req.body.next_followup !== undefined &&
-          req.body.next_followup !== ""
-            ? req.body.next_followup
-            : null;
+  req.body.next_followup !== undefined
+    ? (req.body.next_followup === ""
+        ? null
+        : req.body.next_followup)
+    : item.next_followup;
 
         updatedResult = await pool.query(
           `UPDATE leads
@@ -1048,7 +1049,7 @@ for (const t of ["leads", "admissions", "appointments", "support", "faculty"]) {
           ]
         );
       } else {
-        // Existing behavior for other modules
+        // Admissions / Appointments / Support / Faculty ka existing behavior
         updatedResult = await pool.query(
           `UPDATE ${t}
            SET status = $1,
@@ -1072,7 +1073,7 @@ for (const t of ["leads", "admissions", "appointments", "support", "faculty"]) {
 
       const updatedItem = updatedResult.rows[0];
 
-      // Sync memory copy if available
+      // Memory copy sync
       const index = db[t].findIndex(
         (r) => Number(r.id) === id
       );
@@ -1084,6 +1085,7 @@ for (const t of ["leads", "admissions", "appointments", "support", "faculty"]) {
         };
       }
 
+      // Alert
       if (req.body.sendNotification !== false) {
         await addAlert(
           `${t}_action`,
@@ -1101,6 +1103,7 @@ for (const t of ["leads", "admissions", "appointments", "support", "faculty"]) {
         );
       }
 
+      // Reminder
       if (
         req.body.createReminder ||
         ["follow_up", "interested", "contacted"].includes(
@@ -1114,6 +1117,7 @@ for (const t of ["leads", "admissions", "appointments", "support", "faculty"]) {
         );
       }
 
+      // WhatsApp
       if (req.body.sendWhatsapp) {
         await whatsappLog(
           t,
