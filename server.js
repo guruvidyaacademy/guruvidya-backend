@@ -975,36 +975,107 @@ for (const t of ["leads", "admissions", "appointments", "support", "faculty"]) {
       const oldStatus = item.status;
       const oldOwner = item.owner;
 
-      const newStatus = req.body.status || item.status || "new";
-      const newOwner = req.body.owner || item.owner || "Unassigned";
-      const newPriority = req.body.priority || item.priority || "cold";
-      const newNote =
-        req.body.note !== undefined ? req.body.note : (item.note || "");
+      const newStatus =
+        req.body.status !== undefined
+          ? req.body.status
+          : item.status || "new";
 
-      const updatedResult = await pool.query(
-        `UPDATE ${t}
-         SET status = $1,
-             owner = $2,
-             priority = $3,
-             note = $4,
-             admin_note = $5,
-             updated_at = CURRENT_TIMESTAMP
-         WHERE id = $6
-         RETURNING *`,
-        [
-          newStatus,
-          newOwner,
-          newPriority,
-          newNote,
-          newNote,
-          id
-        ]
-      );
+      const newOwner =
+        req.body.owner !== undefined
+          ? req.body.owner
+          : item.owner || "Unassigned";
+
+      const newPriority =
+        req.body.priority !== undefined
+          ? req.body.priority
+          : item.priority || "cold";
+
+      const newNote =
+        req.body.note !== undefined
+          ? req.body.note
+          : item.note || "";
+
+      let updatedResult;
+
+      // Leads have extra editable fields
+      if (t === "leads") {
+        const newName =
+          req.body.name !== undefined
+            ? req.body.name
+            : item.name || "";
+
+        const newMobile =
+          req.body.mobile !== undefined
+            ? cleanMobile(req.body.mobile)
+            : item.mobile || "";
+
+        const newCourse =
+          req.body.course !== undefined
+            ? req.body.course
+            : item.course || "";
+
+        const newNextFollowup =
+          req.body.next_followup !== undefined &&
+          req.body.next_followup !== ""
+            ? req.body.next_followup
+            : null;
+
+        updatedResult = await pool.query(
+          `UPDATE leads
+           SET name = $1,
+               mobile = $2,
+               course = $3,
+               status = $4,
+               owner = $5,
+               priority = $6,
+               note = $7,
+               admin_note = $8,
+               next_followup = $9,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $10
+           RETURNING *`,
+          [
+            newName,
+            newMobile,
+            newCourse,
+            newStatus,
+            newOwner,
+            newPriority,
+            newNote,
+            newNote,
+            newNextFollowup,
+            id
+          ]
+        );
+      } else {
+        // Existing behavior for other modules
+        updatedResult = await pool.query(
+          `UPDATE ${t}
+           SET status = $1,
+               owner = $2,
+               priority = $3,
+               note = $4,
+               admin_note = $5,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $6
+           RETURNING *`,
+          [
+            newStatus,
+            newOwner,
+            newPriority,
+            newNote,
+            newNote,
+            id
+          ]
+        );
+      }
 
       const updatedItem = updatedResult.rows[0];
 
       // Sync memory copy if available
-      const index = db[t].findIndex((r) => Number(r.id) === id);
+      const index = db[t].findIndex(
+        (r) => Number(r.id) === id
+      );
 
       if (index !== -1) {
         db[t][index] = {
@@ -1014,21 +1085,27 @@ for (const t of ["leads", "admissions", "appointments", "support", "faculty"]) {
       }
 
       if (req.body.sendNotification !== false) {
-        await addAlert(`${t}_action`, `${t} updated`, {
-          id: updatedItem.id,
-          name: updatedItem.name,
-          mobile: updatedItem.mobile,
-          oldStatus,
-          newStatus: updatedItem.status,
-          oldOwner,
-          newOwner: updatedItem.owner,
-          note: updatedItem.note
-        });
+        await addAlert(
+          `${t}_action`,
+          `${t} updated`,
+          {
+            id: updatedItem.id,
+            name: updatedItem.name,
+            mobile: updatedItem.mobile,
+            oldStatus,
+            newStatus: updatedItem.status,
+            oldOwner,
+            newOwner: updatedItem.owner,
+            note: updatedItem.note
+          }
+        );
       }
 
       if (
         req.body.createReminder ||
-        ["follow_up", "interested", "contacted"].includes(updatedItem.status)
+        ["follow_up", "interested", "contacted"].includes(
+          updatedItem.status
+        )
       ) {
         await addReminder(
           t,
@@ -1052,7 +1129,10 @@ for (const t of ["leads", "admissions", "appointments", "support", "faculty"]) {
       });
 
     } catch (err) {
-      console.error(`❌ ${t} action error:`, err.message);
+      console.error(
+        `❌ ${t} action error:`,
+        err.message
+      );
 
       res.status(500).json({
         success: false,
