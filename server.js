@@ -615,32 +615,65 @@ app.post("/api/admin/config", (req, res) => {
   res.json({ success: true, data: config });
 });
 
-app.get("/api/admin/pipeline", (req, res) => {
-  const leads = db.leads;
+app.get("/api/admin/pipeline", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM leads ORDER BY id DESC"
+    );
 
-  const today = new Date().toISOString().slice(0, 10);
+    const leads = result.rows;
+    const today = new Date().toISOString().slice(0, 10);
 
-  const data = {
-    new_leads: leads.filter(l => l.lead_stage === "new" || l.status === "new"),
-    
-    hot_leads: leads.filter(l => l.priority === "hot"),
-    
-    very_hot_leads: leads.filter(l => l.priority === "very hot"),
-    
-    re_enquiry: leads.filter(l => l.status === "re-enquiry"),
-    
-    followup_today: leads.filter(l => 
-      l.next_followup && l.next_followup.startsWith(today)
-    ),
+    const data = {
+      new_leads: leads.filter(
+        (l) => l.lead_stage === "new" || l.status === "new"
+      ),
 
-    no_response: leads.filter(l => l.enquiry_count === 1),
+      hot_leads: leads.filter(
+        (l) => l.priority === "hot"
+      ),
 
-    converted: leads.filter(l => l.status === "converted")
-  };
+      very_hot_leads: leads.filter(
+        (l) => l.priority === "very hot"
+      ),
 
-  res.json({ success: true, data });
+      re_enquiry: leads.filter(
+        (l) => l.status === "re-enquiry"
+      ),
+
+      followup_today: leads.filter((l) => {
+        if (!l.next_followup) return false;
+
+        const followupDate = new Date(l.next_followup)
+          .toISOString()
+          .slice(0, 10);
+
+        return followupDate === today;
+      }),
+
+      no_response: leads.filter(
+        (l) => Number(l.enquiry_count) === 1
+      ),
+
+      converted: leads.filter(
+        (l) => l.status === "converted"
+      )
+    };
+
+    res.json({
+      success: true,
+      data
+    });
+
+  } catch (err) {
+    console.error("❌ Pipeline fetch error:", err.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch pipeline"
+    });
+  }
 });
-
 // Integration Panel APIs
 app.get("/api/admin/integrations", (req, res) => {
   res.json({
