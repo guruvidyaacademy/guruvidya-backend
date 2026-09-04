@@ -193,50 +193,150 @@ function findDuplicate(table, mobile, extraCheck = null) {
 }
 
 async function insertUnique(table, payload, options = {}) {
-  const mobile = cleanMobile(payload.mobile || payload.phone || payload.whatsapp || "");
-  const duplicate = findDuplicate(table, mobile, options.extraCheck);
+  const mobile = cleanMobile(
+    payload.mobile ||
+    payload.phone ||
+    payload.whatsapp ||
+    ""
+  );
+
+  // Leads ke liye permanent PostgreSQL duplicate check
+  if (table === "leads" && mobile) {
+    const duplicateResult = await pool.query(
+      `SELECT *
+       FROM leads
+       WHERE regexp_replace(COALESCE(mobile, ''), '\\D', '', 'g') = $1
+         AND created_at >= CURRENT_TIMESTAMP - INTERVAL '15 days'
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [mobile]
+    );
+
+    if (duplicateResult.rows.length > 0) {
+      const existingLead = duplicateResult.rows[0];
+
+      let updatedCourse = existingLead.course;
+      let updatedNote = existingLead.note || "";
+
+      if (
+        payload.course &&
+        payload.course !== existingLead.course
+      ) {
+        updatedNote +=
+          ` | Course changed: ${existingLead.course || ""} → ${payload.course}`;
+
+        updatedCourse = payload.course;
+      }
+
+      updatedNote += " | Re-enquiry within 15 days";
+
+      const newEnquiryCount =
+        Number(existingLead.enquiry_count || 1) + 1;
+
+      const newLeadScore =
+        Number(existingLead.lead_score || 50) + 10;
+
+      const newPriority =
+        newEnquiryCount >= 3
+          ? "very hot"
+          : existingLead.priority || "hot";
+
+      const newStatus =
+        newEnquiryCount >= 3
+          ? "very_hot"
+          : options.duplicateStatus || "re-enquiry";
+
+      const nextFollowup = new Date();
+      nextFollowup.setDate(nextFollowup.getDate() + 1);
+
+      const updateResult = await pool.query(
+        `UPDATE leads
+         SET course = $1,
+             status = $2,
+             priority = $3,
+             note = $4,
+             enquiry_count = $5,
+             lead_score = $6,
+             last_enquiry_at = CURRENT_TIMESTAMP,
+             next_followup = $7,
+             next_best_action = $8,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $9
+         RETURNING *`,
+        [
+          updatedCourse,
+          newStatus,
+          newPriority,
+          updatedNote,
+          newEnquiryCount,
+          newLeadScore,
+          nextFollowup,
+          newEnquiryCount >= 3
+            ? "Call immediately - very high intent"
+            : "Call again - re-enquiry",
+          existingLead.id
+        ]
+      );
+
+      const updatedLead = updateResult.rows[0];
+
+      const memoryIndex = db.leads.findIndex(
+        (l) => Number(l.id) === Number(updatedLead.id)
+      );
+
+      if (memoryIndex !== -1) {
+        db.leads[memoryIndex] = updatedLead;
+      } else {
+        db.leads.unshift(updatedLead);
+      }
+
+      return updatedLead;
+    }
+  }
+
+  // Other tables ka existing duplicate behavior
+  const duplicate = findDuplicate(
+    table,
+    mobile,
+    options.extraCheck
+  );
 
   if (duplicate) {
-    duplicate.updated_at = new Date().toISOString().replace("T", " ").slice(0, 19);
+    duplicate.updated_at = now();
 
-    if (payload.course && payload.course !== duplicate.course) {
-      duplicate.note = (duplicate.note || "") + 
+    if (
+      payload.course &&
+      payload.course !== duplicate.course
+    ) {
+      duplicate.note =
+        (duplicate.note || "") +
         ` | Course changed: ${duplicate.course || ""} → ${payload.course}`;
-      
+
       duplicate.course = payload.course;
     }
 
-    if (payload.issue) duplicate.issue = payload.issue;
-    if (payload.description) duplicate.description = payload.description;
-    if (payload.mode) duplicate.mode = payload.mode;
+    if (payload.issue) {
+      duplicate.issue = payload.issue;
+    }
 
-   duplicate.status = options.duplicateStatus || "re-enquiry";
-duplicate.last_enquiry_at = now();
-duplicate.enquiry_count = (duplicate.enquiry_count || 1) + 1;
+    if (payload.description) {
+      duplicate.description = payload.description;
+    }
 
-// 🔥 AI behaviour add karo yahin
-duplicate.lead_score = (duplicate.lead_score || 50) + 10;
-duplicate.next_best_action = "Call again - high intent";
+    if (payload.mode) {
+      duplicate.mode = payload.mode;
+    }
 
-// 🔥 NEW ADD START
-if (duplicate.enquiry_count >= 3) {
-  duplicate.priority = "very hot";
-}
-
-const next = new Date();
-next.setDate(next.getDate() + 1); // next day follow-up
-duplicate.next_followup = next.toISOString().slice(0, 19).replace("T", " ");
-// 🔥 NEW ADD END
-
-const duplicateNote = `Duplicate updated in ${table}`;
-if (!(duplicate.note || "").includes(duplicateNote)) {
-  duplicate.note = (duplicate.note || "") + ` | ${duplicateNote}`;
-}
+    duplicate.status =
+      options.duplicateStatus || "re-enquiry";
 
     return duplicate;
   }
 
-  return await insert(table, { ...payload, mobile });
+  return await insert(table, {
+    ...payload,
+    mobile
+  });
 }
 // ✅ GLOBAL DUPLICATE CODE END
 
