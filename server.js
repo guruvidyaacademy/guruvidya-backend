@@ -942,18 +942,54 @@ app.post("/api/public/enquiry", async (req, res) =>
   })
 );
 
-app.post("/api/public/admission-enquiry", async (req, res) =>
-  res.json({
-    success: true,
-    data: await insertUnique("admissions", {
-      name: req.body.name || "",
-      mobile: req.body.mobile || req.body.phone || "",
-      email: req.body.email || "",
-      course: req.body.course || "",
-      note: req.body.note || ""
-    })
-  })
-);
+app.post("/api/public/admission-enquiry", async (req, res) => {
+  try {
+    const name = req.body.name || "";
+    const mobile =
+      req.body.mobile ||
+      req.body.phone ||
+      req.body.whatsapp ||
+      "";
+    const email = req.body.email || "";
+    const course = req.body.course || "";
+    const note = req.body.note || "";
+
+    // 1. Har admission enquiry ko central Lead logic me bhi process karo
+    const lead = await insertUnique("leads", {
+      name,
+      mobile,
+      course,
+      note: note
+        ? `${note} | Source: admission_enquiry`
+        : "Source: admission_enquiry"
+    });
+
+    // 2. Admissions module ka record bhi maintain karo
+    const admission = await insertUnique("admissions", {
+      name,
+      mobile,
+      email,
+      course,
+      note
+    });
+
+    res.json({
+      success: true,
+      data: admission,
+      lead
+    });
+  } catch (err) {
+    console.error(
+      "❌ Admission enquiry error:",
+      err.message
+    );
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to process admission enquiry"
+    });
+  }
+});
 
 app.post("/api/public/appointment-request", async (req, res) =>
   res.json({
