@@ -991,18 +991,60 @@ app.post("/api/public/admission-enquiry", async (req, res) => {
   }
 });
 
-app.post("/api/public/appointment-request", async (req, res) =>
-  res.json({
-    success: true,
-    data: await insert("appointments", {
-      name: req.body.name || "",
-      mobile: req.body.mobile || req.body.phone || "",
-      course: req.body.course || "",
-      datetime: req.body.datetime || req.body.date || "",
-      note: req.body.note || ""
-    })
-  })
-);
+app.post("/api/public/appointment-request", async (req, res) => {
+  try {
+    const name = req.body.name || "";
+    const mobile =
+      req.body.mobile ||
+      req.body.phone ||
+      req.body.whatsapp ||
+      "";
+    const course = req.body.course || "";
+    const datetime =
+      req.body.datetime ||
+      req.body.date ||
+      "";
+    const note = req.body.note || "";
+
+    // Appointment request ko central Lead logic me process karo
+    const lead = await insertUnique("leads", {
+      name,
+      mobile,
+      course,
+      note: note
+        ? `${note} | Source: appointment_request`
+        : "Source: appointment_request"
+    });
+
+    // Appointment module ka record bhi maintain karo
+    const appointment = await insertUnique(
+      "appointments",
+      {
+        name,
+        mobile,
+        course,
+        datetime,
+        note
+      }
+    );
+
+    res.json({
+      success: true,
+      data: appointment,
+      lead
+    });
+  } catch (err) {
+    console.error(
+      "❌ Appointment request error:",
+      err.message
+    );
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to process appointment request"
+    });
+  }
+});
 
 app.post("/api/public/support-request", async (req, res) =>
   res.json({
