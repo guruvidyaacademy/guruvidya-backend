@@ -483,25 +483,27 @@ Status: ${record.status || "new"}
 Owner: ${record.owner || "Unassigned"}`;
 
   const payload = {
-    apiToken: config.botsailorToken,
-    phoneNumberID: config.botsailorInstanceId,
-    botTemplateID: config.botsailorTemplateId,
-    sendToPhoneNumber: record.mobile || "",
-    phone: record.mobile || "",
-    mobile: record.mobile || "",
-    message,
-    template
-  };
+  apiToken: config.botsailorToken,
+  phone_number_id: config.botsailorInstanceId,
+  message: message,
+  phone_number: cleanMobile(record.mobile || "")
+};
 
   try {
-    const response = await fetch(config.botsailorApiUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.botsailorToken}`
-      },
-      body: JSON.stringify(payload)
-    });
+    const formData = new URLSearchParams();
+
+formData.append("apiToken", config.botsailorToken);
+formData.append("phone_number_id", config.botsailorInstanceId);
+formData.append("message", message);
+formData.append("phone_number", cleanMobile(record.mobile || ""));
+
+const response = await fetch(config.botsailorApiUrl, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/x-www-form-urlencoded",
+  },
+  body: formData.toString(),
+});
 
     const text = await response.text();
     let data;
