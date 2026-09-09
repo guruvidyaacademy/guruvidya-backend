@@ -513,14 +513,27 @@ const response = await fetch(config.botsailorApiUrl, {
       data = { raw: text };
     }
 
-    addIntegrationLog("whatsapp", "send_message", response.ok ? "success" : "failed", payload, data);
+    const botSailorSuccess =
+  response.ok &&
+  (String(data?.status) === "1" || data?.success === true);
 
-    return {
-      success: response.ok,
-      status: response.ok ? "sent" : "failed",
-      message,
-      response: data
-    };
+await addIntegrationLog(
+  "whatsapp",
+  "send_message",
+  botSailorSuccess ? "success" : "failed",
+  payload,
+  data
+);
+
+console.log("BotSailor HTTP Status:", response.status);
+console.log("BotSailor Response:", data);
+
+return {
+  success: botSailorSuccess,
+  status: botSailorSuccess ? "sent" : "failed",
+  message,
+  response: data
+};
   } catch (err) {
     addIntegrationLog("whatsapp", "send_message", "failed", payload, { error: err.message });
     return {
