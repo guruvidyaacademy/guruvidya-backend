@@ -114,6 +114,22 @@ function cleanMobile(v = "") {
   return String(v || "").replace(/\D/g, "");
 }
 
+function botSailorPhone(v = "") {
+  let mobile = cleanMobile(v);
+
+  // Indian 10-digit mobile -> add country code 91 for BotSailor/WhatsApp API.
+  if (mobile.length === 10) {
+    mobile = `91${mobile}`;
+  }
+
+  // If number is stored as 0XXXXXXXXXX, remove 0 and add India country code.
+  if (mobile.length === 11 && mobile.startsWith("0")) {
+    mobile = `91${mobile.slice(1)}`;
+  }
+
+  return mobile;
+}
+
 function normalize(v = "") {
   return String(v || "").trim().toLowerCase();
 }
@@ -499,7 +515,7 @@ async function sendBotSailorText(record, message, action = "send_message") {
   const payload = {
     apiToken: config.botsailorToken,
     phone_number_id: config.botsailorInstanceId,
-    phone_number: cleanMobile(record.mobile || ""),
+    phone_number: botSailorPhone(record.mobile || ""),
     message: finalMessage,
   };
 
@@ -546,7 +562,7 @@ async function sendBotSailorInteractiveCall(record, message, action = "send_call
       `${action}_call_flow`,
       "failed",
       {
-        phone_number: cleanMobile(record.mobile || ""),
+        phone_number: botSailorPhone(record.mobile || ""),
         reason: "missing_call_flow",
       },
       { message: warning }
@@ -599,7 +615,7 @@ async function triggerBotSailorFlow(phone, uniqueId) {
     apiToken: config.botsailorToken,
     phone_number_id: config.botsailorInstanceId,
     bot_flow_unique_id: uniqueId,
-    phone_number: cleanMobile(phone),
+    phone_number: botSailorPhone(phone),
   };
 
   const result = await botSailorPost("https://botsailor.com/api/v1/whatsapp/trigger-bot", payload);
@@ -627,7 +643,7 @@ async function sendBotSailorTemplate(record, templateRecord, variables = {}) {
     apiToken: config.botsailorToken,
     phoneNumberID: config.botsailorInstanceId,
     botTemplateID: templateRecord.botsailor_id,
-    sendToPhoneNumber: cleanMobile(record.mobile || ""),
+    sendToPhoneNumber: botSailorPhone(record.mobile || ""),
     ...variables,
   };
 
@@ -637,7 +653,7 @@ async function sendBotSailorTemplate(record, templateRecord, variables = {}) {
     "send_template",
     result.success ? "success" : "failed",
     {
-      phone: cleanMobile(record.mobile || ""),
+      phone: botSailorPhone(record.mobile || ""),
       template: templateRecord.template_name,
       botTemplateID: templateRecord.botsailor_id,
       variables,
