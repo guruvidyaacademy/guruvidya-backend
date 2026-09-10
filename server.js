@@ -852,39 +852,92 @@ const hotLeads = leads.filter(
   }
 });
 // Integration Panel APIs
-app.get("/api/admin/integrations", (req, res) => {
-  res.json({
-    success: true,
-    data: {
-      whatsappEnabled: config.whatsappEnabled,
-      botsailorApiUrl: config.botsailorApiUrl,
-      botsailorToken: config.botsailorToken,
-      botsailorInstanceId: config.botsailorInstanceId,
-      botsailorTemplateId: config.botsailorTemplateId,
+app.get("/api/admin/integrations", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT config FROM integration_settings WHERE id = 1"
+    );
 
-      razorpayEnabled: config.razorpayEnabled,
-      razorpayKeyId: config.razorpayKeyId,
-      razorpayKeySecret: config.razorpayKeySecret,
-
-      youtubeEnabled: config.youtubeEnabled,
-      youtubeApiKey: config.youtubeApiKey,
-
-      myoperatorEnabled: config.myoperatorEnabled,
-      myoperatorApiKey: config.myoperatorApiKey,
-
-      aiEnabled: config.aiEnabled,
-      aiProvider: config.aiProvider,
-      aiApiKey: config.aiApiKey,
-      aiMode: config.aiMode
+    if (result.rows.length > 0) {
+      config = { ...config, ...result.rows[0].config };
     }
-  });
+
+    res.json({
+      success: true,
+      data: {
+        whatsappEnabled: config.whatsappEnabled,
+        botsailorApiUrl: config.botsailorApiUrl,
+        botsailorToken: config.botsailorToken,
+        botsailorInstanceId: config.botsailorInstanceId,
+        botsailorTemplateId: config.botsailorTemplateId,
+
+        razorpayEnabled: config.razorpayEnabled,
+        razorpayKeyId: config.razorpayKeyId,
+        razorpayKeySecret: config.razorpayKeySecret,
+
+        youtubeEnabled: config.youtubeEnabled,
+        youtubeApiKey: config.youtubeApiKey,
+
+        myoperatorEnabled: config.myoperatorEnabled,
+        myoperatorApiKey: config.myoperatorApiKey,
+
+        aiEnabled: config.aiEnabled,
+        aiProvider: config.aiProvider,
+        aiApiKey: config.aiApiKey,
+        aiMode: config.aiMode
+      }
+    });
+  } catch (err) {
+    console.error("❌ Integration settings load error:", err.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to load integration settings"
+    });
+  }
 });
 
-app.post("/api/admin/integrations", (req, res) => {
-  config = { ...config, ...req.body };
-  addAlert("integration_updated", "Integration settings updated", req.body);
-  addIntegrationLog("settings", "save", "success", req.body, { message: "Settings saved" });
-  res.json({ success: true, message: "Integration settings saved", data: config });
+app.post("/api/admin/integrations", async (req, res) => {
+  try {
+    config = { ...config, ...req.body };
+
+    await pool.query(
+      `INSERT INTO integration_settings (id, config, updated_at)
+       VALUES (1, $1::jsonb, CURRENT_TIMESTAMP)
+       ON CONFLICT (id)
+       DO UPDATE SET
+         config = EXCLUDED.config,
+         updated_at = CURRENT_TIMESTAMP`,
+      [JSON.stringify(config)]
+    );
+
+    await addAlert(
+      "integration_updated",
+      "Integration settings updated",
+      req.body
+    );
+
+    await addIntegrationLog(
+      "settings",
+      "save",
+      "success",
+      req.body,
+      { message: "Settings saved permanently" }
+    );
+
+    res.json({
+      success: true,
+      message: "Integration settings saved",
+      data: config
+    });
+  } catch (err) {
+    console.error("❌ Integration settings save error:", err.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to save integration settings"
+    });
+  }
 });
 
 app.post("/api/admin/integrations/botsailor/test", async (req, res) => {
