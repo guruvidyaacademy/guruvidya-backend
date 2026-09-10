@@ -1553,26 +1553,106 @@ function extractButtonReplyId(payload = {}) {
     payload.button_id ||
     payload.button_reply_id ||
     payload.postback_id ||
+    payload.button?.id ||
+    payload.button_reply?.id ||
     payload.interactive?.button_reply?.id ||
+    payload.message?.button?.payload ||
+    payload.message?.button?.id ||
     payload.message?.interactive?.button_reply?.id ||
+    payload.messages?.[0]?.button?.payload ||
+    payload.messages?.[0]?.button?.id ||
     payload.messages?.[0]?.interactive?.button_reply?.id ||
     ""
-  );
+  ).trim();
+}
+
+function extractButtonReplyTitle(payload = {}) {
+  return String(
+    payload.button_title ||
+    payload.button_text ||
+    payload.postback_title ||
+    payload.button?.title ||
+    payload.button_reply?.title ||
+    payload.interactive?.button_reply?.title ||
+    payload.message?.button?.text ||
+    payload.message?.button?.title ||
+    payload.message?.interactive?.button_reply?.title ||
+    payload.messages?.[0]?.button?.text ||
+    payload.messages?.[0]?.button?.title ||
+    payload.messages?.[0]?.interactive?.button_reply?.title ||
+    payload.text ||
+    payload.message?.text?.body ||
+    payload.messages?.[0]?.text?.body ||
+    ""
+  ).trim();
 }
 
 app.post("/api/webhook/botsailor", async (req, res) => {
   try {
     const payload = req.body || {};
+
+    // Always reload saved Automation/Integration settings so a Render restart
+    // cannot lose the selected "Call with Counselor" flow from memory.
+    await loadPersistedConfig();
+
     const mobile = extractWebhookMobile(payload);
     if (!mobile) {
       return res.status(200).json({ status: "ignored", message: "No mobile in payload" });
     }
 
-    // If CRM Call for Admission interactive button was clicked,
-    // trigger the existing BotSailor flow selected by Admin.
+    // BotSailor can return reply-button data in slightly different fields
+    // depending on webhook type. Match both our stable ID and visible title.
     const buttonId = extractButtonReplyId(payload);
-    if (buttonId === "crm_call_for_admission" && config.callForAdmissionFlowUniqueId) {
-      await triggerBotSailorFlow(mobile, config.callForAdmissionFlowUniqueId);
+    const buttonTitle = extractButtonReplyTitle(payload);
+    const normalizedButton = normalize(buttonTitle);
+
+    const isCallForAdmissionClick =
+      buttonId === "crm_call_for_admission" ||
+      normalize(buttonId) === "call for admission" ||
+      normalizedButton === "call for admission";
+
+    if (isCallForAdmissionClick) {
+      if (!config.callForAdmissionFlowUniqueId) {
+        console.log("⚠️ Call for Admission clicked but no BotSailor flow selected");
+        return res.status(200).json({
+          status: "ok",
+          message: "Call for Admission click received, but flow is not selected in Automation settings"
+        });
+      }
+
+      // Refresh the WhatsApp customer-service window for the existing lead,
+      // but don't count the button click as a re-enquiry.
+      await pool.query(
+        `UPDATE leads
+         SET last_customer_message_at = CURRENT_TIMESTAMP,
+             window_closing_sent_at = NULL,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE regexp_replace(COALESCE(mobile, ''), '\\D', '', 'g') = $1`,
+        [mobile]
+      );
+
+      const flowResult = await triggerBotSailorFlow(
+        mobile,
+        config.callForAdmissionFlowUniqueId
+      );
+
+      console.log("CRM Call for Admission click:", {
+        mobile,
+        buttonId,
+        buttonTitle,
+        flow: config.callForAdmissionFlowUniqueId,
+        success: flowResult.success
+      });
+
+      // Important: return here so the click is not processed again as
+      // a normal enquiry/re-enquiry message.
+      return res.status(flowResult.success ? 200 : 400).json({
+        status: flowResult.success ? "ok" : "failed",
+        message: flowResult.success
+          ? "Call with Counselor BotSailor flow triggered"
+          : (flowResult.message || "BotSailor flow trigger failed"),
+        flow: flowResult.response || null
+      });
     }
 
     const duplicateResult = await pool.query(
