@@ -78,7 +78,10 @@ const DEFAULT_CONFIG = {
   windowClosingMessage:
     "Hi {{name}}, do you need any assistance regarding your {{course}} enquiry?\n\nPlease reply YES if you would like our admission counsellor to assist you.\n\nOur counsellor will contact you during working hours (9:00 AM onwards).\n\nGuruvidya Academy",
 
-  // Existing BotSailor flow to be triggered after CRM Call for Admission button click.
+  // Existing BotSailor "Call us" flow.
+  // When 3h/6h "Call for Admission button" is ON, CRM sends the editable
+  // follow-up text and immediately triggers this BotSailor flow so its
+  // existing approved phone CTA / dial button is delivered.
   callForAdmissionFlowUniqueId: "",
 
   razorpayEnabled: false,
@@ -354,6 +357,7 @@ async function initDatabase() {
   `);
 
   console.log("✅ PostgreSQL tables + automation fields ready");
+  console.log("✅ Call follow-up mode: editable CRM text + BotSailor Call us CTA flow");
 }
 
 async function loadPersistedConfig() {
@@ -510,39 +514,85 @@ async function sendBotSailorText(record, message, action = "send_message") {
   return { ...result, messageText: finalMessage };
 }
 
-async function sendBotSailorInteractiveCall(record, message, action = "send_interactive_call") {
+async function sendBotSailorInteractiveCall(record, message, action = "send_call_followup") {
+  // IMPORTANT:
+  // BotSailor / WhatsApp "interactive-buttons" API creates REPLY buttons only.
+  // A direct phone dial CTA is delivered by the existing BotSailor "Call us"
+  // flow/template selected in Admin. Therefore:
+  // 1) send the editable CRM follow-up text;
+  // 2) immediately trigger the selected BotSailor Call-us flow.
+  //
+  // This avoids depending on a second webhook when the student taps a reply button.
+
   if (!config.whatsappEnabled) {
     return { success: false, status: "disabled", message: "WhatsApp disabled" };
   }
 
-  const finalMessage = renderMessage(message, record);
-  const payload = {
-    apiToken: config.botsailorToken,
-    phone_number_id: config.botsailorInstanceId,
-    phone_number: cleanMobile(record.mobile || ""),
-    message: finalMessage,
-    buttons: JSON.stringify([{ id: "crm_call_for_admission", title: "Call for Admission" }]),
-    button_footer_text: "Guruvidya Academy",
-  };
-
-  const result = await botSailorPost(
-    "https://botsailor.com/api/v1/whatsapp/send/interactive-buttons",
-    payload
+  const textResult = await sendBotSailorText(
+    record,
+    message,
+    `${action}_text`
   );
 
-  await addIntegrationLog("whatsapp", action, result.success ? "success" : "failed", {
-    phone_number_id: config.botsailorInstanceId,
-    phone_number: payload.phone_number,
-    message: finalMessage,
-    buttons: [{ id: "crm_call_for_admission", title: "Call for Admission" }],
-  }, result.response || { error: result.error || result.message });
+  if (!textResult.success) {
+    return textResult;
+  }
 
-  return { ...result, messageText: finalMessage };
+  if (!config.callForAdmissionFlowUniqueId) {
+    const warning = "Follow-up text sent, but BotSailor Call us flow is not selected in Automation settings";
+
+    await addIntegrationLog(
+      "whatsapp",
+      `${action}_call_flow`,
+      "failed",
+      {
+        phone_number: cleanMobile(record.mobile || ""),
+        reason: "missing_call_flow",
+      },
+      { message: warning }
+    );
+
+    return {
+      ...textResult,
+      success: true,
+      status: "sent_without_call_flow",
+      message: warning,
+      messageText: textResult.messageText,
+      response: {
+        text: textResult.response || {},
+        call_flow: { status: "missing_flow", message: warning },
+      },
+    };
+  }
+
+  const flowResult = await triggerBotSailorFlow(
+    record.mobile,
+    config.callForAdmissionFlowUniqueId
+  );
+
+  const overallSuccess = Boolean(textResult.success && flowResult.success);
+
+  return {
+    success: overallSuccess,
+    status: overallSuccess ? "sent" : "call_flow_failed",
+    message: overallSuccess
+      ? "Follow-up sent + BotSailor Call us flow triggered"
+      : `Follow-up text sent, but Call us flow failed: ${flowResult.message || "Unknown error"}`,
+    messageText: textResult.messageText,
+    response: {
+      text: textResult.response || {},
+      call_flow: flowResult.response || {
+        status: flowResult.status,
+        message: flowResult.message,
+      },
+    },
+    error: overallSuccess ? "" : (flowResult.error || flowResult.message || "Call us flow failed"),
+  };
 }
 
 async function triggerBotSailorFlow(phone, uniqueId) {
   if (!uniqueId) {
-    return { success: false, status: "missing_flow", message: "Call for Admission flow not selected" };
+    return { success: false, status: "missing_flow", message: "BotSailor Call us flow not selected" };
   }
 
   const payload = {
@@ -1592,7 +1642,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     const payload = req.body || {};
 
     // Always reload saved Automation/Integration settings so a Render restart
-    // cannot lose the selected "Call with Counselor" flow from memory.
+    // cannot lose the selected BotSailor "Call us" flow from memory.
     await loadPersistedConfig();
 
     const mobile = extractWebhookMobile(payload);
@@ -1600,60 +1650,10 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       return res.status(200).json({ status: "ignored", message: "No mobile in payload" });
     }
 
-    // BotSailor can return reply-button data in slightly different fields
-    // depending on webhook type. Match both our stable ID and visible title.
-    const buttonId = extractButtonReplyId(payload);
-    const buttonTitle = extractButtonReplyTitle(payload);
-    const normalizedButton = normalize(buttonTitle);
-
-    const isCallForAdmissionClick =
-      buttonId === "crm_call_for_admission" ||
-      normalize(buttonId) === "call for admission" ||
-      normalizedButton === "call for admission";
-
-    if (isCallForAdmissionClick) {
-      if (!config.callForAdmissionFlowUniqueId) {
-        console.log("⚠️ Call for Admission clicked but no BotSailor flow selected");
-        return res.status(200).json({
-          status: "ok",
-          message: "Call for Admission click received, but flow is not selected in Automation settings"
-        });
-      }
-
-      // Refresh the WhatsApp customer-service window for the existing lead,
-      // but don't count the button click as a re-enquiry.
-      await pool.query(
-        `UPDATE leads
-         SET last_customer_message_at = CURRENT_TIMESTAMP,
-             window_closing_sent_at = NULL,
-             updated_at = CURRENT_TIMESTAMP
-         WHERE regexp_replace(COALESCE(mobile, ''), '\\D', '', 'g') = $1`,
-        [mobile]
-      );
-
-      const flowResult = await triggerBotSailorFlow(
-        mobile,
-        config.callForAdmissionFlowUniqueId
-      );
-
-      console.log("CRM Call for Admission click:", {
-        mobile,
-        buttonId,
-        buttonTitle,
-        flow: config.callForAdmissionFlowUniqueId,
-        success: flowResult.success
-      });
-
-      // Important: return here so the click is not processed again as
-      // a normal enquiry/re-enquiry message.
-      return res.status(flowResult.success ? 200 : 400).json({
-        status: flowResult.success ? "ok" : "failed",
-        message: flowResult.success
-          ? "Call with Counselor BotSailor flow triggered"
-          : (flowResult.message || "BotSailor flow trigger failed"),
-        flow: flowResult.response || null
-      });
-    }
+    // CRM no longer depends on a "Call for Admission" reply-button webhook.
+    // When the 3h/6h call option is ON, the selected BotSailor "Call us"
+    // flow is triggered immediately after the CRM follow-up text is sent.
+    // Any genuine incoming customer message below still refreshes the 24h window.
 
     const duplicateResult = await pool.query(
       `SELECT * FROM leads
