@@ -531,6 +531,12 @@ async function sendBotSailorText(record, message, action = "send_message") {
 }
 
 async function sendBotSailorInteractiveCall(record, message, action = "send_call_followup") {
+  console.log("CTA DEBUG | sendBotSailorInteractiveCall start", {
+    action,
+    mobile: botSailorPhone(record?.mobile || ""),
+    callFlowUniqueId: config.callForAdmissionFlowUniqueId || "",
+  });
+
   // IMPORTANT:
   // BotSailor / WhatsApp "interactive-buttons" API creates REPLY buttons only.
   // A direct phone dial CTA is delivered by the existing BotSailor "Call us"
@@ -556,6 +562,7 @@ async function sendBotSailorInteractiveCall(record, message, action = "send_call
 
   if (!config.callForAdmissionFlowUniqueId) {
     const warning = "Follow-up text sent, but BotSailor Call us flow is not selected in Automation settings";
+    console.log("CTA DEBUG | missing callForAdmissionFlowUniqueId");
 
     await addIntegrationLog(
       "whatsapp",
@@ -586,6 +593,13 @@ async function sendBotSailorInteractiveCall(record, message, action = "send_call
     config.callForAdmissionFlowUniqueId
   );
 
+  console.log("CTA DEBUG | flow trigger result", {
+    success: flowResult.success,
+    status: flowResult.status,
+    message: flowResult.message,
+    response: flowResult.response || {},
+  });
+
   const overallSuccess = Boolean(textResult.success && flowResult.success);
 
   return {
@@ -608,6 +622,7 @@ async function sendBotSailorInteractiveCall(record, message, action = "send_call
 
 async function triggerBotSailorFlow(phone, uniqueId) {
   if (!uniqueId) {
+    console.log("CTA DEBUG | triggerBotSailorFlow blocked: missing uniqueId");
     return { success: false, status: "missing_flow", message: "BotSailor Call us flow not selected" };
   }
 
@@ -618,7 +633,22 @@ async function triggerBotSailorFlow(phone, uniqueId) {
     phone_number: botSailorPhone(phone),
   };
 
+  console.log("CTA DEBUG | triggering BotSailor flow", {
+    phone_number_id: config.botsailorInstanceId,
+    bot_flow_unique_id: uniqueId,
+    phone_number: payload.phone_number,
+  });
+
   const result = await botSailorPost("https://botsailor.com/api/v1/whatsapp/trigger-bot", payload);
+
+  console.log("CTA DEBUG | BotSailor trigger-bot raw result", {
+    success: result.success,
+    status: result.status,
+    httpStatus: result.httpStatus,
+    message: result.message,
+    response: result.response || {},
+  });
+
   await addIntegrationLog(
     "whatsapp",
     "trigger_bot_flow",
@@ -1158,6 +1188,14 @@ app.post("/api/admin/automation/test-mobile", async (req, res) => {
     let message = config.followup3Message;
     let useCallButton = Boolean(config.followup3UseCallButton);
 
+    console.log("CTA DEBUG | automation test config", {
+      stage,
+      mobile: botSailorPhone(mobile),
+      followup3UseCallButton: Boolean(config.followup3UseCallButton),
+      followup6UseCallButton: Boolean(config.followup6UseCallButton),
+      callForAdmissionFlowUniqueId: config.callForAdmissionFlowUniqueId || "",
+    });
+
     if (stage === "6h") {
       label = "test_followup_6h";
       message = config.followup6Message;
@@ -1182,6 +1220,59 @@ app.post("/api/admin/automation/test-mobile", async (req, res) => {
   } catch (err) {
     console.error("❌ Test-only WhatsApp error:", err.message);
     return res.status(500).json({ success: false, message: err.message || "Test send failed" });
+  }
+});
+
+app.post("/api/admin/automation/test-cta-only", async (req, res) => {
+  try {
+    await loadPersistedConfig();
+
+    const mobile = cleanMobile(req.body?.mobile || "");
+    if (!mobile || mobile.length < 10) {
+      return res.status(400).json({ success: false, message: "Valid test mobile number required" });
+    }
+
+    if (!config.whatsappEnabled) {
+      return res.status(400).json({ success: false, message: "WhatsApp is disabled in Integration Panel" });
+    }
+
+    if (!config.callForAdmissionFlowUniqueId) {
+      return res.status(400).json({
+        success: false,
+        message: "BotSailor Call us flow is not selected in Automation settings",
+        data: {
+          mobile: botSailorPhone(mobile),
+          callForAdmissionFlowUniqueId: "",
+        },
+      });
+    }
+
+    console.log("CTA DEBUG | CTA-only test requested", {
+      mobile: botSailorPhone(mobile),
+      callForAdmissionFlowUniqueId: config.callForAdmissionFlowUniqueId,
+    });
+
+    const result = await triggerBotSailorFlow(
+      mobile,
+      config.callForAdmissionFlowUniqueId
+    );
+
+    return res.status(result.success ? 200 : 400).json({
+      success: Boolean(result.success),
+      message: result.success
+        ? "CTA-only BotSailor flow triggered successfully"
+        : (result.message || "CTA-only BotSailor flow failed"),
+      data: {
+        mobile: botSailorPhone(mobile),
+        callForAdmissionFlowUniqueId: config.callForAdmissionFlowUniqueId,
+        response: result.response || null,
+        status: result.status,
+        httpStatus: result.httpStatus || null,
+      },
+    });
+  } catch (err) {
+    console.error("❌ CTA-only test error:", err.message);
+    return res.status(500).json({ success: false, message: err.message || "CTA-only test failed" });
   }
 });
 
