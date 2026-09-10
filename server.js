@@ -371,7 +371,7 @@ async function initDatabase() {
   `);
 
   console.log("✅ PostgreSQL tables + automation fields ready");
-  console.log("✅ Call follow-up mode: editable CRM text + direct approved BotSailor Call Us CTA template");
+  console.log("✅ Call follow-up mode: editable CRM text + direct approved BotSailor Call Us CTA template + auto-import fallback");
 }
 
 async function loadPersistedConfig() {
@@ -549,7 +549,7 @@ async function sendBotSailorInteractiveCall(record, message, action = "send_call
 
   if (!templateRecord) {
     const warning =
-      "Follow-up text sent, but approved Call Us template was not found. Import BotSailor templates first.";
+      "Follow-up text sent, but approved Call Us template was not found even after automatic BotSailor template import.";
 
     console.log("CTA TEMPLATE DEBUG | template not found");
 
@@ -663,35 +663,69 @@ async function triggerBotSailorFlow(phone, uniqueId) {
 }
 
 
-async function findCallUsTemplate() {
-  // Prefer a specifically saved template id when available.
-  if (config.botsailorTemplateId) {
-    const selected = await pool.query(
+async function findCallUsTemplate(autoImport = true) {
+  const lookup = async () => {
+    // Prefer a specifically saved template id when available.
+    if (config.botsailorTemplateId) {
+      const selected = await pool.query(
+        `SELECT * FROM whatsapp_templates
+         WHERE id::text = $1 OR botsailor_id = $1
+         ORDER BY imported_at DESC
+         LIMIT 1`,
+        [String(config.botsailorTemplateId)]
+      );
+      if (selected.rows.length) return selected.rows[0];
+    }
+
+    // Fallback to the approved Call Us template imported from BotSailor.
+    const fallback = await pool.query(
       `SELECT * FROM whatsapp_templates
-       WHERE id::text = $1 OR botsailor_id = $1
-       ORDER BY imported_at DESC
-       LIMIT 1`,
-      [String(config.botsailorTemplateId)]
+       WHERE LOWER(REPLACE(REPLACE(COALESCE(template_name,''), ' ', '_'), '-', '_'))
+             IN ('call_us','callus')
+          OR LOWER(COALESCE(template_name,'')) LIKE '%call%us%'
+       ORDER BY
+         CASE
+           WHEN LOWER(REPLACE(REPLACE(COALESCE(template_name,''), ' ', '_'), '-', '_')) = 'call_us' THEN 0
+           ELSE 1
+         END,
+         imported_at DESC
+       LIMIT 1`
     );
-    if (selected.rows.length) return selected.rows[0];
+
+    return fallback.rows[0] || null;
+  };
+
+  let templateRecord = await lookup();
+  if (templateRecord || !autoImport) return templateRecord;
+
+  console.log("CTA TEMPLATE DEBUG | call_us template missing locally, importing BotSailor templates");
+
+  const importResult = await importBotSailorTemplates();
+
+  console.log("CTA TEMPLATE DEBUG | auto import result", {
+    success: importResult.success,
+    status: importResult.status,
+    imported: importResult.imported || 0,
+    message: importResult.message || "",
+  });
+
+  if (!importResult.success) {
+    return null;
   }
 
-  // Fallback to the approved Call Us template imported from BotSailor.
-  const fallback = await pool.query(
-    `SELECT * FROM whatsapp_templates
-     WHERE LOWER(REPLACE(REPLACE(COALESCE(template_name,''), ' ', '_'), '-', '_'))
-           IN ('call_us','callus')
-        OR LOWER(COALESCE(template_name,'')) LIKE '%call%us%'
-     ORDER BY
-       CASE
-         WHEN LOWER(REPLACE(REPLACE(COALESCE(template_name,''), ' ', '_'), '-', '_')) = 'call_us' THEN 0
-         ELSE 1
-       END,
-       imported_at DESC
-     LIMIT 1`
-  );
+  templateRecord = await lookup();
 
-  return fallback.rows[0] || null;
+  if (templateRecord) {
+    console.log("CTA TEMPLATE DEBUG | call_us template found after auto import", {
+      id: templateRecord.id,
+      botsailor_id: templateRecord.botsailor_id,
+      template_name: templateRecord.template_name,
+    });
+  } else {
+    console.log("CTA TEMPLATE DEBUG | call_us template still not found after auto import");
+  }
+
+  return templateRecord;
 }
 
 function buildTemplateVariables(templateRecord, record = {}) {
@@ -1329,7 +1363,7 @@ app.post("/api/admin/automation/test-cta-only", async (req, res) => {
     if (!templateRecord) {
       return res.status(400).json({
         success: false,
-        message: "Approved Call Us template not found. Click Refresh Imported Templates first.",
+        message: "Approved Call Us template not found even after automatic BotSailor template import.",
       });
     }
 
