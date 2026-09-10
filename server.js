@@ -138,6 +138,12 @@ async function initDatabase() {
         payload JSONB DEFAULT '{}'::jsonb,
         response JSONB DEFAULT '{}'::jsonb,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+      CREATE TABLE IF NOT EXISTS integration_settings (
+        id INTEGER PRIMARY KEY,
+        config JSONB NOT NULL DEFAULT '{}'::jsonb,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
