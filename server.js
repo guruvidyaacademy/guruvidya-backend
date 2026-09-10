@@ -79,8 +79,13 @@ const DEFAULT_CONFIG = {
     "Hi {{name}}, do you need any assistance regarding your {{course}} enquiry?\n\nPlease reply YES if you would like our admission counsellor to assist you.\n\nOur counsellor will contact you during working hours (9:00 AM onwards).\n\nGuruvidya Academy",
 
   // Legacy field retained for backward compatibility.
-  // 3h/6h CTA delivery now uses the approved BotSailor Call Us template directly.
   callForAdmissionFlowUniqueId: "",
+
+  // BotSailor "Call with Counselor" flow.
+  // The 3h/6h WhatsApp message shows a reply button "Call for Admission".
+  // When the student taps it, CRM triggers this BotSailor flow, which contains
+  // the actual Call Us / phone CTA.
+  callWithCounselorFlowUniqueId: "430988",
 
   razorpayEnabled: false,
   razorpayKeyId: "",
@@ -371,7 +376,7 @@ async function initDatabase() {
   `);
 
   console.log("✅ PostgreSQL tables + automation fields ready");
-  console.log("✅ Call follow-up mode: editable CRM text + direct approved BotSailor Call Us CTA template + auto-import fallback");
+  console.log("✅ Call follow-up mode: single interactive message + Call for Admission reply button -> Call with Counselor flow");
 }
 
 async function loadPersistedConfig() {
@@ -528,99 +533,67 @@ async function sendBotSailorText(record, message, action = "send_message") {
   return { ...result, messageText: finalMessage };
 }
 
-async function sendBotSailorInteractiveCall(record, message, action = "send_call_followup") {
+async function sendBotSailorReplyButton(
+  record,
+  message,
+  action = "send_call_for_admission_button"
+) {
   if (!config.whatsappEnabled) {
     return { success: false, status: "disabled", message: "WhatsApp disabled" };
   }
 
-  console.log("CTA TEMPLATE DEBUG | start", {
-    action,
-    mobile: botSailorPhone(record?.mobile || ""),
-  });
-
-  // 1) Send the editable CRM session text.
-  const textResult = await sendBotSailorText(record, message, `${action}_text`);
-  if (!textResult.success) {
-    return textResult;
-  }
-
-  // 2) Send the approved BotSailor Call Us template directly.
-  const templateRecord = await findCallUsTemplate();
-
-  if (!templateRecord) {
-    const warning =
-      "Follow-up text sent, but approved Call Us template was not found even after automatic BotSailor template import.";
-
-    console.log("CTA TEMPLATE DEBUG | template not found");
-
-    await addIntegrationLog(
-      "whatsapp",
-      `${action}_call_template`,
-      "failed",
+  const finalMessage = renderMessage(message, record);
+  const payload = {
+    apiToken: config.botsailorToken,
+    phone_number_id: config.botsailorInstanceId,
+    phone_number: botSailorPhone(record.mobile || ""),
+    message: finalMessage,
+    buttons: [
       {
-        phone_number: botSailorPhone(record.mobile || ""),
-        reason: "missing_call_us_template",
+        id: "call_for_admission",
+        title: "Call for Admission",
       },
-      { message: warning }
-    );
+    ],
+  };
 
-    return {
-      ...textResult,
-      success: true,
-      status: "sent_without_call_template",
-      message: warning,
-      messageText: textResult.messageText,
-      response: {
-        text: textResult.response || {},
-        call_template: { status: "missing_template", message: warning },
-      },
-    };
-  }
-
-  const templateVariables = buildTemplateVariables(templateRecord, record);
-
-  console.log("CTA TEMPLATE DEBUG | sending approved template", {
-    templateDbId: templateRecord.id,
-    botTemplateID: templateRecord.botsailor_id,
-    templateName: templateRecord.template_name,
-    phone: botSailorPhone(record.mobile || ""),
-    variableKeys: Object.keys(templateVariables),
-  });
-
-  const templateResult = await sendBotSailorTemplate(
-    record,
-    templateRecord,
-    templateVariables
+  const result = await botSailorPost(
+    "https://botsailor.com/api/v1/whatsapp/send/interactive-buttons",
+    payload
   );
 
-  console.log("CTA TEMPLATE DEBUG | template result", {
-    success: templateResult.success,
-    status: templateResult.status,
-    message: templateResult.message,
-    httpStatus: templateResult.httpStatus,
-    response: templateResult.response || {},
+  await addIntegrationLog(
+    "whatsapp",
+    action,
+    result.success ? "success" : "failed",
+    {
+      phone_number_id: config.botsailorInstanceId,
+      phone_number: payload.phone_number,
+      message: finalMessage,
+      buttons: payload.buttons,
+    },
+    result.response || { error: result.error || result.message }
+  );
+
+  console.log("BotSailor Interactive Button:", {
+    success: result.success,
+    status: result.status,
+    message: result.message,
+    response: result.response || {},
   });
 
-  const overallSuccess = Boolean(textResult.success && templateResult.success);
-
   return {
-    success: overallSuccess,
-    status: overallSuccess ? "sent" : "call_template_failed",
-    message: overallSuccess
-      ? "Follow-up sent + approved Call Us CTA template sent"
-      : `Follow-up text sent, but Call Us template failed: ${templateResult.message || "Unknown error"}`,
-    messageText: textResult.messageText,
-    response: {
-      text: textResult.response || {},
-      call_template: templateResult.response || {
-        status: templateResult.status,
-        message: templateResult.message,
-      },
-    },
-    error: overallSuccess
-      ? ""
-      : (templateResult.error || templateResult.message || "Call Us template failed"),
+    ...result,
+    messageText: finalMessage,
   };
+}
+
+async function sendBotSailorInteractiveCall(record, message, action = "send_call_followup") {
+  // Single-message mode:
+  // Send the editable CRM follow-up as one WhatsApp interactive session message
+  // with the reply button "Call for Admission".
+  // The actual phone CTA is shown only after the student taps the button and
+  // the webhook triggers the BotSailor "Call with Counselor" flow.
+  return sendBotSailorReplyButton(record, message, action);
 }
 
 async function triggerBotSailorFlow(phone, uniqueId) {
@@ -1347,10 +1320,6 @@ app.post("/api/admin/automation/test-cta-only", async (req, res) => {
       return res.status(400).json({ success: false, message: "Valid test mobile number required" });
     }
 
-    if (!config.whatsappEnabled) {
-      return res.status(400).json({ success: false, message: "WhatsApp is disabled in Integration Panel" });
-    }
-
     const testRecord = {
       id: 0,
       name: String(req.body?.name || "Test Student").trim() || "Test Student",
@@ -1359,51 +1328,36 @@ app.post("/api/admin/automation/test-cta-only", async (req, res) => {
       owner: "Test Only",
     };
 
-    const templateRecord = await findCallUsTemplate();
-    if (!templateRecord) {
-      return res.status(400).json({
-        success: false,
-        message: "Approved Call Us template not found even after automatic BotSailor template import.",
-      });
-    }
+    const message =
+      req.body?.message ||
+      config.followup3Message ||
+      "Hi {{name}},\n\nDo you need any assistance regarding {{course}}?";
 
-    const variables = buildTemplateVariables(templateRecord, testRecord);
-
-    console.log("CTA TEMPLATE DEBUG | CTA-only test", {
-      mobile: botSailorPhone(mobile),
-      templateDbId: templateRecord.id,
-      botTemplateID: templateRecord.botsailor_id,
-      templateName: templateRecord.template_name,
-      variableKeys: Object.keys(variables),
-    });
-
-    const result = await sendBotSailorTemplate(
+    const result = await sendBotSailorReplyButton(
       testRecord,
-      templateRecord,
-      variables
+      message,
+      "test_call_for_admission_button"
     );
 
     return res.status(result.success ? 200 : 400).json({
       success: Boolean(result.success),
       message: result.success
-        ? "CTA-only approved Call Us template sent successfully"
-        : (result.message || "CTA-only Call Us template failed"),
+        ? "Single WhatsApp message sent with Call for Admission button"
+        : (result.message || "Interactive button test failed"),
       data: {
         mobile: botSailorPhone(mobile),
-        template: {
-          id: templateRecord.id,
-          botsailor_id: templateRecord.botsailor_id,
-          name: templateRecord.template_name,
-        },
-        variables,
+        buttonId: "call_for_admission",
+        buttonTitle: "Call for Admission",
+        counselorFlowId: config.callWithCounselorFlowUniqueId || "430988",
         response: result.response || null,
-        status: result.status,
-        httpStatus: result.httpStatus || null,
       },
     });
   } catch (err) {
-    console.error("❌ CTA-only template test error:", err.message);
-    return res.status(500).json({ success: false, message: err.message || "CTA-only template test failed" });
+    console.error("❌ CTA-only interactive test error:", err.message);
+    return res.status(500).json({
+      success: false,
+      message: err.message || "CTA-only interactive test failed",
+    });
   }
 });
 
@@ -1457,6 +1411,7 @@ app.get("/api/admin/integrations", async (req, res) => {
         botsailorToken: config.botsailorToken,
         botsailorInstanceId: config.botsailorInstanceId,
         botsailorTemplateId: config.botsailorTemplateId,
+        callWithCounselorFlowUniqueId: config.callWithCounselorFlowUniqueId,
         razorpayEnabled: config.razorpayEnabled,
         razorpayKeyId: config.razorpayKeyId,
         razorpayKeySecret: config.razorpayKeySecret,
@@ -1888,11 +1843,59 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       return res.status(200).json({ status: "ignored", message: "No mobile in payload" });
     }
 
-    // CRM no longer depends on a "Call for Admission" reply-button webhook.
-    // When the 3h/6h call option is ON, the selected BotSailor "Call us"
-    // flow is triggered immediately after the CRM follow-up text is sent.
-    // Any genuine incoming customer message below still refreshes the 24h window.
+    const buttonReplyId = normalize(extractButtonReplyId(payload));
+    const buttonReplyTitle = normalize(extractButtonReplyTitle(payload));
 
+    const isCallForAdmissionClick =
+      buttonReplyId === "call_for_admission" ||
+      buttonReplyTitle === "call for admission";
+
+    if (isCallForAdmissionClick) {
+      const counselorFlowId =
+        String(config.callWithCounselorFlowUniqueId || "430988").trim();
+
+      console.log("CTA CLICK DEBUG | Call for Admission clicked", {
+        mobile: botSailorPhone(mobile),
+        buttonReplyId,
+        buttonReplyTitle,
+        counselorFlowId,
+      });
+
+      // Refresh the customer's 24-hour window if this mobile already exists.
+      await pool.query(
+        `UPDATE leads
+         SET last_customer_message_at = CURRENT_TIMESTAMP,
+             window_closing_sent_at = NULL,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE regexp_replace(COALESCE(mobile, ''), '\\D', '', 'g')
+               IN ($1, $2)`,
+        [
+          cleanMobile(mobile),
+          cleanMobile(mobile).length === 12 && cleanMobile(mobile).startsWith("91")
+            ? cleanMobile(mobile).slice(2)
+            : cleanMobile(mobile),
+        ]
+      );
+
+      const flowResult = await triggerBotSailorFlow(mobile, counselorFlowId);
+
+      console.log("CTA CLICK DEBUG | Call with Counselor flow result", {
+        success: flowResult.success,
+        status: flowResult.status,
+        message: flowResult.message,
+        response: flowResult.response || {},
+      });
+
+      return res.status(flowResult.success ? 200 : 400).json({
+        status: flowResult.success ? "ok" : "error",
+        message: flowResult.success
+          ? "Call with Counselor flow triggered"
+          : (flowResult.message || "Failed to trigger Call with Counselor flow"),
+        flow: flowResult.response || null,
+      });
+    }
+
+    // Any other genuine incoming customer message refreshes the 24-hour window.
     const duplicateResult = await pool.query(
       `SELECT * FROM leads
        WHERE regexp_replace(COALESCE(mobile, ''), '\\D', '', 'g') = $1
