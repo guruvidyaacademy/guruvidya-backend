@@ -1066,6 +1066,59 @@ app.post("/api/admin/automation/run-now", async (req, res) => {
   res.json({ success: !result.error, data: result });
 });
 
+app.post("/api/admin/automation/test-mobile", async (req, res) => {
+  try {
+    await loadPersistedConfig();
+
+    const mobile = cleanMobile(req.body?.mobile || "");
+    const stage = String(req.body?.stage || "3h").trim().toLowerCase();
+
+    if (!mobile || mobile.length < 10) {
+      return res.status(400).json({ success: false, message: "Valid test mobile number required" });
+    }
+    if (!config.whatsappEnabled) {
+      return res.status(400).json({ success: false, message: "WhatsApp is disabled in Integration Panel" });
+    }
+
+    const testRecord = {
+      id: 0,
+      name: String(req.body?.name || "Test Student").trim() || "Test Student",
+      mobile,
+      course: String(req.body?.course || "ACCA Complete Course").trim() || "ACCA Complete Course",
+      owner: "Test Only"
+    };
+
+    let label = "test_followup_3h";
+    let message = config.followup3Message;
+    let useCallButton = Boolean(config.followup3UseCallButton);
+
+    if (stage === "6h") {
+      label = "test_followup_6h";
+      message = config.followup6Message;
+      useCallButton = Boolean(config.followup6UseCallButton);
+    } else if (stage === "9h") {
+      label = "test_followup_9h";
+      message = config.followup9Message;
+      useCallButton = Boolean(config.followup9UseCallButton);
+    } else if (stage === "window") {
+      label = "test_window_closing";
+      message = config.windowClosingMessage;
+      useCallButton = false;
+    }
+
+    const result = await sendAndLogText("automation_test", testRecord, label, message, useCallButton);
+
+    return res.status(result.success ? 200 : 400).json({
+      success: Boolean(result.success),
+      message: result.success ? "Test WhatsApp sent successfully" : (result.message || "Test send failed"),
+      data: { mobile, stage, usedCallButton: useCallButton, response: result.response || null }
+    });
+  } catch (err) {
+    console.error("❌ Test-only WhatsApp error:", err.message);
+    return res.status(500).json({ success: false, message: err.message || "Test send failed" });
+  }
+});
+
 app.get("/api/admin/pipeline", async (req, res) => {
   try {
     const result = await pool.query("SELECT * FROM leads ORDER BY id DESC");
