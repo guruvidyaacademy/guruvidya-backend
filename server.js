@@ -385,7 +385,7 @@ async function initDatabase() {
   `);
 
   console.log("✅ PostgreSQL tables + automation fields ready");
-  console.log("✅ Call follow-up mode: admin-selectable CTA action (Off / Existing Flow / Existing Template)");
+  console.log("✅ CTA mode: direct selected BotSailor Flow/Template; generic Call for Admission reply-button removed");
 }
 
 async function loadPersistedConfig() {
@@ -850,10 +850,93 @@ async function logWhatsAppSend(table, record, label, result) {
   return item;
 }
 
+async function sendConfiguredCtaAction(table, record, label, fallbackMessage) {
+  const mode = normalize(config.callForAdmissionActionMode || "template");
+
+  // OFF means no CTA action: send the normal CRM follow-up text only.
+  if (mode === "off") {
+    const result = await sendBotSailorText(record, fallbackMessage, `${label}_plain`);
+    await logWhatsAppSend(table, record, `${label}:plain`, result);
+    return result;
+  }
+
+  // FLOW mode: directly trigger the selected BotSailor flow.
+  // The selected flow itself owns its message/button title and next actions.
+  if (mode === "flow") {
+    const selectedFlowId = String(
+      config.callForAdmissionFlowUniqueId ||
+      config.callWithCounselorFlowUniqueId ||
+      ""
+    ).trim();
+
+    if (!selectedFlowId) {
+      const result = {
+        success: false,
+        status: "missing_flow",
+        message: "CTA mode is Flow but no BotSailor flow is selected",
+        response: {},
+        messageText: "Selected BotSailor flow missing",
+      };
+      await logWhatsAppSend(table, record, `${label}:flow`, result);
+      return result;
+    }
+
+    const result = await triggerBotSailorFlow(record.mobile, selectedFlowId);
+    const wrapped = {
+      ...result,
+      messageText: `BotSailor flow triggered: ${selectedFlowId}`,
+    };
+    await logWhatsAppSend(table, record, `${label}:flow`, wrapped);
+    return wrapped;
+  }
+
+  // TEMPLATE mode: directly send the selected approved BotSailor template.
+  // The template itself owns its CTA button title (for example "Got queries? Call us").
+  if (mode === "template") {
+    const templateRecord = await findSelectedCtaTemplate(true);
+
+    if (!templateRecord) {
+      const result = {
+        success: false,
+        status: "missing_template",
+        message: "CTA mode is Template but selected BotSailor template was not found/imported",
+        response: {},
+        messageText: "Selected BotSailor template missing",
+      };
+      await logWhatsAppSend(table, record, `${label}:template`, result);
+      return result;
+    }
+
+    const variables = buildTemplateVariables(templateRecord, record);
+    const result = await sendBotSailorTemplate(record, templateRecord, variables);
+    await logWhatsAppSend(
+      table,
+      record,
+      `${label}:template:${templateRecord.template_name}`,
+      result
+    );
+    return result;
+  }
+
+  const result = {
+    success: false,
+    status: "invalid_cta_mode",
+    message: `Invalid CTA action mode: ${config.callForAdmissionActionMode}`,
+    response: {},
+  };
+  await logWhatsAppSend(table, record, `${label}:invalid_mode`, result);
+  return result;
+}
+
 async function sendAndLogText(table, record, label, message, useCallButton = false) {
-  const result = useCallButton
-    ? await sendBotSailorInteractiveCall(record, message, label)
-    : await sendBotSailorText(record, message, label);
+  // No generic "Call for Admission" reply button anymore.
+  // If this stage has CTA enabled, directly send the selected BotSailor
+  // flow/template. This removes dependency on button-click webhooks.
+  if (useCallButton) {
+    return sendConfiguredCtaAction(table, record, label, message);
+  }
+
+  const result = await sendBotSailorText(record, message, label);
   await logWhatsAppSend(table, record, label, result);
   return result;
 }
@@ -1349,7 +1432,7 @@ app.post("/api/admin/automation/test-mobile", async (req, res) => {
 
     return res.status(result.success ? 200 : 400).json({
       success: Boolean(result.success),
-      message: result.success ? "Test WhatsApp sent successfully" : (result.message || "Test send failed"),
+      message: result.success ? "Test WhatsApp/CTA sent successfully" : (result.message || "Test send failed"),
       data: { mobile, stage, usedCallButton: useCallButton, response: result.response || null }
     });
   } catch (err) {
