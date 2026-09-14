@@ -1968,15 +1968,11 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     }
 
     if (isCallForAdmissionClick) {
-      const counselorFlowId =
-        String(config.callWithCounselorFlowUniqueId || "430988").trim();
-
-      console.log("CTA CLICK DEBUG | Call for Admission detected", {
+      console.log("CTA CLICK DEBUG | Call for Admission detected -> direct call_us template", {
         mobile: botSailorPhone(mobile),
         buttonReplyId,
         buttonReplyTitle,
         payloadCallForAdmission,
-        counselorFlowId,
       });
 
       // Refresh the customer's 24-hour window if this mobile already exists.
@@ -1995,21 +1991,63 @@ app.post("/api/webhook/botsailor", async (req, res) => {
         ]
       );
 
-      const flowResult = await triggerBotSailorFlow(mobile, counselorFlowId);
+      // Directly send the approved BotSailor call_us template (#7 / call_us).
+      // That approved template contains the actual "Got queries? Call us" phone CTA.
+      const templateRecord = await findCallUsTemplate(true);
 
-      console.log("CTA CLICK DEBUG | Call with Counselor flow result", {
-        success: flowResult.success,
-        status: flowResult.status,
-        message: flowResult.message,
-        response: flowResult.response || {},
+      if (!templateRecord) {
+        return res.status(400).json({
+          status: "error",
+          action: "direct_call_us_template",
+          message: "Approved call_us template not found/imported",
+        });
+      }
+
+      const clean = cleanMobile(mobile);
+      const clean10 =
+        clean.length === 12 && clean.startsWith("91") ? clean.slice(2) : clean;
+
+      const leadResult = await pool.query(
+        `SELECT * FROM leads
+         WHERE regexp_replace(COALESCE(mobile, ''), '\\D', '', 'g') IN ($1, $2)
+         ORDER BY updated_at DESC NULLS LAST, created_at DESC
+         LIMIT 1`,
+        [clean, clean10]
+      );
+
+      const record = leadResult.rows[0] || {
+        id: 0,
+        mobile,
+        name: payload.name || payload.first_name || "Student",
+        course: payload.course || "",
+      };
+
+      const variables = buildTemplateVariables(templateRecord, record);
+      const templateResult = await sendBotSailorTemplate(
+        record,
+        templateRecord,
+        variables
+      );
+
+      await logWhatsAppSend("leads", record, "call_us", templateResult);
+
+      console.log("CTA CLICK DEBUG | direct call_us template result", {
+        success: templateResult.success,
+        status: templateResult.status,
+        message: templateResult.message,
+        templateId: templateRecord.botsailor_id,
+        templateName: templateRecord.template_name,
       });
 
-      return res.status(flowResult.success ? 200 : 400).json({
-        status: flowResult.success ? "ok" : "error",
-        message: flowResult.success
-          ? "Call with Counselor flow triggered"
-          : (flowResult.message || "Failed to trigger Call with Counselor flow"),
-        flow: flowResult.response || null,
+      return res.status(templateResult.success ? 200 : 400).json({
+        status: templateResult.success ? "ok" : "error",
+        action: "direct_call_us_template",
+        message: templateResult.success
+          ? "call_us template sent"
+          : (templateResult.message || "Failed to send call_us template"),
+        template: templateRecord.template_name,
+        template_id: templateRecord.botsailor_id,
+        result: templateResult.response || null,
       });
     }
 
