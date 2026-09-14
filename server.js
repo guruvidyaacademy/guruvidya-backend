@@ -78,10 +78,19 @@ const DEFAULT_CONFIG = {
   windowClosingMessage:
     "Hi {{name}}, do you need any assistance regarding your {{course}} enquiry?\n\nPlease reply YES if you would like our admission counsellor to assist you.\n\nOur counsellor will contact you during working hours (9:00 AM onwards).\n\nGuruvidya Academy",
 
-  // Legacy field retained for backward compatibility.
+  // Call for Admission click action.
+  // Supported values:
+  //   "off"      -> no secondary action after button click
+  //   "flow"     -> trigger selected existing BotSailor flow
+  //   "template" -> send selected existing imported BotSailor template
+  callForAdmissionActionMode: "template",
+  callForAdmissionTemplateId: "",
+
+  // Selected existing BotSailor flow unique id.
+  // Kept separate from the old field so admin can switch between Flow / Template / Off.
   callForAdmissionFlowUniqueId: "",
 
-  // BotSailor "Call with Counselor" flow.
+  // Legacy/default BotSailor "Call with Counselor" flow.
   // The 3h/6h WhatsApp message shows a reply button "Call for Admission".
   // When the student taps it, CRM triggers this BotSailor flow, which contains
   // the actual Call Us / phone CTA.
@@ -376,7 +385,7 @@ async function initDatabase() {
   `);
 
   console.log("✅ PostgreSQL tables + automation fields ready");
-  console.log("✅ Call follow-up mode: interactive Call for Admission button + robust text/button webhook detection -> Call with Counselor flow");
+  console.log("✅ Call follow-up mode: admin-selectable CTA action (Off / Existing Flow / Existing Template)");
 }
 
 async function loadPersistedConfig() {
@@ -635,6 +644,38 @@ async function triggerBotSailorFlow(phone, uniqueId) {
   return result;
 }
 
+
+async function findSelectedCtaTemplate(autoImport = true) {
+  const selectedId = String(
+    config.callForAdmissionTemplateId ||
+    config.botsailorTemplateId ||
+    ""
+  ).trim();
+
+  const lookup = async () => {
+    if (selectedId) {
+      const selected = await pool.query(
+        `SELECT * FROM whatsapp_templates
+         WHERE id::text = $1 OR botsailor_id = $1
+         ORDER BY imported_at DESC
+         LIMIT 1`,
+        [selectedId]
+      );
+      if (selected.rows.length) return selected.rows[0];
+    }
+
+    return null;
+  };
+
+  let record = await lookup();
+  if (record || !autoImport) return record;
+
+  const importResult = await importBotSailorTemplates();
+  if (!importResult.success) return null;
+
+  record = await lookup();
+  return record;
+}
 
 async function findCallUsTemplate(autoImport = true) {
   const lookup = async () => {
@@ -1354,7 +1395,9 @@ app.post("/api/admin/automation/test-cta-only", async (req, res) => {
         mobile: botSailorPhone(mobile),
         buttonId: "call_for_admission",
         buttonTitle: "Call for Admission",
-        counselorFlowId: config.callWithCounselorFlowUniqueId || "430988",
+        ctaActionMode: config.callForAdmissionActionMode || "template",
+        selectedFlowUniqueId: config.callForAdmissionFlowUniqueId || "",
+        selectedTemplateId: config.callForAdmissionTemplateId || "",
         response: result.response || null,
       },
     });
@@ -1417,6 +1460,9 @@ app.get("/api/admin/integrations", async (req, res) => {
         botsailorToken: config.botsailorToken,
         botsailorInstanceId: config.botsailorInstanceId,
         botsailorTemplateId: config.botsailorTemplateId,
+        callForAdmissionActionMode: config.callForAdmissionActionMode,
+        callForAdmissionTemplateId: config.callForAdmissionTemplateId,
+        callForAdmissionFlowUniqueId: config.callForAdmissionFlowUniqueId,
         callWithCounselorFlowUniqueId: config.callWithCounselorFlowUniqueId,
         razorpayEnabled: config.razorpayEnabled,
         razorpayKeyId: config.razorpayKeyId,
@@ -1497,6 +1543,42 @@ app.get("/api/admin/botsailor/flows", async (req, res) => {
     res.json({ success: true, data: result.rows });
   } catch (err) {
     res.status(500).json({ success: false, message: "Failed to load bot flows" });
+  }
+});
+
+app.get("/api/admin/call-for-admission-options", async (req, res) => {
+  try {
+    await loadPersistedConfig();
+
+    const [flowsResult, templatesResult] = await Promise.all([
+      pool.query(
+        "SELECT id, botsailor_id, name, unique_id, status, imported_at FROM botsailor_flows ORDER BY imported_at DESC, name ASC"
+      ),
+      pool.query(
+        "SELECT id, botsailor_id, template_name, locale, status, imported_at FROM whatsapp_templates ORDER BY imported_at DESC, template_name ASC"
+      ),
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        mode: config.callForAdmissionActionMode || "template",
+        selectedFlowUniqueId: config.callForAdmissionFlowUniqueId || "",
+        selectedTemplateId: config.callForAdmissionTemplateId || "",
+        modes: [
+          { value: "off", label: "Off" },
+          { value: "flow", label: "Use Existing Flow" },
+          { value: "template", label: "Use Existing Template" },
+        ],
+        flows: flowsResult.rows,
+        templates: templatesResult.rows,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message: `Failed to load Call for Admission options: ${err.message}`,
+    });
   }
 });
 
@@ -1968,11 +2050,16 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     }
 
     if (isCallForAdmissionClick) {
-      console.log("CTA CLICK DEBUG | Call for Admission detected -> direct call_us template", {
+      const actionMode = normalize(config.callForAdmissionActionMode || "template");
+
+      console.log("CTA CLICK DEBUG | Call for Admission detected", {
         mobile: botSailorPhone(mobile),
         buttonReplyId,
         buttonReplyTitle,
         payloadCallForAdmission,
+        actionMode,
+        selectedFlow: config.callForAdmissionFlowUniqueId || "",
+        selectedTemplate: config.callForAdmissionTemplateId || "",
       });
 
       // Refresh the customer's 24-hour window if this mobile already exists.
@@ -1991,63 +2078,113 @@ app.post("/api/webhook/botsailor", async (req, res) => {
         ]
       );
 
-      // Directly send the approved BotSailor call_us template (#7 / call_us).
-      // That approved template contains the actual "Got queries? Call us" phone CTA.
-      const templateRecord = await findCallUsTemplate(true);
-
-      if (!templateRecord) {
-        return res.status(400).json({
-          status: "error",
-          action: "direct_call_us_template",
-          message: "Approved call_us template not found/imported",
+      // OFF mode: keep the reply recorded, but do not send/trigger anything else.
+      if (actionMode === "off") {
+        return res.status(200).json({
+          status: "ok",
+          action: "cta_off",
+          message: "Call for Admission click recorded; CTA action mode is OFF",
         });
       }
 
-      const clean = cleanMobile(mobile);
-      const clean10 =
-        clean.length === 12 && clean.startsWith("91") ? clean.slice(2) : clean;
+      // FLOW mode: trigger the flow selected in Admin.
+      if (actionMode === "flow") {
+        const selectedFlowId = String(
+          config.callForAdmissionFlowUniqueId ||
+          config.callWithCounselorFlowUniqueId ||
+          ""
+        ).trim();
 
-      const leadResult = await pool.query(
-        `SELECT * FROM leads
-         WHERE regexp_replace(COALESCE(mobile, ''), '\\D', '', 'g') IN ($1, $2)
-         ORDER BY updated_at DESC NULLS LAST, created_at DESC
-         LIMIT 1`,
-        [clean, clean10]
-      );
+        if (!selectedFlowId) {
+          return res.status(400).json({
+            status: "error",
+            action: "trigger_selected_flow",
+            message: "CTA mode is Flow but no BotSailor flow is selected",
+          });
+        }
 
-      const record = leadResult.rows[0] || {
-        id: 0,
-        mobile,
-        name: payload.name || payload.first_name || "Student",
-        course: payload.course || "",
-      };
+        const flowResult = await triggerBotSailorFlow(mobile, selectedFlowId);
 
-      const variables = buildTemplateVariables(templateRecord, record);
-      const templateResult = await sendBotSailorTemplate(
-        record,
-        templateRecord,
-        variables
-      );
+        return res.status(flowResult.success ? 200 : 400).json({
+          status: flowResult.success ? "ok" : "error",
+          action: "trigger_selected_flow",
+          message: flowResult.success
+            ? "Selected BotSailor flow triggered"
+            : (flowResult.message || "Failed to trigger selected BotSailor flow"),
+          flow_unique_id: selectedFlowId,
+          result: flowResult.response || null,
+        });
+      }
 
-      await logWhatsAppSend("leads", record, "call_us", templateResult);
+      // TEMPLATE mode: send the imported template selected in Admin.
+      if (actionMode === "template") {
+        const templateRecord = await findSelectedCtaTemplate(true);
 
-      console.log("CTA CLICK DEBUG | direct call_us template result", {
-        success: templateResult.success,
-        status: templateResult.status,
-        message: templateResult.message,
-        templateId: templateRecord.botsailor_id,
-        templateName: templateRecord.template_name,
-      });
+        if (!templateRecord) {
+          return res.status(400).json({
+            status: "error",
+            action: "send_selected_template",
+            message: "CTA mode is Template but selected BotSailor template was not found/imported",
+          });
+        }
 
-      return res.status(templateResult.success ? 200 : 400).json({
-        status: templateResult.success ? "ok" : "error",
-        action: "direct_call_us_template",
-        message: templateResult.success
-          ? "call_us template sent"
-          : (templateResult.message || "Failed to send call_us template"),
-        template: templateRecord.template_name,
-        template_id: templateRecord.botsailor_id,
-        result: templateResult.response || null,
+        const clean = cleanMobile(mobile);
+        const clean10 =
+          clean.length === 12 && clean.startsWith("91") ? clean.slice(2) : clean;
+
+        const leadResult = await pool.query(
+          `SELECT * FROM leads
+           WHERE regexp_replace(COALESCE(mobile, ''), '\\D', '', 'g') IN ($1, $2)
+           ORDER BY updated_at DESC NULLS LAST, created_at DESC
+           LIMIT 1`,
+          [clean, clean10]
+        );
+
+        const record = leadResult.rows[0] || {
+          id: 0,
+          mobile,
+          name: payload.name || payload.first_name || "Student",
+          course: payload.course || "",
+        };
+
+        const variables = buildTemplateVariables(templateRecord, record);
+        const templateResult = await sendBotSailorTemplate(
+          record,
+          templateRecord,
+          variables
+        );
+
+        await logWhatsAppSend(
+          "leads",
+          record,
+          `template:${templateRecord.template_name}`,
+          templateResult
+        );
+
+        console.log("CTA CLICK DEBUG | selected template result", {
+          success: templateResult.success,
+          status: templateResult.status,
+          message: templateResult.message,
+          templateId: templateRecord.botsailor_id,
+          templateName: templateRecord.template_name,
+        });
+
+        return res.status(templateResult.success ? 200 : 400).json({
+          status: templateResult.success ? "ok" : "error",
+          action: "send_selected_template",
+          message: templateResult.success
+            ? "Selected BotSailor template sent"
+            : (templateResult.message || "Failed to send selected BotSailor template"),
+          template: templateRecord.template_name,
+          template_id: templateRecord.botsailor_id,
+          result: templateResult.response || null,
+        });
+      }
+
+      return res.status(400).json({
+        status: "error",
+        action: "invalid_cta_mode",
+        message: `Invalid Call for Admission action mode: ${config.callForAdmissionActionMode}`,
       });
     }
 
