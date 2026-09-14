@@ -376,7 +376,7 @@ async function initDatabase() {
   `);
 
   console.log("✅ PostgreSQL tables + automation fields ready");
-  console.log("✅ Call follow-up mode: single interactive message + Call for Admission reply button -> Call with Counselor flow");
+  console.log("✅ Call follow-up mode: interactive Call for Admission button + robust text/button webhook detection -> Call with Counselor flow");
 }
 
 async function loadPersistedConfig() {
@@ -906,13 +906,19 @@ async function insertUnique(table, payload, options = {}) {
   const mobile = cleanMobile(payload.mobile || payload.phone || payload.whatsapp || "");
 
   if (table === "leads" && mobile) {
+    const webhookMobile = cleanMobile(mobile);
+    const webhookMobile10 =
+      webhookMobile.length === 12 && webhookMobile.startsWith("91")
+        ? webhookMobile.slice(2)
+        : webhookMobile;
+
     const duplicateResult = await pool.query(
       `SELECT * FROM leads
-       WHERE regexp_replace(COALESCE(mobile, ''), '\\D', '', 'g') = $1
+       WHERE regexp_replace(COALESCE(mobile, ''), '\\D', '', 'g') IN ($1, $2)
          AND created_at >= CURRENT_TIMESTAMP - INTERVAL '15 days'
        ORDER BY created_at DESC
        LIMIT 1`,
-      [mobile]
+      [webhookMobile, webhookMobile10]
     );
 
     if (duplicateResult.rows.length) {
@@ -1830,6 +1836,101 @@ function extractButtonReplyTitle(payload = {}) {
   ).trim();
 }
 
+function collectWebhookStrings(value, out = [], depth = 0) {
+  if (depth > 8 || value === null || value === undefined) return out;
+
+  if (typeof value === "string" || typeof value === "number") {
+    const str = String(value).trim();
+    if (str) out.push(str);
+    return out;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) collectWebhookStrings(item, out, depth + 1);
+    return out;
+  }
+
+  if (typeof value === "object") {
+    for (const item of Object.values(value)) {
+      collectWebhookStrings(item, out, depth + 1);
+    }
+  }
+
+  return out;
+}
+
+function normalizeLooseText(v = "") {
+  return String(v || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ");
+}
+
+function payloadHasCallForAdmission(payload = {}) {
+  const values = collectWebhookStrings(payload);
+
+  return values.some((value) => {
+    const txt = normalizeLooseText(value);
+    return (
+      txt === "call for admission" ||
+      txt === "call admission" ||
+      txt === "call for admissions" ||
+      txt.includes("call for admission")
+    );
+  });
+}
+
+function extractWebhookMobileRobust(payload = {}) {
+  const direct = extractWebhookMobile(payload);
+  if (direct) return direct;
+
+  const likelyPhoneKeys = new Set([
+    "from",
+    "mobile",
+    "phone",
+    "phone_number",
+    "phonenumber",
+    "wa_id",
+    "waid",
+    "contact",
+    "contact_id",
+    "contactid",
+    "sender",
+    "sender_id",
+    "senderid",
+    "whatsapp_number",
+    "whatsappnumber",
+  ]);
+
+  const found = [];
+
+  function walk(value, key = "", depth = 0) {
+    if (depth > 8 || value === null || value === undefined) return;
+
+    if (typeof value === "object") {
+      if (Array.isArray(value)) {
+        for (const item of value) walk(item, key, depth + 1);
+      } else {
+        for (const [k, v] of Object.entries(value)) {
+          walk(v, String(k).toLowerCase(), depth + 1);
+        }
+      }
+      return;
+    }
+
+    if (!likelyPhoneKeys.has(key)) return;
+
+    const digits = cleanMobile(value);
+    if (digits.length >= 10 && digits.length <= 15) {
+      found.push(digits);
+    }
+  }
+
+  walk(payload);
+  return found[0] || "";
+}
+
 app.post("/api/webhook/botsailor", async (req, res) => {
   try {
     const payload = req.body || {};
@@ -1838,26 +1939,43 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     // cannot lose the selected BotSailor "Call us" flow from memory.
     await loadPersistedConfig();
 
-    const mobile = extractWebhookMobile(payload);
-    if (!mobile) {
-      return res.status(200).json({ status: "ignored", message: "No mobile in payload" });
-    }
+    const mobile = extractWebhookMobileRobust(payload);
 
-    const buttonReplyId = normalize(extractButtonReplyId(payload));
-    const buttonReplyTitle = normalize(extractButtonReplyTitle(payload));
+    const buttonReplyId = normalizeLooseText(extractButtonReplyId(payload));
+    const buttonReplyTitle = normalizeLooseText(extractButtonReplyTitle(payload));
+    const payloadCallForAdmission = payloadHasCallForAdmission(payload);
 
     const isCallForAdmissionClick =
+      buttonReplyId === "call for admission" ||
       buttonReplyId === "call_for_admission" ||
-      buttonReplyTitle === "call for admission";
+      buttonReplyTitle === "call for admission" ||
+      payloadCallForAdmission;
+
+    console.log("BOTSAILOR WEBHOOK DEBUG", {
+      mobile: mobile ? botSailorPhone(mobile) : "",
+      buttonReplyId,
+      buttonReplyTitle,
+      payloadCallForAdmission,
+      topLevelKeys: Object.keys(payload || {}),
+    });
+
+    if (!mobile) {
+      return res.status(200).json({
+        status: "ignored",
+        message: "No mobile in payload",
+        detectedCallForAdmission: isCallForAdmissionClick,
+      });
+    }
 
     if (isCallForAdmissionClick) {
       const counselorFlowId =
         String(config.callWithCounselorFlowUniqueId || "430988").trim();
 
-      console.log("CTA CLICK DEBUG | Call for Admission clicked", {
+      console.log("CTA CLICK DEBUG | Call for Admission detected", {
         mobile: botSailorPhone(mobile),
         buttonReplyId,
         buttonReplyTitle,
+        payloadCallForAdmission,
         counselorFlowId,
       });
 
