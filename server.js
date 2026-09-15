@@ -94,13 +94,13 @@ const DEFAULT_CONFIG = {
 
   // Stage-specific CTA overrides.
   // 6h/9h default to the same CTA configuration as 3h.
-  followup6UseSameCtaAs3h: true,
+  followup6UseSameCtaAs3: true,
   followup6CtaActionMode: "template",
   followup6CtaTemplateId: "",
   followup6CtaTemplateCustomTitle: "Call for Admission",
   followup6CtaFlowUniqueId: "",
 
-  followup9UseSameCtaAs3h: true,
+  followup9UseSameCtaAs3: true,
   followup9CtaActionMode: "template",
   followup9CtaTemplateId: "",
   followup9CtaTemplateCustomTitle: "Call for Admission",
@@ -926,7 +926,7 @@ function getStageCtaConfig(label = "") {
     flowUniqueId: String(config.callForAdmissionFlowUniqueId || config.callWithCounselorFlowUniqueId || "").trim(),
   };
 
-  if (stage.includes("6h") && !Boolean(config.followup6UseSameCtaAs3h ?? true)) {
+  if (stage.includes("6h") && !Boolean(config.followup6UseSameCtaAs3 ?? true)) {
     return {
       stage: "6h",
       mode: normalize(config.followup6CtaActionMode || base.mode),
@@ -936,7 +936,7 @@ function getStageCtaConfig(label = "") {
     };
   }
 
-  if (stage.includes("9h") && !Boolean(config.followup9UseSameCtaAs3h ?? true)) {
+  if (stage.includes("9h") && !Boolean(config.followup9UseSameCtaAs3 ?? true)) {
     return {
       stage: "9h",
       mode: normalize(config.followup9CtaActionMode || base.mode),
