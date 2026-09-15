@@ -2105,7 +2105,9 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     // BotSailor incoming webhook encodes interactive replies like:
     // "#button_reply#Call us". Strip that transport marker before matching.
     const webhookUserMessage = webhookUserMessageRaw
-      .replace(/^#button_reply#/i, "")
+      // BotSailor currently sends "#button reply#<title>" (space),
+      // while some payload variants may use "#button_reply#<title>".
+      .replace(/^#button[ _-]*reply#/i, "")
       .trim();
 
     const payloadCallForAdmission = payloadHasCallForAdmission(payload);
