@@ -2092,7 +2092,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     const buttonReplyTitle = normalizeLooseText(extractButtonReplyTitle(payload));
 
     // BotSailor can deliver a button tap as a normal user_message.
-    const webhookUserMessage = normalizeLooseText(
+    const webhookUserMessageRaw = normalizeLooseText(
       payload.user_message ||
       payload.userMessage ||
       payload.message_text ||
@@ -2101,6 +2101,12 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       payload.replyText ||
       ""
     );
+
+    // BotSailor incoming webhook encodes interactive replies like:
+    // "#button_reply#Call us". Strip that transport marker before matching.
+    const webhookUserMessage = webhookUserMessageRaw
+      .replace(/^#button_reply#/i, "")
+      .trim();
 
     const payloadCallForAdmission = payloadHasCallForAdmission(payload);
 
@@ -2136,6 +2142,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       mobile: mobile ? botSailorPhone(mobile) : "",
       buttonReplyId,
       buttonReplyTitle,
+      webhookUserMessageRaw,
       webhookUserMessage,
       payloadCallForAdmission,
       topLevelKeys: Object.keys(payload || {}),
