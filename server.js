@@ -547,7 +547,8 @@ async function sendBotSailorText(record, message, action = "send_message") {
 async function sendBotSailorReplyButton(
   record,
   message,
-  action = "send_call_for_admission_button"
+  action = "send_call_for_admission_button",
+  buttonTitle = "Call for Admission"
 ) {
   if (!config.whatsappEnabled) {
     return { success: false, status: "disabled", message: "WhatsApp disabled" };
@@ -562,7 +563,7 @@ async function sendBotSailorReplyButton(
     buttons: [
       {
         id: "call_for_admission",
-        title: "Call for Admission",
+        title: String(buttonTitle || "Call for Admission").slice(0, 20),
       },
     ],
   };
@@ -868,86 +869,51 @@ function withCtaTitle(message, title) {
   return `${body}\n\n*${heading}*`;
 }
 
-async function sendConfiguredCtaAction(table, record, label, fallbackMessage) {
-  const mode = normalize(config.callForAdmissionActionMode || "template");
-
-  // OFF: only the normal editable CRM follow-up is sent.
-  if (mode === "off") {
-    const result = await sendBotSailorText(record, fallbackMessage, `${label}_plain`);
-    await logWhatsAppSend(table, record, `${label}:plain`, result);
-    return result;
-  }
-
-  // FLOW: send the editable CRM follow-up first, using the imported BotSailor
-  // flow name as the title. Then trigger that selected flow.
-  if (mode === "flow") {
-    const selectedFlowId = String(
-      config.callForAdmissionFlowUniqueId ||
-      config.callWithCounselorFlowUniqueId ||
-      ""
-    ).trim();
-
-    if (!selectedFlowId) {
-      const result = { success: false, status: "missing_flow", message: "CTA mode is Flow but no BotSailor flow is selected", response: {} };
-      await logWhatsAppSend(table, record, `${label}:flow`, result);
-      return result;
-    }
-
-    const flowRecord = await getSelectedFlowRecord(selectedFlowId);
-    const flowTitle = flowRecord?.name || "Call for Admission";
-    const introResult = await sendBotSailorText(
-      record,
-      withCtaTitle(fallbackMessage, flowTitle),
-      `${label}_flow_intro`
-    );
-    await logWhatsAppSend(table, record, `${label}:flow_intro:${flowTitle}`, introResult);
-    if (!introResult.success) return introResult;
-
-    const flowResult = await triggerBotSailorFlow(record.mobile, selectedFlowId);
-    const wrapped = {
-      ...flowResult,
-      messageText: `BotSailor flow triggered: ${flowTitle} (${selectedFlowId})`,
-    };
-    await logWhatsAppSend(table, record, `${label}:flow:${flowTitle}`, wrapped);
-    return wrapped;
-  }
-
-  // TEMPLATE: send the editable CRM follow-up first with an admin-editable
-  // custom title, then send the selected approved BotSailor template.
-  if (mode === "template") {
-    const templateRecord = await findSelectedCtaTemplate(true);
-    if (!templateRecord) {
-      const result = { success: false, status: "missing_template", message: "CTA mode is Template but selected BotSailor template was not found/imported", response: {} };
-      await logWhatsAppSend(table, record, `${label}:template`, result);
-      return result;
-    }
-
-    const customTitle = String(config.callForAdmissionTemplateCustomTitle || "Call for Admission").trim();
-    const introResult = await sendBotSailorText(
-      record,
-      withCtaTitle(fallbackMessage, customTitle),
-      `${label}_template_intro`
-    );
-    await logWhatsAppSend(table, record, `${label}:template_intro:${customTitle}`, introResult);
-    if (!introResult.success) return introResult;
-
-    const variables = buildTemplateVariables(templateRecord, record);
-    const templateResult = await sendBotSailorTemplate(record, templateRecord, variables);
-    await logWhatsAppSend(table, record, `${label}:template:${templateRecord.template_name}`, templateResult);
-    return templateResult;
-  }
-
-  const result = { success: false, status: "invalid_cta_mode", message: `Invalid CTA action mode: ${config.callForAdmissionActionMode}`, response: {} };
-  await logWhatsAppSend(table, record, `${label}:invalid_mode`, result);
-  return result;
-}
-
 async function sendAndLogText(table, record, label, message, useCallButton = false) {
-  // No generic "Call for Admission" reply button anymore.
-  // If this stage has CTA enabled, directly send the selected BotSailor
-  // flow/template. This removes dependency on button-click webhooks.
+  // CTA-enabled stages always send ONE interactive CRM follow-up first.
+  // Flow/Template is executed only after the student taps the button and
+  // /api/webhook/botsailor receives "Call for Admission".
   if (useCallButton) {
-    return sendConfiguredCtaAction(table, record, label, message);
+    const mode = normalize(config.callForAdmissionActionMode || "template");
+
+    // OFF = plain follow-up only; no clickable CTA.
+    if (mode === "off") {
+      const result = await sendBotSailorText(record, message, `${label}_plain`);
+      await logWhatsAppSend(table, record, `${label}:plain`, result);
+      return result;
+    }
+
+    // Template gets the admin-editable custom title on the reply button.
+    // Flow gets the imported BotSailor flow name on the reply button.
+    let buttonTitle = "Call for Admission";
+
+    if (mode === "template") {
+      buttonTitle = String(
+        config.callForAdmissionTemplateCustomTitle || "Call for Admission"
+      ).trim() || "Call for Admission";
+    } else if (mode === "flow") {
+      const selectedFlowId = String(
+        config.callForAdmissionFlowUniqueId ||
+        config.callWithCounselorFlowUniqueId ||
+        ""
+      ).trim();
+      const flowRecord = selectedFlowId
+        ? await getSelectedFlowRecord(selectedFlowId)
+        : null;
+      buttonTitle = String(flowRecord?.name || "Call for Admission").trim();
+    }
+
+    // WhatsApp reply-button title max is 20 characters.
+    buttonTitle = buttonTitle.slice(0, 20);
+
+    const result = await sendBotSailorReplyButton(
+      record,
+      message,
+      `${label}_cta_button`,
+      buttonTitle
+    );
+    await logWhatsAppSend(table, record, `${label}:cta_button:${mode}`, result);
+    return result;
   }
 
   const result = await sendBotSailorText(record, message, label);
@@ -2126,10 +2092,27 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     const buttonReplyTitle = normalizeLooseText(extractButtonReplyTitle(payload));
     const payloadCallForAdmission = payloadHasCallForAdmission(payload);
 
+    const selectedFlowForClick = String(
+      config.callForAdmissionFlowUniqueId ||
+      config.callWithCounselorFlowUniqueId ||
+      ""
+    ).trim();
+    const selectedFlowRecordForClick = selectedFlowForClick
+      ? await getSelectedFlowRecord(selectedFlowForClick)
+      : null;
+    const configuredTemplateTitle = normalizeLooseText(
+      config.callForAdmissionTemplateCustomTitle || "Call for Admission"
+    );
+    const configuredFlowTitle = normalizeLooseText(
+      selectedFlowRecordForClick?.name || ""
+    );
+
     const isCallForAdmissionClick =
       buttonReplyId === "call for admission" ||
       buttonReplyId === "call_for_admission" ||
       buttonReplyTitle === "call for admission" ||
+      (configuredTemplateTitle && buttonReplyTitle === configuredTemplateTitle) ||
+      (configuredFlowTitle && buttonReplyTitle === configuredFlowTitle) ||
       payloadCallForAdmission;
 
     console.log("BOTSAILOR WEBHOOK DEBUG", {
