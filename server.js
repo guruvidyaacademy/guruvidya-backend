@@ -85,6 +85,8 @@ const DEFAULT_CONFIG = {
   //   "template" -> send selected existing imported BotSailor template
   callForAdmissionActionMode: "template",
   callForAdmissionTemplateId: "",
+  // Editable label/title shown with CRM follow-up before the selected template.
+  callForAdmissionTemplateCustomTitle: "Call for Admission",
 
   // Selected existing BotSailor flow unique id.
   // Kept separate from the old field so admin can switch between Flow / Template / Off.
@@ -850,18 +852,34 @@ async function logWhatsAppSend(table, record, label, result) {
   return item;
 }
 
+async function getSelectedFlowRecord(uniqueId) {
+  if (!uniqueId) return null;
+  const result = await pool.query(
+    `SELECT * FROM botsailor_flows WHERE unique_id = $1 ORDER BY imported_at DESC LIMIT 1`,
+    [String(uniqueId)]
+  );
+  return result.rows[0] || null;
+}
+
+function withCtaTitle(message, title) {
+  const body = String(message || "").trim();
+  const heading = String(title || "").trim();
+  if (!heading) return body;
+  return `${body}\n\n*${heading}*`;
+}
+
 async function sendConfiguredCtaAction(table, record, label, fallbackMessage) {
   const mode = normalize(config.callForAdmissionActionMode || "template");
 
-  // OFF means no CTA action: send the normal CRM follow-up text only.
+  // OFF: only the normal editable CRM follow-up is sent.
   if (mode === "off") {
     const result = await sendBotSailorText(record, fallbackMessage, `${label}_plain`);
     await logWhatsAppSend(table, record, `${label}:plain`, result);
     return result;
   }
 
-  // FLOW mode: directly trigger the selected BotSailor flow.
-  // The selected flow itself owns its message/button title and next actions.
+  // FLOW: send the editable CRM follow-up first, using the imported BotSailor
+  // flow name as the title. Then trigger that selected flow.
   if (mode === "flow") {
     const selectedFlowId = String(
       config.callForAdmissionFlowUniqueId ||
@@ -870,60 +888,56 @@ async function sendConfiguredCtaAction(table, record, label, fallbackMessage) {
     ).trim();
 
     if (!selectedFlowId) {
-      const result = {
-        success: false,
-        status: "missing_flow",
-        message: "CTA mode is Flow but no BotSailor flow is selected",
-        response: {},
-        messageText: "Selected BotSailor flow missing",
-      };
+      const result = { success: false, status: "missing_flow", message: "CTA mode is Flow but no BotSailor flow is selected", response: {} };
       await logWhatsAppSend(table, record, `${label}:flow`, result);
       return result;
     }
 
-    const result = await triggerBotSailorFlow(record.mobile, selectedFlowId);
+    const flowRecord = await getSelectedFlowRecord(selectedFlowId);
+    const flowTitle = flowRecord?.name || "Call for Admission";
+    const introResult = await sendBotSailorText(
+      record,
+      withCtaTitle(fallbackMessage, flowTitle),
+      `${label}_flow_intro`
+    );
+    await logWhatsAppSend(table, record, `${label}:flow_intro:${flowTitle}`, introResult);
+    if (!introResult.success) return introResult;
+
+    const flowResult = await triggerBotSailorFlow(record.mobile, selectedFlowId);
     const wrapped = {
-      ...result,
-      messageText: `BotSailor flow triggered: ${selectedFlowId}`,
+      ...flowResult,
+      messageText: `BotSailor flow triggered: ${flowTitle} (${selectedFlowId})`,
     };
-    await logWhatsAppSend(table, record, `${label}:flow`, wrapped);
+    await logWhatsAppSend(table, record, `${label}:flow:${flowTitle}`, wrapped);
     return wrapped;
   }
 
-  // TEMPLATE mode: directly send the selected approved BotSailor template.
-  // The template itself owns its CTA button title (for example "Got queries? Call us").
+  // TEMPLATE: send the editable CRM follow-up first with an admin-editable
+  // custom title, then send the selected approved BotSailor template.
   if (mode === "template") {
     const templateRecord = await findSelectedCtaTemplate(true);
-
     if (!templateRecord) {
-      const result = {
-        success: false,
-        status: "missing_template",
-        message: "CTA mode is Template but selected BotSailor template was not found/imported",
-        response: {},
-        messageText: "Selected BotSailor template missing",
-      };
+      const result = { success: false, status: "missing_template", message: "CTA mode is Template but selected BotSailor template was not found/imported", response: {} };
       await logWhatsAppSend(table, record, `${label}:template`, result);
       return result;
     }
 
-    const variables = buildTemplateVariables(templateRecord, record);
-    const result = await sendBotSailorTemplate(record, templateRecord, variables);
-    await logWhatsAppSend(
-      table,
+    const customTitle = String(config.callForAdmissionTemplateCustomTitle || "Call for Admission").trim();
+    const introResult = await sendBotSailorText(
       record,
-      `${label}:template:${templateRecord.template_name}`,
-      result
+      withCtaTitle(fallbackMessage, customTitle),
+      `${label}_template_intro`
     );
-    return result;
+    await logWhatsAppSend(table, record, `${label}:template_intro:${customTitle}`, introResult);
+    if (!introResult.success) return introResult;
+
+    const variables = buildTemplateVariables(templateRecord, record);
+    const templateResult = await sendBotSailorTemplate(record, templateRecord, variables);
+    await logWhatsAppSend(table, record, `${label}:template:${templateRecord.template_name}`, templateResult);
+    return templateResult;
   }
 
-  const result = {
-    success: false,
-    status: "invalid_cta_mode",
-    message: `Invalid CTA action mode: ${config.callForAdmissionActionMode}`,
-    response: {},
-  };
+  const result = { success: false, status: "invalid_cta_mode", message: `Invalid CTA action mode: ${config.callForAdmissionActionMode}`, response: {} };
   await logWhatsAppSend(table, record, `${label}:invalid_mode`, result);
   return result;
 }
@@ -1545,6 +1559,7 @@ app.get("/api/admin/integrations", async (req, res) => {
         botsailorTemplateId: config.botsailorTemplateId,
         callForAdmissionActionMode: config.callForAdmissionActionMode,
         callForAdmissionTemplateId: config.callForAdmissionTemplateId,
+        callForAdmissionTemplateCustomTitle: config.callForAdmissionTemplateCustomTitle,
         callForAdmissionFlowUniqueId: config.callForAdmissionFlowUniqueId,
         callWithCounselorFlowUniqueId: config.callWithCounselorFlowUniqueId,
         razorpayEnabled: config.razorpayEnabled,
@@ -1648,6 +1663,7 @@ app.get("/api/admin/call-for-admission-options", async (req, res) => {
         mode: config.callForAdmissionActionMode || "template",
         selectedFlowUniqueId: config.callForAdmissionFlowUniqueId || "",
         selectedTemplateId: config.callForAdmissionTemplateId || "",
+        templateCustomTitle: config.callForAdmissionTemplateCustomTitle || "Call for Admission",
         modes: [
           { value: "off", label: "Off" },
           { value: "flow", label: "Use Existing Flow" },
