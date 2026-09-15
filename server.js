@@ -949,6 +949,33 @@ function getStageCtaConfig(label = "") {
   return base;
 }
 
+async function getAllEffectiveCtaConfigs() {
+  const items = [
+    getStageCtaConfig("3h"),
+    getStageCtaConfig("6h"),
+    getStageCtaConfig("9h"),
+  ];
+
+  const resolved = [];
+  for (const item of items) {
+    let title = item.templateTitle || "Call for Admission";
+
+    if (item.mode === "flow") {
+      const flowRecord = item.flowUniqueId
+        ? await getSelectedFlowRecord(item.flowUniqueId)
+        : null;
+      title = String(flowRecord?.name || "Call for Admission").trim() || "Call for Admission";
+    }
+
+    resolved.push({
+      ...item,
+      visibleTitle: String(title).slice(0, 20),
+      normalizedTitle: normalizeLooseText(String(title).slice(0, 20)),
+    });
+  }
+  return resolved;
+}
+
 async function sendAndLogText(table, record, label, message, useCallButton = false) {
   // CTA-enabled stages always send ONE interactive CRM follow-up first.
   // Flow/Template is executed only after the student taps the button and
@@ -956,6 +983,18 @@ async function sendAndLogText(table, record, label, message, useCallButton = fal
   if (useCallButton) {
     const stageCta = getStageCtaConfig(label);
     const mode = stageCta.mode;
+
+    console.log("STAGE CTA DEBUG", {
+      label,
+      stage: stageCta.stage,
+      useCallButton,
+      mode,
+      templateId: stageCta.templateId,
+      templateTitle: stageCta.templateTitle,
+      flowUniqueId: stageCta.flowUniqueId,
+      followup6UseSameCtaAs3: config.followup6UseSameCtaAs3,
+      followup9UseSameCtaAs3: config.followup9UseSameCtaAs3,
+    });
 
     // OFF = plain follow-up only; no clickable CTA.
     if (mode === "off") {
@@ -986,7 +1025,7 @@ async function sendAndLogText(table, record, label, message, useCallButton = fal
       message,
       `${label}_cta_button`,
       buttonTitle,
-      `call_for_admission_${stageCta.stage}`
+      "call_for_admission"
     );
     await logWhatsAppSend(table, record, `${label}:cta_button:${mode}`, result);
     return result;
@@ -2188,6 +2227,15 @@ app.post("/api/webhook/botsailor", async (req, res) => {
 
     const payloadCallForAdmission = payloadHasCallForAdmission(payload);
 
+    const effectiveCtas = await getAllEffectiveCtaConfigs();
+    const incomingCtaTitle = webhookUserMessage || buttonReplyTitle;
+    const matchedStageCta = effectiveCtas.find(
+      (item) =>
+        item.mode !== "off" &&
+        item.normalizedTitle &&
+        incomingCtaTitle === item.normalizedTitle
+    ) || null;
+
     const selectedFlowForClick = String(
       config.callForAdmissionFlowUniqueId ||
       config.callWithCounselorFlowUniqueId ||
@@ -2220,6 +2268,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       (configuredFlowTitle &&
         (buttonReplyTitle === configuredFlowTitle ||
          webhookUserMessage === configuredFlowTitle)) ||
+      Boolean(matchedStageCta) ||
       payloadCallForAdmission;
 
     console.log("BOTSAILOR WEBHOOK DEBUG", {
@@ -2319,10 +2368,10 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     }
 
     if (isCallForAdmissionClick) {
-      const clickedStage =
-        buttonReplyId.includes("6h") ? "6h" :
-        buttonReplyId.includes("9h") ? "9h" : "3h";
-      const clickCta = getStageCtaConfig(clickedStage);
+      const clickedStage = matchedStageCta?.stage ||
+        (buttonReplyId.includes("6h") ? "6h" :
+         buttonReplyId.includes("9h") ? "9h" : "3h");
+      const clickCta = matchedStageCta || getStageCtaConfig(clickedStage);
       const actionMode = clickCta.mode;
 
       console.log("CTA CLICK DEBUG | Call for Admission detected", {
