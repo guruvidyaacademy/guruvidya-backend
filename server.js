@@ -387,7 +387,7 @@ async function initDatabase() {
   `);
 
   console.log("✅ PostgreSQL tables + automation fields ready");
-  console.log("✅ CTA mode: direct selected BotSailor Flow/Template; generic Call for Admission reply-button removed");
+  console.log("✅ CTA mode: click-based selected BotSailor Flow/Template action ready");
 }
 
 async function loadPersistedConfig() {
@@ -853,12 +853,24 @@ async function logWhatsAppSend(table, record, label, result) {
   return item;
 }
 
-async function getSelectedFlowRecord(uniqueId) {
-  if (!uniqueId) return null;
+async function getSelectedFlowRecord(flowValue) {
+  if (!flowValue) return null;
+
+  const value = String(flowValue).trim();
+
+  // Accept either the imported BotSailor unique_id or its numeric botsailor_id.
+  // This prevents an older/admin-saved numeric flow id (e.g. 430988) from being
+  // passed directly as bot_flow_unique_id when the API actually needs unique_id.
   const result = await pool.query(
-    `SELECT * FROM botsailor_flows WHERE unique_id = $1 ORDER BY imported_at DESC LIMIT 1`,
-    [String(uniqueId)]
+    `SELECT * FROM botsailor_flows
+     WHERE unique_id = $1 OR botsailor_id = $1
+     ORDER BY
+       CASE WHEN unique_id = $1 THEN 0 ELSE 1 END,
+       imported_at DESC
+     LIMIT 1`,
+    [value]
   );
+
   return result.rows[0] || null;
 }
 
@@ -2212,7 +2224,27 @@ app.post("/api/webhook/botsailor", async (req, res) => {
           });
         }
 
-        const flowResult = await triggerBotSailorFlow(mobile, selectedFlowId);
+        const selectedFlowRecord = await getSelectedFlowRecord(selectedFlowId);
+
+        if (!selectedFlowRecord?.unique_id) {
+          return res.status(400).json({
+            status: "error",
+            action: "trigger_selected_flow",
+            message: "Selected BotSailor flow is not present in imported flows. Refresh CTA Flows and select it again.",
+            selected_flow_value: selectedFlowId,
+          });
+        }
+
+        const actualFlowUniqueId = String(selectedFlowRecord.unique_id).trim();
+
+        console.log("CTA CLICK DEBUG | resolved selected flow", {
+          savedValue: selectedFlowId,
+          botsailorId: selectedFlowRecord.botsailor_id || "",
+          flowName: selectedFlowRecord.name || "",
+          actualUniqueId: actualFlowUniqueId,
+        });
+
+        const flowResult = await triggerBotSailorFlow(mobile, actualFlowUniqueId);
 
         return res.status(flowResult.success ? 200 : 400).json({
           status: flowResult.success ? "ok" : "error",
@@ -2220,7 +2252,9 @@ app.post("/api/webhook/botsailor", async (req, res) => {
           message: flowResult.success
             ? "Selected BotSailor flow triggered"
             : (flowResult.message || "Failed to trigger selected BotSailor flow"),
-          flow_unique_id: selectedFlowId,
+          flow_name: selectedFlowRecord.name || "",
+          botsailor_id: selectedFlowRecord.botsailor_id || "",
+          flow_unique_id: actualFlowUniqueId,
           result: flowResult.response || null,
         });
       }
