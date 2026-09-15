@@ -608,43 +608,65 @@ async function sendBotSailorInteractiveCall(record, message, action = "send_call
   return sendBotSailorReplyButton(record, message, action);
 }
 
-async function triggerBotSailorFlow(phone, uniqueId) {
-  if (!uniqueId) {
-    console.log("CTA DEBUG | triggerBotSailorFlow blocked: missing uniqueId");
-    return { success: false, status: "missing_flow", message: "BotSailor Call us flow not selected" };
+async function triggerBotSailorFlow(phone, flowRecordOrId) {
+  const flowRecord =
+    flowRecordOrId && typeof flowRecordOrId === "object"
+      ? flowRecordOrId
+      : { unique_id: String(flowRecordOrId || "").trim(), botsailor_id: "" };
+
+  const uniqueId = String(flowRecord?.unique_id || "").trim();
+  const botsailorId = String(flowRecord?.botsailor_id || "").trim();
+
+  if (!uniqueId && !botsailorId) {
+    console.log("CTA DEBUG | triggerBotSailorFlow blocked: missing flow identifier");
+    return { success: false, status: "missing_flow", message: "BotSailor flow not selected" };
   }
 
-  const payload = {
-    apiToken: config.botsailorToken,
-    phone_number_id: config.botsailorInstanceId,
-    bot_flow_unique_id: uniqueId,
-    phone_number: botSailorPhone(phone),
+  const tryTrigger = async (identifier, identifierType) => {
+    const payload = {
+      apiToken: config.botsailorToken,
+      phone_number_id: config.botsailorInstanceId,
+      bot_flow_unique_id: identifier,
+      phone_number: botSailorPhone(phone),
+    };
+
+    console.log("CTA DEBUG | triggering BotSailor flow", {
+      identifierType,
+      phone_number_id: config.botsailorInstanceId,
+      bot_flow_unique_id: identifier,
+      phone_number: payload.phone_number,
+    });
+
+    const result = await botSailorPost(
+      "https://botsailor.com/api/v1/whatsapp/trigger-bot",
+      payload
+    );
+
+    console.log("CTA DEBUG | BotSailor trigger-bot raw result", {
+      identifierType,
+      identifier,
+      success: result.success,
+      status: result.status,
+      httpStatus: result.httpStatus,
+      message: result.message,
+      response: result.response || {},
+    });
+
+    await addIntegrationLog(
+      "whatsapp",
+      `trigger_bot_flow_${identifierType}`,
+      result.success ? "success" : "failed",
+      { ...payload, apiToken: "***" },
+      result.response || { error: result.error || result.message }
+    );
+
+    return result;
   };
 
-  console.log("CTA DEBUG | triggering BotSailor flow", {
-    phone_number_id: config.botsailorInstanceId,
-    bot_flow_unique_id: uniqueId,
-    phone_number: payload.phone_number,
-  });
-
-  const result = await botSailorPost("https://botsailor.com/api/v1/whatsapp/trigger-bot", payload);
-
-  console.log("CTA DEBUG | BotSailor trigger-bot raw result", {
-    success: result.success,
-    status: result.status,
-    httpStatus: result.httpStatus,
-    message: result.message,
-    response: result.response || {},
-  });
-
-  await addIntegrationLog(
-    "whatsapp",
-    "trigger_bot_flow",
-    result.success ? "success" : "failed",
-    { ...payload, apiToken: "***" },
-    result.response || { error: result.error || result.message }
-  );
-  return result;
+  // Imported BotSailor unique_id is the primary identifier for trigger-bot.
+  const primaryId = uniqueId || botsailorId;
+  const primaryType = uniqueId ? "unique_id" : "botsailor_id";
+  return tryTrigger(primaryId, primaryType);
 }
 
 
@@ -2150,6 +2172,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       (configuredFlowTitle &&
         (buttonReplyTitle === configuredFlowTitle ||
          webhookUserMessage === configuredFlowTitle)) ||
+      webhookUserMessage === "instant call us" ||
       payloadCallForAdmission;
 
     console.log("BOTSAILOR WEBHOOK DEBUG", {
@@ -2244,7 +2267,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
           actualUniqueId: actualFlowUniqueId,
         });
 
-        const flowResult = await triggerBotSailorFlow(mobile, actualFlowUniqueId);
+        const flowResult = await triggerBotSailorFlow(mobile, selectedFlowRecord);
 
         return res.status(flowResult.success ? 200 : 400).json({
           status: flowResult.success ? "ok" : "error",
