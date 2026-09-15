@@ -2090,6 +2090,18 @@ app.post("/api/webhook/botsailor", async (req, res) => {
 
     const buttonReplyId = normalizeLooseText(extractButtonReplyId(payload));
     const buttonReplyTitle = normalizeLooseText(extractButtonReplyTitle(payload));
+
+    // BotSailor can deliver a button tap as a normal user_message.
+    const webhookUserMessage = normalizeLooseText(
+      payload.user_message ||
+      payload.userMessage ||
+      payload.message_text ||
+      payload.messageText ||
+      payload.reply_text ||
+      payload.replyText ||
+      ""
+    );
+
     const payloadCallForAdmission = payloadHasCallForAdmission(payload);
 
     const selectedFlowForClick = String(
@@ -2111,14 +2123,20 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       buttonReplyId === "call for admission" ||
       buttonReplyId === "call_for_admission" ||
       buttonReplyTitle === "call for admission" ||
-      (configuredTemplateTitle && buttonReplyTitle === configuredTemplateTitle) ||
-      (configuredFlowTitle && buttonReplyTitle === configuredFlowTitle) ||
+      webhookUserMessage === "call for admission" ||
+      (configuredTemplateTitle &&
+        (buttonReplyTitle === configuredTemplateTitle ||
+         webhookUserMessage === configuredTemplateTitle)) ||
+      (configuredFlowTitle &&
+        (buttonReplyTitle === configuredFlowTitle ||
+         webhookUserMessage === configuredFlowTitle)) ||
       payloadCallForAdmission;
 
     console.log("BOTSAILOR WEBHOOK DEBUG", {
       mobile: mobile ? botSailorPhone(mobile) : "",
       buttonReplyId,
       buttonReplyTitle,
+      webhookUserMessage,
       payloadCallForAdmission,
       topLevelKeys: Object.keys(payload || {}),
     });
