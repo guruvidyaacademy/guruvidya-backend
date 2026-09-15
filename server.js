@@ -608,65 +608,61 @@ async function sendBotSailorInteractiveCall(record, message, action = "send_call
   return sendBotSailorReplyButton(record, message, action);
 }
 
-async function triggerBotSailorFlow(phone, flowRecordOrId) {
-  const flowRecord =
-    flowRecordOrId && typeof flowRecordOrId === "object"
-      ? flowRecordOrId
-      : { unique_id: String(flowRecordOrId || "").trim(), botsailor_id: "" };
+async function sendDirectCounselorStep(record) {
+  const message =
+    "Dear {{name}},\n\n" +
+    "*Session with Guruvidya Admission Team*\n" +
+    "Upto 10 min\n" +
+    "By Phone Call\n" +
+    "Get all your queries answered regarding admission process.";
 
-  const uniqueId = String(flowRecord?.unique_id || "").trim();
-  const botsailorId = String(flowRecord?.botsailor_id || "").trim();
+  // This replaces the unreliable BotSailor trigger-bot execution.
+  // Student gets the same next step directly from CRM.
+  return sendBotSailorReplyButton(
+    record,
+    message,
+    "flow_direct_counselor_step",
+    "Instant Call us"
+  );
+}
 
-  if (!uniqueId && !botsailorId) {
-    console.log("CTA DEBUG | triggerBotSailorFlow blocked: missing flow identifier");
-    return { success: false, status: "missing_flow", message: "BotSailor flow not selected" };
+async function triggerBotSailorFlow(phone, uniqueId) {
+  if (!uniqueId) {
+    console.log("CTA DEBUG | triggerBotSailorFlow blocked: missing uniqueId");
+    return { success: false, status: "missing_flow", message: "BotSailor Call us flow not selected" };
   }
 
-  const tryTrigger = async (identifier, identifierType) => {
-    const payload = {
-      apiToken: config.botsailorToken,
-      phone_number_id: config.botsailorInstanceId,
-      bot_flow_unique_id: identifier,
-      phone_number: botSailorPhone(phone),
-    };
-
-    console.log("CTA DEBUG | triggering BotSailor flow", {
-      identifierType,
-      phone_number_id: config.botsailorInstanceId,
-      bot_flow_unique_id: identifier,
-      phone_number: payload.phone_number,
-    });
-
-    const result = await botSailorPost(
-      "https://botsailor.com/api/v1/whatsapp/trigger-bot",
-      payload
-    );
-
-    console.log("CTA DEBUG | BotSailor trigger-bot raw result", {
-      identifierType,
-      identifier,
-      success: result.success,
-      status: result.status,
-      httpStatus: result.httpStatus,
-      message: result.message,
-      response: result.response || {},
-    });
-
-    await addIntegrationLog(
-      "whatsapp",
-      `trigger_bot_flow_${identifierType}`,
-      result.success ? "success" : "failed",
-      { ...payload, apiToken: "***" },
-      result.response || { error: result.error || result.message }
-    );
-
-    return result;
+  const payload = {
+    apiToken: config.botsailorToken,
+    phone_number_id: config.botsailorInstanceId,
+    bot_flow_unique_id: uniqueId,
+    phone_number: botSailorPhone(phone),
   };
 
-  // Imported BotSailor unique_id is the primary identifier for trigger-bot.
-  const primaryId = uniqueId || botsailorId;
-  const primaryType = uniqueId ? "unique_id" : "botsailor_id";
-  return tryTrigger(primaryId, primaryType);
+  console.log("CTA DEBUG | triggering BotSailor flow", {
+    phone_number_id: config.botsailorInstanceId,
+    bot_flow_unique_id: uniqueId,
+    phone_number: payload.phone_number,
+  });
+
+  const result = await botSailorPost("https://botsailor.com/api/v1/whatsapp/trigger-bot", payload);
+
+  console.log("CTA DEBUG | BotSailor trigger-bot raw result", {
+    success: result.success,
+    status: result.status,
+    httpStatus: result.httpStatus,
+    message: result.message,
+    response: result.response || {},
+  });
+
+  await addIntegrationLog(
+    "whatsapp",
+    "trigger_bot_flow",
+    result.success ? "success" : "failed",
+    { ...payload, apiToken: "***" },
+    result.response || { error: result.error || result.message }
+  );
+  return result;
 }
 
 
@@ -2172,7 +2168,6 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       (configuredFlowTitle &&
         (buttonReplyTitle === configuredFlowTitle ||
          webhookUserMessage === configuredFlowTitle)) ||
-      webhookUserMessage === "instant call us" ||
       payloadCallForAdmission;
 
     console.log("BOTSAILOR WEBHOOK DEBUG", {
@@ -2222,6 +2217,71 @@ app.post("/api/webhook/botsailor", async (req, res) => {
         ]
       );
 
+      // Second step of CRM-direct Flow mode:
+      // "Instant Call us" must send the known working approved call_us template.
+      if (webhookUserMessage === "instant call us" || buttonReplyTitle === "instant call us") {
+        const templateRecord = await findCallUsTemplate(true);
+
+        if (!templateRecord) {
+          return res.status(400).json({
+            status: "error",
+            action: "flow_direct_send_call_us_template",
+            message: "Approved call_us template was not found/imported",
+          });
+        }
+
+        const clean = cleanMobile(mobile);
+        const clean10 =
+          clean.length === 12 && clean.startsWith("91") ? clean.slice(2) : clean;
+
+        const leadResult = await pool.query(
+          `SELECT * FROM leads
+           WHERE regexp_replace(COALESCE(mobile, ''), '\\D', '', 'g') IN ($1, $2)
+           ORDER BY updated_at DESC NULLS LAST, created_at DESC
+           LIMIT 1`,
+          [clean, clean10]
+        );
+
+        const record = leadResult.rows[0] || {
+          id: 0,
+          mobile,
+          name: payload.name || payload.first_name || "Student",
+          course: payload.course || "",
+        };
+
+        const variables = buildTemplateVariables(templateRecord, record);
+        const templateResult = await sendBotSailorTemplate(
+          record,
+          templateRecord,
+          variables
+        );
+
+        await logWhatsAppSend(
+          "leads",
+          record,
+          `flow_direct:template:${templateRecord.template_name}`,
+          templateResult
+        );
+
+        console.log("CTA CLICK DEBUG | Instant Call us -> call_us template", {
+          success: templateResult.success,
+          status: templateResult.status,
+          templateId: templateRecord.botsailor_id,
+          templateName: templateRecord.template_name,
+        });
+
+        return res.status(templateResult.success ? 200 : 400).json({
+          status: templateResult.success ? "ok" : "error",
+          action: "flow_direct_send_call_us_template",
+          message: templateResult.success
+            ? "call_us template sent after Instant Call us click"
+            : (templateResult.message || "Failed to send call_us template"),
+          template: templateRecord.template_name,
+          template_id: templateRecord.botsailor_id,
+          result: templateResult.response || null,
+        });
+      }
+
       // OFF mode: keep the reply recorded, but do not send/trigger anything else.
       if (actionMode === "off") {
         return res.status(200).json({
@@ -2231,54 +2291,53 @@ app.post("/api/webhook/botsailor", async (req, res) => {
         });
       }
 
-      // FLOW mode: trigger the flow selected in Admin.
+      // FLOW mode: CRM-direct fallback.
+      // BotSailor trigger-bot returns success for this account but does not execute
+      // the selected flow. Reproduce the required flow step directly:
+      // Call with Counselor -> Instant Call us.
       if (actionMode === "flow") {
-        const selectedFlowId = String(
-          config.callForAdmissionFlowUniqueId ||
-          config.callWithCounselorFlowUniqueId ||
-          ""
-        ).trim();
+        const clean = cleanMobile(mobile);
+        const clean10 =
+          clean.length === 12 && clean.startsWith("91") ? clean.slice(2) : clean;
 
-        if (!selectedFlowId) {
-          return res.status(400).json({
-            status: "error",
-            action: "trigger_selected_flow",
-            message: "CTA mode is Flow but no BotSailor flow is selected",
-          });
-        }
+        const leadResult = await pool.query(
+          `SELECT * FROM leads
+           WHERE regexp_replace(COALESCE(mobile, ''), '\\D', '', 'g') IN ($1, $2)
+           ORDER BY updated_at DESC NULLS LAST, created_at DESC
+           LIMIT 1`,
+          [clean, clean10]
+        );
 
-        const selectedFlowRecord = await getSelectedFlowRecord(selectedFlowId);
+        const record = leadResult.rows[0] || {
+          id: 0,
+          mobile,
+          name: payload.name || payload.first_name || "Student",
+          course: payload.course || "",
+        };
 
-        if (!selectedFlowRecord?.unique_id) {
-          return res.status(400).json({
-            status: "error",
-            action: "trigger_selected_flow",
-            message: "Selected BotSailor flow is not present in imported flows. Refresh CTA Flows and select it again.",
-            selected_flow_value: selectedFlowId,
-          });
-        }
+        const directResult = await sendDirectCounselorStep(record);
 
-        const actualFlowUniqueId = String(selectedFlowRecord.unique_id).trim();
+        await logWhatsAppSend(
+          "leads",
+          record,
+          "flow_direct:call_with_counselor",
+          directResult
+        );
 
-        console.log("CTA CLICK DEBUG | resolved selected flow", {
-          savedValue: selectedFlowId,
-          botsailorId: selectedFlowRecord.botsailor_id || "",
-          flowName: selectedFlowRecord.name || "",
-          actualUniqueId: actualFlowUniqueId,
+        console.log("CTA CLICK DEBUG | CRM-direct counselor step result", {
+          success: directResult.success,
+          status: directResult.status,
+          message: directResult.message,
+          mobile: botSailorPhone(mobile),
         });
 
-        const flowResult = await triggerBotSailorFlow(mobile, selectedFlowRecord);
-
-        return res.status(flowResult.success ? 200 : 400).json({
-          status: flowResult.success ? "ok" : "error",
-          action: "trigger_selected_flow",
-          message: flowResult.success
-            ? "Selected BotSailor flow triggered"
-            : (flowResult.message || "Failed to trigger selected BotSailor flow"),
-          flow_name: selectedFlowRecord.name || "",
-          botsailor_id: selectedFlowRecord.botsailor_id || "",
-          flow_unique_id: actualFlowUniqueId,
-          result: flowResult.response || null,
+        return res.status(directResult.success ? 200 : 400).json({
+          status: directResult.success ? "ok" : "error",
+          action: "flow_direct_counselor_step",
+          message: directResult.success
+            ? "Counselor step sent directly with Instant Call us button"
+            : (directResult.message || "Failed to send counselor step"),
+          result: directResult.response || null,
         });
       }
 
