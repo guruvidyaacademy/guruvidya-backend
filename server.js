@@ -2188,6 +2188,95 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       });
     }
 
+
+    // CRM-direct Flow step 2 MUST be handled before the generic CTA gate.
+    // BotSailor sends this reply as user_message "#button_reply#instant call us".
+    if (
+      webhookUserMessage === "instant call us" ||
+      buttonReplyTitle === "instant call us"
+    ) {
+      console.log("CTA CLICK DEBUG | Instant Call us detected before generic CTA gate", {
+        mobile,
+        webhookUserMessageRaw,
+        webhookUserMessage,
+        buttonReplyTitle,
+      });
+
+      // Refresh the WhatsApp 24-hour session timestamp.
+      if (mobile) {
+        await pool.query(
+          `UPDATE leads
+           SET last_user_reply_at = NOW(), updated_at = NOW()
+           WHERE regexp_replace(COALESCE(mobile, ''), '\\D', '', 'g')
+                 LIKE '%' || $1`,
+          [mobile.slice(-10)]
+        );
+      }
+
+      const templateRecord = await findCallUsTemplate(true);
+
+      if (!templateRecord) {
+        console.error("CTA CLICK DEBUG | call_us template not found");
+        return res.status(400).json({
+          status: "error",
+          action: "flow_direct_send_call_us_template",
+          message: "Approved call_us template was not found/imported",
+        });
+      }
+
+      const clean = cleanMobile(mobile);
+      const clean10 =
+        clean.length === 12 && clean.startsWith("91") ? clean.slice(2) : clean;
+
+      const leadResult = await pool.query(
+        `SELECT * FROM leads
+         WHERE regexp_replace(COALESCE(mobile, ''), '\\D', '', 'g') IN ($1, $2)
+         ORDER BY updated_at DESC NULLS LAST, created_at DESC
+         LIMIT 1`,
+        [clean, clean10]
+      );
+
+      const record = leadResult.rows[0] || {
+        id: 0,
+        mobile,
+        name: payload.name || payload.first_name || "Student",
+        course: payload.course || "",
+      };
+
+      const variables = buildTemplateVariables(templateRecord, record);
+      const templateResult = await sendBotSailorTemplate(
+        record,
+        templateRecord,
+        variables
+      );
+
+      await logWhatsAppSend(
+        "leads",
+        record,
+        `flow_direct:template:${templateRecord.template_name}`,
+        templateResult
+      );
+
+      console.log("CTA CLICK DEBUG | Instant Call us -> call_us template", {
+        success: templateResult.success,
+        status: templateResult.status,
+        templateId: templateRecord.botsailor_id,
+        templateName: templateRecord.template_name,
+        message: templateResult.message,
+      });
+
+      return res.status(templateResult.success ? 200 : 400).json({
+        status: templateResult.success ? "ok" : "error",
+        action: "flow_direct_send_call_us_template",
+        message: templateResult.success
+          ? "call_us template sent after Instant Call us click"
+          : (templateResult.message || "Failed to send call_us template"),
+        template: templateRecord.template_name,
+        template_id: templateRecord.botsailor_id,
+        result: templateResult.response || null,
+      });
+    }
+
     if (isCallForAdmissionClick) {
       const actionMode = normalize(config.callForAdmissionActionMode || "template");
 
@@ -2216,71 +2305,6 @@ app.post("/api/webhook/botsailor", async (req, res) => {
             : cleanMobile(mobile),
         ]
       );
-
-      // Second step of CRM-direct Flow mode:
-      // "Instant Call us" must send the known working approved call_us template.
-      if (webhookUserMessage === "instant call us" || buttonReplyTitle === "instant call us") {
-        const templateRecord = await findCallUsTemplate(true);
-
-        if (!templateRecord) {
-          return res.status(400).json({
-            status: "error",
-            action: "flow_direct_send_call_us_template",
-            message: "Approved call_us template was not found/imported",
-          });
-        }
-
-        const clean = cleanMobile(mobile);
-        const clean10 =
-          clean.length === 12 && clean.startsWith("91") ? clean.slice(2) : clean;
-
-        const leadResult = await pool.query(
-          `SELECT * FROM leads
-           WHERE regexp_replace(COALESCE(mobile, ''), '\\D', '', 'g') IN ($1, $2)
-           ORDER BY updated_at DESC NULLS LAST, created_at DESC
-           LIMIT 1`,
-          [clean, clean10]
-        );
-
-        const record = leadResult.rows[0] || {
-          id: 0,
-          mobile,
-          name: payload.name || payload.first_name || "Student",
-          course: payload.course || "",
-        };
-
-        const variables = buildTemplateVariables(templateRecord, record);
-        const templateResult = await sendBotSailorTemplate(
-          record,
-          templateRecord,
-          variables
-        );
-
-        await logWhatsAppSend(
-          "leads",
-          record,
-          `flow_direct:template:${templateRecord.template_name}`,
-          templateResult
-        );
-
-        console.log("CTA CLICK DEBUG | Instant Call us -> call_us template", {
-          success: templateResult.success,
-          status: templateResult.status,
-          templateId: templateRecord.botsailor_id,
-          templateName: templateRecord.template_name,
-        });
-
-        return res.status(templateResult.success ? 200 : 400).json({
-          status: templateResult.success ? "ok" : "error",
-          action: "flow_direct_send_call_us_template",
-          message: templateResult.success
-            ? "call_us template sent after Instant Call us click"
-            : (templateResult.message || "Failed to send call_us template"),
-          template: templateRecord.template_name,
-          template_id: templateRecord.botsailor_id,
-          result: templateResult.response || null,
-        });
-      }
 
       // OFF mode: keep the reply recorded, but do not send/trigger anything else.
       if (actionMode === "off") {
