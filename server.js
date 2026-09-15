@@ -92,6 +92,20 @@ const DEFAULT_CONFIG = {
   // Kept separate from the old field so admin can switch between Flow / Template / Off.
   callForAdmissionFlowUniqueId: "",
 
+  // Stage-specific CTA overrides.
+  // 6h/9h default to the same CTA configuration as 3h.
+  followup6UseSameCtaAs3h: true,
+  followup6CtaActionMode: "template",
+  followup6CtaTemplateId: "",
+  followup6CtaTemplateCustomTitle: "Call for Admission",
+  followup6CtaFlowUniqueId: "",
+
+  followup9UseSameCtaAs3h: true,
+  followup9CtaActionMode: "template",
+  followup9CtaTemplateId: "",
+  followup9CtaTemplateCustomTitle: "Call for Admission",
+  followup9CtaFlowUniqueId: "",
+
   // Legacy/default BotSailor "Call with Counselor" flow.
   // The 3h/6h WhatsApp message shows a reply button "Call for Admission".
   // When the student taps it, CRM triggers this BotSailor flow, which contains
@@ -548,7 +562,8 @@ async function sendBotSailorReplyButton(
   record,
   message,
   action = "send_call_for_admission_button",
-  buttonTitle = "Call for Admission"
+  buttonTitle = "Call for Admission",
+  buttonId = "call_for_admission"
 ) {
   if (!config.whatsappEnabled) {
     return { success: false, status: "disabled", message: "WhatsApp disabled" };
@@ -562,7 +577,7 @@ async function sendBotSailorReplyButton(
     message: finalMessage,
     buttons: [
       {
-        id: "call_for_admission",
+        id: String(buttonId || "call_for_admission"),
         title: String(buttonTitle || "Call for Admission").slice(0, 20),
       },
     ],
@@ -666,8 +681,9 @@ async function triggerBotSailorFlow(phone, uniqueId) {
 }
 
 
-async function findSelectedCtaTemplate(autoImport = true) {
+async function findSelectedCtaTemplate(autoImport = true, templateIdOverride = "") {
   const selectedId = String(
+    templateIdOverride ||
     config.callForAdmissionTemplateId ||
     config.botsailorTemplateId ||
     ""
@@ -899,12 +915,47 @@ function withCtaTitle(message, title) {
   return `${body}\n\n*${heading}*`;
 }
 
+function getStageCtaConfig(label = "") {
+  const stage = String(label || "").toLowerCase();
+
+  const base = {
+    stage: "3h",
+    mode: normalize(config.callForAdmissionActionMode || "template"),
+    templateId: String(config.callForAdmissionTemplateId || config.botsailorTemplateId || "").trim(),
+    templateTitle: String(config.callForAdmissionTemplateCustomTitle || "Call for Admission").trim() || "Call for Admission",
+    flowUniqueId: String(config.callForAdmissionFlowUniqueId || config.callWithCounselorFlowUniqueId || "").trim(),
+  };
+
+  if (stage.includes("6h") && !Boolean(config.followup6UseSameCtaAs3h ?? true)) {
+    return {
+      stage: "6h",
+      mode: normalize(config.followup6CtaActionMode || base.mode),
+      templateId: String(config.followup6CtaTemplateId || "").trim(),
+      templateTitle: String(config.followup6CtaTemplateCustomTitle || "Call for Admission").trim() || "Call for Admission",
+      flowUniqueId: String(config.followup6CtaFlowUniqueId || "").trim(),
+    };
+  }
+
+  if (stage.includes("9h") && !Boolean(config.followup9UseSameCtaAs3h ?? true)) {
+    return {
+      stage: "9h",
+      mode: normalize(config.followup9CtaActionMode || base.mode),
+      templateId: String(config.followup9CtaTemplateId || "").trim(),
+      templateTitle: String(config.followup9CtaTemplateCustomTitle || "Call for Admission").trim() || "Call for Admission",
+      flowUniqueId: String(config.followup9CtaFlowUniqueId || "").trim(),
+    };
+  }
+
+  return base;
+}
+
 async function sendAndLogText(table, record, label, message, useCallButton = false) {
   // CTA-enabled stages always send ONE interactive CRM follow-up first.
   // Flow/Template is executed only after the student taps the button and
   // /api/webhook/botsailor receives "Call for Admission".
   if (useCallButton) {
-    const mode = normalize(config.callForAdmissionActionMode || "template");
+    const stageCta = getStageCtaConfig(label);
+    const mode = stageCta.mode;
 
     // OFF = plain follow-up only; no clickable CTA.
     if (mode === "off") {
@@ -918,15 +969,9 @@ async function sendAndLogText(table, record, label, message, useCallButton = fal
     let buttonTitle = "Call for Admission";
 
     if (mode === "template") {
-      buttonTitle = String(
-        config.callForAdmissionTemplateCustomTitle || "Call for Admission"
-      ).trim() || "Call for Admission";
+      buttonTitle = stageCta.templateTitle;
     } else if (mode === "flow") {
-      const selectedFlowId = String(
-        config.callForAdmissionFlowUniqueId ||
-        config.callWithCounselorFlowUniqueId ||
-        ""
-      ).trim();
+      const selectedFlowId = stageCta.flowUniqueId;
       const flowRecord = selectedFlowId
         ? await getSelectedFlowRecord(selectedFlowId)
         : null;
@@ -940,7 +985,8 @@ async function sendAndLogText(table, record, label, message, useCallButton = fal
       record,
       message,
       `${label}_cta_button`,
-      buttonTitle
+      buttonTitle,
+      `call_for_admission_${stageCta.stage}`
     );
     await logWhatsAppSend(table, record, `${label}:cta_button:${mode}`, result);
     return result;
@@ -2160,6 +2206,12 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     const isCallForAdmissionClick =
       buttonReplyId === "call for admission" ||
       buttonReplyId === "call_for_admission" ||
+      buttonReplyId === "call for admission 3h" ||
+      buttonReplyId === "call for admission 6h" ||
+      buttonReplyId === "call for admission 9h" ||
+      buttonReplyId === "call_for_admission_3h" ||
+      buttonReplyId === "call_for_admission_6h" ||
+      buttonReplyId === "call_for_admission_9h" ||
       buttonReplyTitle === "call for admission" ||
       webhookUserMessage === "call for admission" ||
       (configuredTemplateTitle &&
@@ -2267,7 +2319,11 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     }
 
     if (isCallForAdmissionClick) {
-      const actionMode = normalize(config.callForAdmissionActionMode || "template");
+      const clickedStage =
+        buttonReplyId.includes("6h") ? "6h" :
+        buttonReplyId.includes("9h") ? "9h" : "3h";
+      const clickCta = getStageCtaConfig(clickedStage);
+      const actionMode = clickCta.mode;
 
       console.log("CTA CLICK DEBUG | Call for Admission detected", {
         mobile: botSailorPhone(mobile),
@@ -2275,8 +2331,9 @@ app.post("/api/webhook/botsailor", async (req, res) => {
         buttonReplyTitle,
         payloadCallForAdmission,
         actionMode,
-        selectedFlow: config.callForAdmissionFlowUniqueId || "",
-        selectedTemplate: config.callForAdmissionTemplateId || "",
+        clickedStage,
+        selectedFlow: clickCta.flowUniqueId || "",
+        selectedTemplate: clickCta.templateId || "",
       });
 
       // Refresh the customer's 24-hour window if this mobile already exists.
@@ -2356,7 +2413,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
 
       // TEMPLATE mode: send the imported template selected in Admin.
       if (actionMode === "template") {
-        const templateRecord = await findSelectedCtaTemplate(true);
+        const templateRecord = await findSelectedCtaTemplate(true, clickCta.templateId);
 
         if (!templateRecord) {
           return res.status(400).json({
