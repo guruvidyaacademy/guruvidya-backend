@@ -2202,17 +2202,6 @@ app.post("/api/webhook/botsailor", async (req, res) => {
         buttonReplyTitle,
       });
 
-      // Refresh the WhatsApp 24-hour session timestamp.
-      if (mobile) {
-        await pool.query(
-          `UPDATE leads
-           SET last_user_reply_at = NOW(), updated_at = NOW()
-           WHERE regexp_replace(COALESCE(mobile, ''), '\\D', '', 'g')
-                 LIKE '%' || $1`,
-          [mobile.slice(-10)]
-        );
-      }
-
       const templateRecord = await findCallUsTemplate(true);
 
       if (!templateRecord) {
