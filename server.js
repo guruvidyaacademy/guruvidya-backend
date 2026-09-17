@@ -167,7 +167,9 @@ function renderMessage(template, record = {}) {
     .replaceAll("{{name}}", record.name || "Student")
     .replaceAll("{{course}}", record.course || "your course")
     .replaceAll("{{mobile}}", record.mobile || "")
-    .replaceAll("{{owner}}", record.owner || "Admission Team");
+    .replaceAll("{{owner}}", record.owner || "Admission Team")
+    .replaceAll("#LEAD_USER_FIRST_NAME#", record.name || "Student")
+    .replaceAll("#LEAD_USER_NAME#", record.name || "Student");
 }
 
 function indiaHour(date = new Date()) {
@@ -386,6 +388,20 @@ async function initDatabase() {
       raw JSONB DEFAULT '{}'::jsonb,
       imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS flow_runtime_actions (
+      id SERIAL PRIMARY KEY,
+      mobile TEXT NOT NULL,
+      normalized_title TEXT NOT NULL,
+      flow_unique_id TEXT,
+      flow_name TEXT,
+      action JSONB NOT NULL DEFAULT '{}'::jsonb,
+      expires_at TIMESTAMP NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_flow_runtime_actions_lookup
+      ON flow_runtime_actions (mobile, normalized_title, created_at DESC);
   `);
 
   await pool.query(`
@@ -558,30 +574,42 @@ async function sendBotSailorText(record, message, action = "send_message") {
   return { ...result, messageText: finalMessage };
 }
 
-async function sendBotSailorReplyButton(
+async function sendBotSailorReplyButtons(
   record,
   message,
-  action = "send_call_for_admission_button",
-  buttonTitle = "Call for Admission",
-  buttonId = "call_for_admission"
+  buttons = [],
+  action = "send_flow_buttons",
+  options = {}
 ) {
   if (!config.whatsappEnabled) {
     return { success: false, status: "disabled", message: "WhatsApp disabled" };
   }
 
   const finalMessage = renderMessage(message, record);
+  const safeButtons = (Array.isArray(buttons) ? buttons : [])
+    .slice(0, 3)
+    .map((b, index) => ({
+      id: String(b?.id || `flow_button_${index + 1}`),
+      // WhatsApp/BotSailor official reply-button limit is 20 chars.
+      title: String(b?.title || `Option ${index + 1}`).trim().slice(0, 20),
+    }));
+
+  if (!safeButtons.length) {
+    return sendBotSailorText(record, finalMessage, `${action}_text_fallback`);
+  }
+
   const payload = {
     apiToken: config.botsailorToken,
     phone_number_id: config.botsailorInstanceId,
     phone_number: botSailorPhone(record.mobile || ""),
     message: finalMessage,
-    buttons: [
-      {
-        id: String(buttonId || "call_for_admission"),
-        title: String(buttonTitle || "Call for Admission").slice(0, 20),
-      },
-    ],
+    buttons: safeButtons,
   };
+
+  if (options.headerText) payload.button_header_text = renderMessage(options.headerText, record);
+  if (options.footerText) payload.button_footer_text = renderMessage(options.footerText, record);
+  if (options.mediaUrl) payload.media_url = String(options.mediaUrl);
+  if (options.mediaType) payload.media_type = String(options.mediaType);
 
   const result = await botSailorPost(
     "https://botsailor.com/api/v1/whatsapp/send/interactive-buttons",
@@ -592,26 +620,34 @@ async function sendBotSailorReplyButton(
     "whatsapp",
     action,
     result.success ? "success" : "failed",
-    {
-      phone_number_id: config.botsailorInstanceId,
-      phone_number: payload.phone_number,
-      message: finalMessage,
-      buttons: payload.buttons,
-    },
+    { ...payload, apiToken: "***" },
     result.response || { error: result.error || result.message }
   );
 
-  console.log("BotSailor Interactive Button:", {
+  console.log("BotSailor Interactive Buttons:", {
     success: result.success,
     status: result.status,
     message: result.message,
+    buttons: safeButtons,
     response: result.response || {},
   });
 
-  return {
-    ...result,
-    messageText: finalMessage,
-  };
+  return { ...result, messageText: finalMessage };
+}
+
+async function sendBotSailorReplyButton(
+  record,
+  message,
+  action = "send_call_for_admission_button",
+  buttonTitle = "Call for Admission",
+  buttonId = "call_for_admission"
+) {
+  return sendBotSailorReplyButtons(
+    record,
+    message,
+    [{ id: buttonId, title: buttonTitle }],
+    action
+  );
 }
 
 async function sendBotSailorInteractiveCall(record, message, action = "send_call_followup") {
@@ -680,6 +716,231 @@ async function triggerBotSailorFlow(phone, uniqueId) {
   return result;
 }
 
+
+
+function getFlowExportData(flowRecord) {
+  let raw = flowRecord?.raw || {};
+  if (typeof raw === "string") {
+    try { raw = JSON.parse(raw); } catch { raw = {}; }
+  }
+  const candidate = raw?.flow_export || raw?.flowData || raw?.export_data || raw;
+  return candidate && candidate.nodes && typeof candidate.nodes === "object" ? candidate : null;
+}
+
+function firstConnection(node, outputName) {
+  const list = node?.outputs?.[outputName]?.connections;
+  return Array.isArray(list) && list.length ? list[0] : null;
+}
+
+function allConnections(node, outputName) {
+  const list = node?.outputs?.[outputName]?.connections;
+  return Array.isArray(list) ? list : [];
+}
+
+function inferMediaType(url = "") {
+  const clean = String(url || "").split("?")[0].toLowerCase();
+  if (/\.(mp4|mov|webm)$/.test(clean)) return "video";
+  if (/\.(pdf|doc|docx|xls|xlsx|ppt|pptx|txt)$/.test(clean)) return "document";
+  return "image";
+}
+
+async function saveFlowRuntimeActions(record, flowRecord, buttonActions = []) {
+  const mobile = botSailorPhone(record.mobile || "");
+  if (!mobile || !buttonActions.length) return;
+
+  await pool.query(
+    `DELETE FROM flow_runtime_actions
+     WHERE mobile = $1 OR expires_at < CURRENT_TIMESTAMP`,
+    [mobile]
+  );
+
+  for (const item of buttonActions) {
+    const normalizedTitle = normalizeLooseText(String(item.title || "").slice(0, 20));
+    if (!normalizedTitle) continue;
+    await pool.query(
+      `INSERT INTO flow_runtime_actions
+       (mobile, normalized_title, flow_unique_id, flow_name, action, expires_at, created_at)
+       VALUES ($1,$2,$3,$4,$5,CURRENT_TIMESTAMP + INTERVAL '24 hours',CURRENT_TIMESTAMP)`,
+      [
+        mobile,
+        normalizedTitle,
+        String(flowRecord?.unique_id || ""),
+        String(flowRecord?.name || ""),
+        JSON.stringify(item.action || {}),
+      ]
+    );
+  }
+}
+
+async function findFlowRuntimeAction(mobile, incomingTitle) {
+  const phone = botSailorPhone(mobile || "");
+  const title = normalizeLooseText(incomingTitle || "");
+  if (!phone || !title) return null;
+  const result = await pool.query(
+    `SELECT * FROM flow_runtime_actions
+     WHERE mobile = $1
+       AND normalized_title = $2
+       AND expires_at > CURRENT_TIMESTAMP
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [phone, title]
+  );
+  return result.rows[0] || null;
+}
+
+async function importBotSailorFlowExport(flowDataInput) {
+  let flowData = flowDataInput;
+  if (typeof flowData === "string") {
+    try { flowData = JSON.parse(flowData); }
+    catch { return { success: false, message: "Flow Data is not valid JSON" }; }
+  }
+  if (!flowData?.nodes || typeof flowData.nodes !== "object") {
+    return { success: false, message: "Flow Data does not contain nodes" };
+  }
+
+  const startNode = Object.values(flowData.nodes).find((n) => n?.name === "Start Bot Flow") || flowData.nodes["1"];
+  const title = String(startNode?.data?.title || "").trim();
+  if (!title) return { success: false, message: "Flow title not found in Start Bot Flow node" };
+
+  const existing = await pool.query(
+    `SELECT * FROM botsailor_flows WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) ORDER BY imported_at DESC LIMIT 1`,
+    [title]
+  );
+  if (!existing.rows.length) {
+    return { success: false, message: `Flow '${title}' is not in imported BotSailor Flow List. Refresh CTA Flows first.` };
+  }
+
+  const flow = existing.rows[0];
+  let raw = flow.raw || {};
+  if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch { raw = {}; } }
+  raw = { ...raw, flow_export: flowData, flow_export_imported_at: new Date().toISOString() };
+
+  const updated = await pool.query(
+    `UPDATE botsailor_flows SET raw = $1::jsonb, imported_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *`,
+    [JSON.stringify(raw), flow.id]
+  );
+  return { success: true, flow: updated.rows[0], title, nodeCount: Object.keys(flowData.nodes).length };
+}
+
+async function executeDirectFlowNode(record, flowRecord, flowData, nodeId, depth = 0) {
+  if (depth > 20) return { success: false, status: "flow_depth_limit", message: "Flow depth limit reached" };
+  const node = flowData?.nodes?.[String(nodeId)] || flowData?.nodes?.[nodeId];
+  if (!node) return { success: false, status: "missing_node", message: `Flow node ${nodeId} not found` };
+
+  console.log("DIRECT FLOW DEBUG | executing node", { flow: flowRecord?.name, nodeId, nodeName: node.name });
+
+  if (node.name === "Text") {
+    const result = await sendBotSailorText(record, node.data?.textMessage || "", `direct_flow:${flowRecord.name}:text`);
+    const next = firstConnection(node, "textOutput");
+    if (result.success && next?.node) return executeDirectFlowNode(record, flowRecord, flowData, next.node, depth + 1);
+    return result;
+  }
+
+  if (node.name === "Interactive") {
+    const buttonConnections = allConnections(node, "interactiveOutputButton");
+    const buttons = [];
+    const runtimeActions = [];
+
+    for (const conn of buttonConnections.slice(0, 3)) {
+      const buttonNode = flowData.nodes?.[String(conn.node)] || flowData.nodes?.[conn.node];
+      if (!buttonNode) continue;
+      const title = String(buttonNode.data?.buttonText || buttonNode.data?.postback_text || "Option").trim();
+      const next = firstConnection(buttonNode, "buttonOutput");
+      let action = null;
+
+      if (next?.node) {
+        action = { type: "node", nodeId: next.node };
+      } else if (String(buttonNode.data?.text || "").toLowerCase() === "start a flow" && buttonNode.data?.value) {
+        action = {
+          type: "start_flow",
+          flowValue: String(buttonNode.data.value),
+          postbackText: String(buttonNode.data?.postback_text || ""),
+        };
+      } else {
+        action = { type: "noop" };
+      }
+
+      buttons.push({ id: `direct_flow_${flowRecord.id}_${buttonNode.id}`, title });
+      runtimeActions.push({ title, action });
+    }
+
+    const mediaUrl = String(node.data?.headerMediaUrl || "").trim();
+    const result = await sendBotSailorReplyButtons(
+      record,
+      node.data?.textMessage || "Please choose an option.",
+      buttons,
+      `direct_flow:${flowRecord.name}:interactive`,
+      {
+        headerText: node.data?.headerType === "text" ? node.data?.headerText || "" : "",
+        footerText: node.data?.footerText || "",
+        mediaUrl,
+        mediaType: mediaUrl ? inferMediaType(mediaUrl) : "",
+      }
+    );
+    if (result.success) await saveFlowRuntimeActions(record, flowRecord, runtimeActions);
+    return result;
+  }
+
+  if (node.name === "CTA URL Button") {
+    const text = [
+      node.data?.headerMessage || "",
+      node.data?.bodyMessage || "",
+      node.data?.footerMessage || "",
+      node.data?.buttonText ? `*${node.data.buttonText}*` : "",
+      node.data?.buttonUrl || "",
+    ].filter(Boolean).join("\n\n");
+    const result = await sendBotSailorText(record, text, `direct_flow:${flowRecord.name}:cta_url`);
+    const next = firstConnection(node, "ctaUrlOutput");
+    if (result.success && next?.node) return executeDirectFlowNode(record, flowRecord, flowData, next.node, depth + 1);
+    return result;
+  }
+
+  // Unknown node: try the first connected output so simple future node types do not dead-end.
+  for (const output of Object.values(node.outputs || {})) {
+    const next = Array.isArray(output?.connections) ? output.connections[0] : null;
+    if (next?.node) return executeDirectFlowNode(record, flowRecord, flowData, next.node, depth + 1);
+  }
+
+  return { success: true, status: "flow_node_skipped", message: `Unsupported terminal node: ${node.name}` };
+}
+
+async function executeDirectBotSailorFlow(record, flowRecord) {
+  const flowData = getFlowExportData(flowRecord);
+  if (!flowData) {
+    return { success: false, status: "missing_flow_export", message: "Flow Data export is not imported for this flow" };
+  }
+  const startNode = Object.values(flowData.nodes).find((n) => n?.name === "Start Bot Flow") || flowData.nodes["1"];
+  const first = firstConnection(startNode, "referenceOutput");
+  if (!first?.node) return { success: false, status: "empty_flow", message: "Start node has no connected message" };
+  return executeDirectFlowNode(record, flowRecord, flowData, first.node, 0);
+}
+
+async function executeRuntimeFlowAction(record, runtimeRow) {
+  let action = runtimeRow?.action || {};
+  if (typeof action === "string") { try { action = JSON.parse(action); } catch { action = {}; } }
+  const sourceFlow = runtimeRow?.flow_unique_id ? await getSelectedFlowRecord(runtimeRow.flow_unique_id) : null;
+  const sourceData = sourceFlow ? getFlowExportData(sourceFlow) : null;
+
+  if (action.type === "node" && sourceFlow && sourceData) {
+    return executeDirectFlowNode(record, sourceFlow, sourceData, action.nodeId, 0);
+  }
+
+  if (action.type === "start_flow") {
+    // Existing Call-us branch is known to work reliably as the approved template.
+    if (normalizeLooseText(action.postbackText || "") === "call us") {
+      const templateRecord = await findCallUsTemplate(true);
+      if (!templateRecord) return { success: false, status: "missing_template", message: "call_us template not found" };
+      return sendBotSailorTemplate(record, templateRecord, buildTemplateVariables(templateRecord, record));
+    }
+
+    const target = await getSelectedFlowRecord(action.flowValue || "");
+    if (target && getFlowExportData(target)) return executeDirectBotSailorFlow(record, target);
+    if (target?.unique_id) return triggerBotSailorFlow(record.mobile, target.unique_id);
+    return triggerBotSailorFlow(record.mobile, action.flowValue || "");
+  }
+
+  return { success: true, status: "noop", message: "No next action configured" };
+}
 
 async function findSelectedCtaTemplate(autoImport = true, templateIdOverride = "") {
   const selectedId = String(
@@ -2193,6 +2454,27 @@ function extractWebhookMobileRobust(payload = {}) {
   return found[0] || "";
 }
 
+app.post("/api/admin/botsailor-flow-data/import", async (req, res) => {
+  try {
+    const flowData = req.body?.flowData ?? req.body?.data ?? req.body;
+    const result = await importBotSailorFlowExport(flowData);
+    return res.status(result.success ? 200 : 400).json(result);
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.get("/api/admin/botsailor-flow-data/status", async (req, res) => {
+  const result = await pool.query(
+    `SELECT id, botsailor_id, name, unique_id, status,
+            CASE WHEN raw ? 'flow_export' THEN TRUE ELSE FALSE END AS flow_data_imported,
+            imported_at
+     FROM botsailor_flows
+     ORDER BY name ASC`
+  );
+  res.json({ success: true, flows: result.rows });
+});
+
 app.post("/api/webhook/botsailor", async (req, res) => {
   try {
     const payload = req.body || {};
@@ -2289,6 +2571,38 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       });
     }
 
+
+    // Dynamic exported-flow buttons are resolved before the generic CTA gate.
+    // BotSailor commonly sends them as user_message "#button_reply#<button title>".
+    const runtimeAction = await findFlowRuntimeAction(mobile, webhookUserMessage || buttonReplyTitle);
+    if (runtimeAction) {
+      const clean = cleanMobile(mobile);
+      const clean10 = clean.length === 12 && clean.startsWith("91") ? clean.slice(2) : clean;
+      const leadResult = await pool.query(
+        `SELECT * FROM leads
+         WHERE regexp_replace(COALESCE(mobile, ''), '\\D', '', 'g') IN ($1, $2)
+         ORDER BY updated_at DESC NULLS LAST, created_at DESC
+         LIMIT 1`,
+        [clean, clean10]
+      );
+      const record = leadResult.rows[0] || {
+        id: 0, mobile, name: payload.name || payload.first_name || "Student", course: payload.course || "",
+      };
+
+      const result = await executeRuntimeFlowAction(record, runtimeAction);
+      console.log("DIRECT FLOW DEBUG | runtime button action", {
+        title: webhookUserMessage || buttonReplyTitle,
+        flow: runtimeAction.flow_name,
+        success: result.success,
+        status: result.status,
+      });
+      return res.status(result.success ? 200 : 400).json({
+        status: result.success ? "ok" : "error",
+        action: "direct_flow_button",
+        flow: runtimeAction.flow_name,
+        result: result.response || result.message || null,
+      });
+    }
 
     // CRM-direct Flow step 2 MUST be handled before the generic CTA gate.
     // BotSailor sends this reply as user_message "#button_reply#instant call us".
@@ -2492,10 +2806,12 @@ app.post("/api/webhook/botsailor", async (req, res) => {
           });
         }
 
-        const flowResult = await triggerBotSailorFlow(
-          mobile,
-          selectedFlowRecord.unique_id
-        );
+        let flowResult = await executeDirectBotSailorFlow(record, selectedFlowRecord);
+
+        // Compatibility fallback for flows whose Export Flow Data has not yet been imported.
+        if (!flowResult.success && flowResult.status === "missing_flow_export") {
+          flowResult = await triggerBotSailorFlow(mobile, selectedFlowRecord.unique_id);
+        }
 
         await logWhatsAppSend(
           "leads",
@@ -2516,9 +2832,9 @@ app.post("/api/webhook/botsailor", async (req, res) => {
 
         return res.status(flowResult.success ? 200 : 400).json({
           status: flowResult.success ? "ok" : "error",
-          action: "trigger_selected_flow",
+          action: "execute_selected_flow",
           message: flowResult.success
-            ? "Selected BotSailor flow triggered"
+            ? "Selected flow executed"
             : (flowResult.message || "Failed to trigger selected BotSailor flow"),
           flow: selectedFlowRecord.name,
           flow_unique_id: selectedFlowRecord.unique_id,
@@ -2737,6 +3053,11 @@ async function bootstrap() {
     console.log("✅ PostgreSQL connected successfully");
     await initDatabase();
     await loadPersistedConfig();
+    // Refresh BotSailor flow list first so exported Flow Data can attach by exact flow title.
+    if (config.botsailorToken && config.botsailorInstanceId) {
+      try { await importBotSailorFlows(); } catch (err) { console.error("Flow list refresh before seed failed:", err.message); }
+    }
+    await seedBuiltinFlowExports();
 
     app.listen(PORT, () => {
       console.log(`Guruvidya Phase 3 backend running on ${PORT}`);
@@ -2752,4 +3073,18 @@ async function bootstrap() {
   }
 }
 
-bootstrap();
+bootstrap()
+const BUILTIN_FLOW_EXPORTS = [{"id":"xitFB@0.0.1","nodes":{"1":{"id":1,"data":{"title":"Interview Address","postbackId":"6aabdebe80c39","xitFbpostbackId":"6aabdebe80c3b","buttonWebhookUrl":"","labelIds":[],"labelIdTextsArray":[],"labelIdsRemove":[],"labelIdTextsArrayRemove":[],"googleSheets":[],"googleSheetsArray":[],"sequenceIdValue":"","sequenceIdText":"Select a Sequence","sequenceIdValueRemove":"","sequenceIdTextRemove":"Select a Sequence","conversationGroupId":"","conversationGroupText":"Select Team Role","conversationUserId":"","conversationUserText":"Select Team Member","triggerKeyword":"Interview Address","triggerMatchingType":"exact"},"inputs":{"referenceInputActionButton":{"connections":[]}},"outputs":{"referenceOutput":{"connections":[{"node":3,"input":"textInput","data":[]}]},"referenceOutputSequence":{"connections":[]}},"position":[-450,-50],"name":"Start Bot Flow"},"3":{"id":3,"data":{"uniqueId":"6aabdebe80c46","textMessage":"\ud83c\udfdb *Interview Address : - Head Office*\n\n*Guruvidya Academy Pvt. Ltd.*\nWZ-49, Near Tagore Garden Metro Gate No. 2, Opp. Metro Pillar No. 433, New Delhi - 110027.\n\n\ud83d\udccd Map-  https://g.co/kgs/L2JRtK\n\n\ud83d\udc4d*Wait for MSG* *\"Your Interview is confirmed or not\"*\n\n\ud83d\udce3 *MSG send by HR Team if your selected date and time slot is avilable or not*","delayReplyFor":"0"},"inputs":{"textInput":{"connections":[{"node":1,"output":"referenceOutput","data":[]}]}},"outputs":{"textOutput":{"connections":[]}},"position":[-50.52569580078125,-73.35858154296875],"name":"Text"}}},{"id":"xitFB@0.0.1","nodes":{"1":{"id":1,"data":{"title":"Call with Counselor","postbackId":"6aabdfae453a3","xitFbpostbackId":"6aabdfae453aa","buttonWebhookUrl":"","labelIds":["80125"],"labelIdTextsArray":["Call with Counselor"],"labelIdsRemove":[],"labelIdTextsArrayRemove":[],"sequenceIdValue":"","sequenceIdText":"Select a Sequence","sequenceIdValueRemove":"","sequenceIdTextRemove":"Select a Sequence","conversationGroupId":"","conversationGroupText":"Select Team Role","conversationUserId":"","conversationUserText":"Select Team Member","triggerKeyword":"call, call me, call us, Call with Counselor","triggerMatchingType":"exact","googleSheets":[],"googleSheetsArray":[],"listIds":[],"listIdTextsArray":[],"listIdsRemove":[],"listIdTextsArrayRemove":[],"customFieldId":"","customFieldSelectedOptionText":"Select"},"inputs":{"referenceInputActionButton":{"connections":[]}},"outputs":{"referenceOutput":{"connections":[{"node":416,"input":"interactiveInput","data":[]}]},"referenceOutputSequence":{"connections":[]}},"position":[-450,-138.5],"name":"Start Bot Flow"},"415":{"id":415,"data":{"postbackId":"6aabdfae453c0","buttonText":"Instant Call us","buttonWebhookUrl":"","buttonType":"post_back","text":"Start a Flow","value":"3H8bBS-ach-2ruj","postback_text":"Call us","labelIds":[],"labelIdTextsArray":[],"labelIdsRemove":[],"labelIdTextsArrayRemove":[],"googleSheets":[],"googleSheetsArray":[],"sequenceIdValue":"","sequenceIdText":"Select a Sequence","sequenceIdValueRemove":"","sequenceIdTextRemove":"Select a Sequence","conversationGroupId":"","conversationGroupText":"Select Team Role","conversationUserId":"","conversationUserText":"Select Team Member","rowType":"static","customFieldIndex":"","customFieldIndexTitle":"","listIds":[],"listIdTextsArray":[],"listIdsRemove":[],"listIdTextsArrayRemove":[],"customFieldId":"","customFieldSelectedOptionText":"Select","appointment_id":"","appointment_text":"Select","googleCalendar":"","saveGoogleMeetToCustomField":false,"googleMeetCustomField":"","googleMeetCustomFieldSelectedOptionText":"Select"},"inputs":{"buttonInput":{"connections":[{"node":416,"output":"interactiveOutputButton","data":[]}]}},"outputs":{"buttonOutput":{"connections":[]},"buttonOutputSequence":{"connections":[]}},"position":[198,-133.5],"name":"Inline Button"},"416":{"id":416,"data":{"uniqueId":"6aabdfae453d0","headerType":"text","headerText":"","mediaType":"","headerMediaUrl":"","headerMediaID":"","textMessage":"*Dear #LEAD_USER_FIRST_NAME#,*\n\n*Session with Guruvidya Admission Team*\n\n\ud83d\udd57 *Upto 10 min*\n\n\ud83d\udcde *By Phone Call*\n\nGet all your queries answered regarding admission process.","footerText":"","original_file_name":"","delayReplyFor":0,"delaySec":0,"delayMin":0,"delayHour":0,"IsTypingOnDisplayChecked":false},"inputs":{"interactiveInput":{"connections":[{"node":1,"output":"referenceOutput","data":[]}]}},"outputs":{"interactiveOutput":{"connections":[]},"interactiveOutputButton":{"connections":[{"node":415,"input":"buttonInput","data":[]}]},"interactiveOutputListMessage":{"connections":[]},"interactiveOutputEcommerce":{"connections":[]}},"position":[-136,-170],"name":"Interactive"}}},{"id":"xitFB@0.0.1","nodes":{"1":{"id":1,"data":{"title":"New Batch Offer -MSG","postbackId":"6aabdfe3273d4","xitFbpostbackId":"6aabdfe3273d7","buttonWebhookUrl":"","labelIds":[],"labelIdTextsArray":[],"labelIdsRemove":[],"labelIdTextsArrayRemove":[],"googleSheets":[],"googleSheetsArray":[],"sequenceIdValue":"","sequenceIdText":"Select a Sequence","sequenceIdValueRemove":"","sequenceIdTextRemove":"Select a Sequence","conversationGroupId":"","conversationGroupText":"Select Team Role","conversationUserId":"","conversationUserText":"Select Team Member","triggerKeyword":"discount offer","triggerMatchingType":"exact","customFieldId":"","customFieldSelectedOptionText":"Select"},"inputs":{"referenceInputActionButton":{"connections":[]}},"outputs":{"referenceOutput":{"connections":[{"node":3,"input":"interactiveInput","data":[]}]},"referenceOutputSequence":{"connections":[]}},"position":[-450,-118.5],"name":"Start Bot Flow"},"3":{"id":3,"data":{"uniqueId":"6aabdfe3273e4","headerType":"media","headerText":"","mediaType":"","headerMediaUrl":"https://bot-data.s3.ap-southeast-1.wasabisys.com/upload/2025/7/flowbuilder/flowbuilder-98425-1751357615.png","headerMediaID":"616088480950581","textMessage":"*Dear #LEAD_USER_FIRST_NAME#,*\n\n\ud83d\udcc5 Batch Starting from 21st July 2026 \n\n\ud83c\udf89 Special Discount Valid Till 20th July 2026\n\n\u26a0 After 20th July 2026, regular fees will apply.\n\n\u2705 Expert Faculty\n\u2705 Complete Study Material\n\u2705 Mock Tests & Mentorship\n\u2705 Flexible Learning Options\n\u2705 Easy EMI Facility\n\n\u23f3 Limited Seats Available!\n\n\ud83d\udcde Reply to this message or call now to reserve your seat.\n","footerText":"By - Guruvidya Academy (P) Ltd. Team","original_file_name":"","delayReplyFor":0,"IsTypingOnDisplayChecked":false,"delaySec":0,"delayMin":0,"delayHour":0},"inputs":{"interactiveInput":{"connections":[{"node":1,"output":"referenceOutput","data":[]}]}},"outputs":{"interactiveOutput":{"connections":[]},"interactiveOutputButton":{"connections":[{"node":4,"input":"buttonInput","data":[]},{"node":7,"input":"buttonInput","data":[]},{"node":8,"input":"buttonInput","data":[]}]},"interactiveOutputListMessage":{"connections":[]},"interactiveOutputEcommerce":{"connections":[]}},"position":[-18.82509487349842,-212.45949539485042],"name":"Interactive"},"4":{"id":4,"data":{"postbackId":"6aabdfe3273f0","buttonText":"Enroll! - By Partial","buttonWebhookUrl":"","buttonType":"new_post_back","text":"Send Message","labelIds":[],"labelIdTextsArray":[],"labelIdsRemove":[],"labelIdTextsArrayRemove":[],"googleSheets":[],"googleSheetsArray":[],"sequenceIdValue":"","sequenceIdText":"Select a Sequence","sequenceIdValueRemove":"","sequenceIdTextRemove":"Select a Sequence","conversationGroupId":"","conversationGroupText":"Select Team Role","conversationUserId":"","conversationUserText":"Select Team Member","customFieldId":"","customFieldSelectedOptionText":"Select","newPostbackId":"6aabdfe3273f5"},"inputs":{"buttonInput":{"connections":[{"node":3,"output":"interactiveOutputButton","data":[]}]}},"outputs":{"buttonOutput":{"connections":[{"node":6,"input":"ctaUrlInput","data":[]}]},"buttonOutputSequence":{"connections":[]}},"position":[507,-412],"name":"Inline Button"},"6":{"id":6,"data":{"uniqueId":"6aabdfe3273fc","headerMessage":"Welcome to Guruvidya Payment Panel","bodyMessage":"Book your offline seat by partial payment Rs.5000.\n\nThis fee will be deducted from your total fee.","footerMessage":"","buttonText":"Partial Payment","buttonUrl":"https://rzp.io/rzp/batchbookingpartialfees","delayReplyFor":"0"},"inputs":{"ctaUrlInput":{"connections":[{"node":4,"output":"buttonOutput","data":[]}]}},"outputs":{"ctaUrlOutput":{"connections":[]}},"position":[819,-187],"name":"CTA URL Button"},"7":{"id":7,"data":{"postbackId":"6aabdfe327402","buttonText":"Enroll ! - By Visit","buttonWebhookUrl":"","buttonType":"post_back","text":"Start a Flow","value":"66fbb3b55f8b2","postback_text":"Visit Institute","labelIds":[],"labelIdTextsArray":[],"labelIdsRemove":[],"labelIdTextsArrayRemove":[],"googleSheets":[],"googleSheetsArray":[],"sequenceIdValue":"","sequenceIdText":"Select a Sequence","sequenceIdValueRemove":"","sequenceIdTextRemove":"Select a Sequence","conversationGroupId":"","conversationGroupText":"Select Team Role","conversationUserId":"","conversationUserText":"Select Team Member","customFieldId":"","customFieldSelectedOptionText":"Select"},"inputs":{"buttonInput":{"connections":[{"node":3,"output":"interactiveOutputButton","data":[]}]}},"outputs":{"buttonOutput":{"connections":[]},"buttonOutputSequence":{"connections":[]}},"position":[507,-164],"name":"Inline Button"},"8":{"id":8,"data":{"postbackId":"6aabdfe32740d","buttonText":"Call for Admission","buttonWebhookUrl":"","buttonType":"post_back","text":"Start a Flow","value":"3H8bBS-ach-2ruj","postback_text":"Call us","labelIds":[],"labelIdTextsArray":[],"labelIdsRemove":[],"labelIdTextsArrayRemove":[],"googleSheets":[],"googleSheetsArray":[],"sequenceIdValue":"","sequenceIdText":"Select a Sequence","sequenceIdValueRemove":"","sequenceIdTextRemove":"Select a Sequence","conversationGroupId":"","conversationGroupText":"Select Team Role","conversationUserId":"","conversationUserText":"Select Team Member","customFieldId":"","customFieldSelectedOptionText":"Select"},"inputs":{"buttonInput":{"connections":[{"node":3,"output":"interactiveOutputButton","data":[]}]}},"outputs":{"buttonOutput":{"connections":[]},"buttonOutputSequence":{"connections":[]}},"position":[507,124],"name":"Inline Button"}}}];
+
+async function seedBuiltinFlowExports() {
+  for (const flowData of BUILTIN_FLOW_EXPORTS) {
+    try {
+      const result = await importBotSailorFlowExport(flowData);
+      console.log("DIRECT FLOW DATA SEED", { title: result.title || "", success: result.success, nodeCount: result.nodeCount || 0, message: result.message || "" });
+    } catch (err) {
+      console.error("DIRECT FLOW DATA SEED ERROR", err.message);
+    }
+  }
+}
+
+;
