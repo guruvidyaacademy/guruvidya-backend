@@ -12,7 +12,8 @@ const pool = new Pool({
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "2mb" }));
+// Bulk BotSailor Flow Data imports can contain many TXT/JSON exports at once.
+app.use(express.json({ limit: "25mb" }));
 
 const PORT = process.env.PORT || 3000;
 const INDIA_TZ = "Asia/Kolkata";
@@ -723,7 +724,7 @@ async function triggerBotSailorFlow(phone, uniqueId, options = {}) {
   // older BotSailor input-flow state. Clear that state before deliberately
   // starting the newly selected flow. A reset failure must not block trigger.
   let resetResult = null;
-  if (options.resetUserInput !== false) {
+  if (options.resetUserInput === true) {
     resetResult = await resetBotSailorUserInputFlow(phone);
     console.log("CTA DEBUG | reset user input flow result", {
       success: resetResult.success,
@@ -825,7 +826,7 @@ async function findFlowRuntimeAction(mobile, incomingTitle) {
   return result.rows[0] || null;
 }
 
-async function importBotSailorFlowExport(flowDataInput) {
+async function importBotSailorFlowExport(flowDataInput, sourceFileName = "") {
   let flowData = flowDataInput;
   if (typeof flowData === "string") {
     try { flowData = JSON.parse(flowData); }
@@ -839,10 +840,20 @@ async function importBotSailorFlowExport(flowDataInput) {
   const title = String(startNode?.data?.title || "").trim();
   if (!title) return { success: false, message: "Flow title not found in Start Bot Flow node" };
 
-  const existing = await pool.query(
+  let existing = await pool.query(
     `SELECT * FROM botsailor_flows WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) ORDER BY imported_at DESC LIMIT 1`,
     [title]
   );
+  if (!existing.rows.length) {
+    const allFlows = await pool.query(
+      `SELECT * FROM botsailor_flows ORDER BY imported_at DESC, name ASC`
+    );
+    const normalizedTitle = normalizeLooseText(title);
+    const relaxedMatch = allFlows.rows.find(
+      (item) => normalizeLooseText(item.name || "") === normalizedTitle
+    );
+    if (relaxedMatch) existing = { rows: [relaxedMatch] };
+  }
   if (!existing.rows.length) {
     return { success: false, message: `Flow '${title}' is not in imported BotSailor Flow List. Refresh CTA Flows first.` };
   }
@@ -850,13 +861,24 @@ async function importBotSailorFlowExport(flowDataInput) {
   const flow = existing.rows[0];
   let raw = flow.raw || {};
   if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch { raw = {}; } }
-  raw = { ...raw, flow_export: flowData, flow_export_imported_at: new Date().toISOString() };
+  raw = {
+    ...raw,
+    flow_export: flowData,
+    flow_export_imported_at: new Date().toISOString(),
+    flow_export_source_file: String(sourceFileName || ""),
+  };
 
   const updated = await pool.query(
     `UPDATE botsailor_flows SET raw = $1::jsonb, imported_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *`,
     [JSON.stringify(raw), flow.id]
   );
-  return { success: true, flow: updated.rows[0], title, nodeCount: Object.keys(flowData.nodes).length };
+  return {
+    success: true,
+    flow: updated.rows[0],
+    title,
+    sourceFileName: String(sourceFileName || ""),
+    nodeCount: Object.keys(flowData.nodes).length,
+  };
 }
 
 async function executeDirectFlowNode(record, flowRecord, flowData, nodeId, depth = 0) {
@@ -976,18 +998,16 @@ async function executeRuntimeFlowAction(record, runtimeRow) {
       target = await getSelectedFlowRecord(action.flowValue || "");
     }
 
-    // Always prefer BotSailor's live flow so newly edited flow content is used.
-    const liveResult = await triggerBotSailorFlow(
-      record.mobile,
-      target?.unique_id || action.flowValue || ""
-    );
-    if (liveResult.success) return liveResult;
-
-    // Keep an imported TXT export only as an emergency compatibility fallback.
+    // Exported Flow Data is the proven delivery path. BotSailor's live trigger
+    // may acknowledge success without sending the actual flow message.
     if (target && getFlowExportData(target)) {
       return executeDirectBotSailorFlow(record, target);
     }
-    return liveResult;
+    return triggerBotSailorFlow(
+      record.mobile,
+      target?.unique_id || action.flowValue || "",
+      { resetUserInput: false }
+    );
   }
 
   return { success: true, status: "noop", message: "No next action configured" };
@@ -2524,8 +2544,78 @@ function extractWebhookMobileRobust(payload = {}) {
 app.post("/api/admin/botsailor-flow-data/import", async (req, res) => {
   try {
     const flowData = req.body?.flowData ?? req.body?.data ?? req.body;
-    const result = await importBotSailorFlowExport(flowData);
+    const result = await importBotSailorFlowExport(flowData, req.body?.fileName || "");
     return res.status(result.success ? 200 : 400).json(result);
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post("/api/admin/botsailor-flow-data/import-bulk", async (req, res) => {
+  try {
+    await loadPersistedConfig();
+    const items = Array.isArray(req.body?.flows)
+      ? req.body.flows
+      : Array.isArray(req.body?.exports)
+        ? req.body.exports
+        : [];
+
+    if (!items.length) {
+      return res.status(400).json({
+        success: false,
+        message: "Select at least one BotSailor Flow Data TXT/JSON file",
+      });
+    }
+    if (items.length > 100) {
+      return res.status(400).json({
+        success: false,
+        message: "Maximum 100 flow files can be imported at once",
+      });
+    }
+
+    let flowListRefresh = null;
+    if (config.botsailorToken && config.botsailorInstanceId) {
+      try { flowListRefresh = await importBotSailorFlows(); }
+      catch (refreshError) {
+        flowListRefresh = { success: false, message: refreshError.message };
+      }
+    }
+
+    const results = [];
+    for (const item of items) {
+      const fileName = String(item?.fileName || item?.name || "Flow Data file");
+      const flowData = item?.flowData ?? item?.data ?? item;
+      try {
+        const result = await importBotSailorFlowExport(flowData, fileName);
+        results.push({
+          fileName,
+          success: result.success,
+          title: result.title || "",
+          nodeCount: result.nodeCount || 0,
+          message: result.message || (result.success ? "Imported" : "Import failed"),
+        });
+      } catch (itemError) {
+        results.push({
+          fileName,
+          success: false,
+          title: "",
+          nodeCount: 0,
+          message: itemError.message,
+        });
+      }
+    }
+
+    const imported = results.filter((item) => item.success).length;
+    const failed = results.length - imported;
+    return res.status(imported ? 200 : 400).json({
+      success: failed === 0,
+      imported,
+      failed,
+      total: results.length,
+      message: `${imported} flow file(s) imported${failed ? `, ${failed} failed` : " successfully"}`,
+      flowListRefresh,
+      results,
+    });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
@@ -2535,11 +2625,26 @@ app.get("/api/admin/botsailor-flow-data/status", async (req, res) => {
   const result = await pool.query(
     `SELECT id, botsailor_id, name, unique_id, status,
             CASE WHEN raw ? 'flow_export' THEN TRUE ELSE FALSE END AS flow_data_imported,
+            raw->>'flow_export_imported_at' AS flow_data_imported_at,
+            raw->>'flow_export_source_file' AS flow_data_source_file,
+            CASE
+              WHEN raw ? 'flow_export'
+               AND jsonb_typeof(raw->'flow_export'->'nodes') = 'object'
+              THEN jsonb_object_length(raw->'flow_export'->'nodes')
+              ELSE 0
+            END AS flow_node_count,
             imported_at
      FROM botsailor_flows
      ORDER BY name ASC`
   );
-  res.json({ success: true, flows: result.rows });
+  const imported = result.rows.filter((item) => item.flow_data_imported).length;
+  res.json({
+    success: true,
+    total: result.rows.length,
+    imported,
+    pending: result.rows.length - imported,
+    flows: result.rows,
+  });
 });
 
 app.post("/api/webhook/botsailor", async (req, res) => {
@@ -2839,24 +2944,17 @@ app.post("/api/webhook/botsailor", async (req, res) => {
           });
         }
 
-        // Run the current BotSailor version by unique_id. This makes every
-        // imported flow dynamic: edits in BotSailor take effect immediately.
-        let flowResult = await triggerBotSailorFlow(
-          mobile,
-          selectedFlowRecord.unique_id,
-          { resetUserInput: true }
-        );
-
-        // TXT/JSON export remains only as a fallback if BotSailor's live
-        // trigger endpoint returns a real failure.
-        if (!flowResult.success && getFlowExportData(selectedFlowRecord)) {
-          const liveFailure = flowResult;
+        // Imported TXT/JSON is the confirmed working route. Use BotSailor's
+        // live trigger only when this flow has no stored Flow Data yet.
+        let flowResult;
+        if (getFlowExportData(selectedFlowRecord)) {
           flowResult = await executeDirectBotSailorFlow(record, selectedFlowRecord);
-          flowResult.liveTriggerFailure = {
-            status: liveFailure.status,
-            message: liveFailure.message,
-            response: liveFailure.response || null,
-          };
+        } else {
+          flowResult = await triggerBotSailorFlow(
+            mobile,
+            selectedFlowRecord.unique_id,
+            { resetUserInput: false }
+          );
         }
 
         await logWhatsAppSend(
