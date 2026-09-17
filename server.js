@@ -2622,6 +2622,7 @@ app.post("/api/admin/botsailor-flow-data/import-bulk", async (req, res) => {
 });
 
 app.get("/api/admin/botsailor-flow-data/status", async (req, res) => {
+  try {
   const result = await pool.query(
     `SELECT id, botsailor_id, name, unique_id, status,
             CASE WHEN raw ? 'flow_export' THEN TRUE ELSE FALSE END AS flow_data_imported,
@@ -2630,7 +2631,7 @@ app.get("/api/admin/botsailor-flow-data/status", async (req, res) => {
             CASE
               WHEN raw ? 'flow_export'
                AND jsonb_typeof(raw->'flow_export'->'nodes') = 'object'
-              THEN jsonb_object_length(raw->'flow_export'->'nodes')
+              THEN (SELECT COUNT(*)::int FROM jsonb_object_keys(raw->'flow_export'->'nodes'))
               ELSE 0
             END AS flow_node_count,
             imported_at
@@ -2645,6 +2646,10 @@ app.get("/api/admin/botsailor-flow-data/status", async (req, res) => {
     pending: result.rows.length - imported,
     flows: result.rows,
   });
+  } catch (err) {
+    console.error("Flow data status failed:", err.message);
+    res.status(500).json({ success: false, message: "Flow data status could not be loaded. Please retry." });
+  }
 });
 
 app.post("/api/webhook/botsailor", async (req, res) => {
