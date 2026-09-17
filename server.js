@@ -841,12 +841,12 @@ async function importBotSailorFlowExport(flowDataInput, sourceFileName = "") {
   if (!title) return { success: false, message: "Flow title not found in Start Bot Flow node" };
 
   let existing = await pool.query(
-    `SELECT * FROM botsailor_flows WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) ORDER BY imported_at DESC LIMIT 1`,
+    `SELECT * FROM botsailor_flows WHERE raw->>'crm_sync_missing' IS DISTINCT FROM 'true' AND LOWER(TRIM(name)) = LOWER(TRIM($1)) ORDER BY imported_at DESC LIMIT 1`,
     [title]
   );
   if (!existing.rows.length) {
     const allFlows = await pool.query(
-      `SELECT * FROM botsailor_flows ORDER BY imported_at DESC, name ASC`
+      `SELECT * FROM botsailor_flows WHERE raw->>'crm_sync_missing' IS DISTINCT FROM 'true' ORDER BY imported_at DESC, name ASC`
     );
     const normalizedTitle = normalizeLooseText(title);
     const relaxedMatch = allFlows.rows.find(
@@ -1025,7 +1025,7 @@ async function findSelectedCtaTemplate(autoImport = true, templateIdOverride = "
     if (selectedId) {
       const selected = await pool.query(
         `SELECT * FROM whatsapp_templates
-         WHERE id::text = $1 OR botsailor_id = $1
+         WHERE raw->>'crm_sync_missing' IS DISTINCT FROM 'true' AND (id::text = $1 OR botsailor_id = $1)
          ORDER BY imported_at DESC
          LIMIT 1`,
         [selectedId]
@@ -1052,7 +1052,7 @@ async function findCallUsTemplate(autoImport = true) {
     if (config.botsailorTemplateId) {
       const selected = await pool.query(
         `SELECT * FROM whatsapp_templates
-         WHERE id::text = $1 OR botsailor_id = $1
+         WHERE raw->>'crm_sync_missing' IS DISTINCT FROM 'true' AND (id::text = $1 OR botsailor_id = $1)
          ORDER BY imported_at DESC
          LIMIT 1`,
         [String(config.botsailorTemplateId)]
@@ -1063,9 +1063,9 @@ async function findCallUsTemplate(autoImport = true) {
     // Fallback to the approved Call Us template imported from BotSailor.
     const fallback = await pool.query(
       `SELECT * FROM whatsapp_templates
-       WHERE LOWER(REPLACE(REPLACE(COALESCE(template_name,''), ' ', '_'), '-', '_'))
+       WHERE raw->>'crm_sync_missing' IS DISTINCT FROM 'true' AND (LOWER(REPLACE(REPLACE(COALESCE(template_name,''), ' ', '_'), '-', '_'))
              IN ('call_us','callus')
-          OR LOWER(COALESCE(template_name,'')) LIKE '%call%us%'
+          OR LOWER(COALESCE(template_name,'')) LIKE '%call%us%')
        ORDER BY
          CASE
            WHEN LOWER(REPLACE(REPLACE(COALESCE(template_name,''), ' ', '_'), '-', '_')) = 'call_us' THEN 0
@@ -1229,7 +1229,7 @@ async function getSelectedFlowRecord(flowValue) {
   // passed directly as bot_flow_unique_id when the API actually needs unique_id.
   const result = await pool.query(
     `SELECT * FROM botsailor_flows
-     WHERE unique_id = $1 OR botsailor_id = $1
+     WHERE raw->>'crm_sync_missing' IS DISTINCT FROM 'true' AND (unique_id = $1 OR botsailor_id = $1)
      ORDER BY
        CASE WHEN unique_id = $1 THEN 0 ELSE 1 END,
        imported_at DESC
@@ -1549,7 +1549,46 @@ async function insertUnique(table, payload, options = {}) {
   return insert(table, { ...payload, mobile });
 }
 
+// Serialize each catalog refresh and atomically preserve the old snapshot on failure.
+async function syncBotSailorCatalog(table, key, run) {
+  let db;
+  try {
+    db = await pool.connect();
+    await db.query("BEGIN");
+    await db.query("SELECT pg_advisory_xact_lock(hashtext($1))", [table]);
+    const result = await run(db);
+    if (!result.success) { await db.query("ROLLBACK"); return result; }
+    await db.query(`UPDATE ${table} SET raw = COALESCE(raw, '{}'::jsonb) ||
+      jsonb_build_object('crm_sync_missing', NOT (${key} = ANY($1::text[])))`, [result.ids]);
+    await db.query("COMMIT");
+    const { ids, ...response } = result;
+    return response;
+  } catch (err) {
+    if (db) await db.query("ROLLBACK").catch(() => {});
+    console.error("BotSailor catalog sync failed:", err.message);
+    return { success: false, message: "Catalog sync failed; saved list was preserved. " + err.message };
+  } finally { if (db) db.release(); }
+}
+
+function completeBotSailorList(response, key) {
+  const message = response?.message;
+  const list = Array.isArray(message) ? message : message && typeof message === "object" && message[key] ? [message] : null;
+  if (!list || list.some(item => !item || !String(item[key] || "").trim())) {
+    throw new Error("Invalid catalog response");
+  }
+  // Reject advertised partial pages instead of hiding unseen records.
+  for (const meta of [response, response?.pagination, response?.meta].filter(Boolean)) {
+    if (meta.next_page_url || meta.next_page || meta.next_cursor || meta.has_more === true ||
+        (Number(meta.last_page) > 1) || (Number(meta.total_pages) > 1) ||
+        (meta.total != null && Number(meta.total) !== list.length)) {
+      throw new Error("Incomplete catalog response");
+    }
+  }
+  return [...new Map(list.map(item => [String(item[key]), item])).values()];
+}
+
 async function importBotSailorTemplates() {
+  return syncBotSailorCatalog("whatsapp_templates", "botsailor_id", async (db) => {
   const result = await botSailorPost("https://botsailor.com/api/v1/whatsapp/get/template/list", {
     apiToken: config.botsailorToken,
     phone_number_id: config.botsailorInstanceId,
@@ -1557,8 +1596,7 @@ async function importBotSailorTemplates() {
 
   if (!result.success) return result;
 
-  const rawMessage = result.response?.message;
-  const list = Array.isArray(rawMessage) ? rawMessage : rawMessage && typeof rawMessage === "object" ? [rawMessage] : [];
+  const list = completeBotSailorList(result.response, "id");
 
   let imported = 0;
   for (const item of list) {
@@ -1570,7 +1608,7 @@ async function importBotSailorTemplates() {
       variableMap = {};
     }
 
-    await pool.query(
+    await db.query(
       `INSERT INTO whatsapp_templates
        (botsailor_id, meta_template_id, template_name, locale, status, body_content, variable_map, raw, imported_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CURRENT_TIMESTAMP)
@@ -1598,22 +1636,24 @@ async function importBotSailorTemplates() {
     imported += 1;
   }
 
-  return { success: true, status: "imported", imported, response: result.response };
+  return { success: true, status: "imported", imported, ids: list.map(item => String(item.id)), response: result.response };
+  });
 }
 
 async function importBotSailorFlows() {
+  return syncBotSailorCatalog("botsailor_flows", "unique_id", async (db) => {
   const result = await botSailorPost("https://botsailor.com/api/v1/whatsapp/get/bot-flow-list", {
     apiToken: config.botsailorToken,
     phone_number_id: config.botsailorInstanceId,
   });
 
   if (!result.success) return result;
-  const list = Array.isArray(result.response?.message) ? result.response.message : [];
+  const list = completeBotSailorList(result.response, "unique_id");
   let imported = 0;
 
   for (const item of list) {
     if (!item?.unique_id) continue;
-    await pool.query(
+    await db.query(
       `INSERT INTO botsailor_flows
        (botsailor_id, name, unique_id, status, raw, imported_at)
        VALUES ($1,$2,$3,$4,$5,CURRENT_TIMESTAMP)
@@ -1631,7 +1671,8 @@ async function importBotSailorFlows() {
     imported += 1;
   }
 
-  return { success: true, status: "imported", imported, response: result.response };
+  return { success: true, status: "imported", imported, ids: list.map(item => String(item.unique_id)), response: result.response };
+  });
 }
 
 async function runFollowupAutomation() {
@@ -2034,7 +2075,7 @@ app.post("/api/admin/botsailor/templates/import", async (req, res) => {
 
 app.get("/api/admin/botsailor/templates", async (req, res) => {
   try {
-    const result = await pool.query("SELECT * FROM whatsapp_templates ORDER BY imported_at DESC, template_name ASC");
+    const result = await pool.query("SELECT * FROM whatsapp_templates WHERE raw->>'crm_sync_missing' IS DISTINCT FROM 'true' ORDER BY imported_at DESC, template_name ASC");
     res.json({ success: true, data: result.rows });
   } catch (err) {
     res.status(500).json({ success: false, message: "Failed to load templates" });
@@ -2052,7 +2093,7 @@ app.post("/api/admin/botsailor/flows/import", async (req, res) => {
 
 app.get("/api/admin/botsailor/flows", async (req, res) => {
   try {
-    const result = await pool.query("SELECT * FROM botsailor_flows ORDER BY imported_at DESC, name ASC");
+    const result = await pool.query("SELECT * FROM botsailor_flows WHERE raw->>'crm_sync_missing' IS DISTINCT FROM 'true' ORDER BY imported_at DESC, name ASC");
     res.json({ success: true, data: result.rows });
   } catch (err) {
     res.status(500).json({ success: false, message: "Failed to load bot flows" });
@@ -2079,10 +2120,10 @@ app.get("/api/admin/call-for-admission-options", async (req, res) => {
 
     const [flowsResult, templatesResult] = await Promise.all([
       pool.query(
-        "SELECT id, botsailor_id, name, unique_id, status, imported_at FROM botsailor_flows ORDER BY imported_at DESC, name ASC"
+        "SELECT id, botsailor_id, name, unique_id, status, imported_at FROM botsailor_flows WHERE raw->>'crm_sync_missing' IS DISTINCT FROM 'true' ORDER BY imported_at DESC, name ASC"
       ),
       pool.query(
-        "SELECT id, botsailor_id, template_name, locale, status, imported_at FROM whatsapp_templates ORDER BY imported_at DESC, template_name ASC"
+        "SELECT id, botsailor_id, template_name, locale, status, imported_at FROM whatsapp_templates WHERE raw->>'crm_sync_missing' IS DISTINCT FROM 'true' ORDER BY imported_at DESC, template_name ASC"
       ),
     ]);
 
@@ -2345,7 +2386,7 @@ for (const t of ["leads", "admissions", "appointments", "support", "faculty"]) {
 
         if (mode === "template") {
           const templateId = Number(req.body.whatsappTemplateId);
-          const templateResult = await pool.query("SELECT * FROM whatsapp_templates WHERE id = $1", [templateId]);
+          const templateResult = await pool.query("SELECT * FROM whatsapp_templates WHERE id = $1 AND raw->>'crm_sync_missing' IS DISTINCT FROM 'true'", [templateId]);
           if (!templateResult.rows.length) {
             whatsapp = { success: false, status: "missing_template", message: "Select an imported BotSailor template" };
           } else {
@@ -2636,6 +2677,7 @@ app.get("/api/admin/botsailor-flow-data/status", async (req, res) => {
             END AS flow_node_count,
             imported_at
      FROM botsailor_flows
+     WHERE raw->>'crm_sync_missing' IS DISTINCT FROM 'true'
      ORDER BY name ASC`
   );
   const imported = result.rows.filter((item) => item.flow_data_imported).length;
@@ -3228,6 +3270,12 @@ const BUILTIN_FLOW_EXPORTS = [{"id":"xitFB@0.0.1","nodes":{"1":{"id":1,"data":{"
 async function seedBuiltinFlowExports() {
   for (const flowData of BUILTIN_FLOW_EXPORTS) {
     try {
+      const start = Object.values(flowData.nodes || {}).find(node => node.name === "Start Bot Flow");
+      const existing = await pool.query(
+        "SELECT raw FROM botsailor_flows WHERE LOWER(TRIM(name)) = LOWER(TRIM($1))",
+        [start?.data?.title || ""]
+      );
+      if (existing.rows.some(row => row.raw?.flow_export || row.raw?.crm_sync_missing === true)) continue;
       const result = await importBotSailorFlowExport(flowData);
       console.log("DIRECT FLOW DATA SEED", { title: result.title || "", success: result.success, nodeCount: result.nodeCount || 0, message: result.message || "" });
     } catch (err) {
