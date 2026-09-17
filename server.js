@@ -677,7 +677,30 @@ async function sendDirectCounselorStep(record) {
   );
 }
 
-async function triggerBotSailorFlow(phone, uniqueId) {
+async function resetBotSailorUserInputFlow(phone) {
+  const payload = {
+    apiToken: config.botsailorToken,
+    phone_number_id: config.botsailorInstanceId,
+    phone_number: botSailorPhone(phone),
+  };
+
+  const result = await botSailorPost(
+    "https://botsailor.com/api/v1/whatsapp/subscriber/reset/user-input-flow",
+    payload
+  );
+
+  await addIntegrationLog(
+    "whatsapp",
+    "reset_user_input_flow",
+    result.success ? "success" : "failed",
+    { ...payload, apiToken: "***" },
+    result.response || { error: result.error || result.message }
+  );
+
+  return result;
+}
+
+async function triggerBotSailorFlow(phone, uniqueId, options = {}) {
   if (!uniqueId) {
     console.log("CTA DEBUG | triggerBotSailorFlow blocked: missing uniqueId");
     return { success: false, status: "missing_flow", message: "BotSailor Call us flow not selected" };
@@ -696,6 +719,20 @@ async function triggerBotSailorFlow(phone, uniqueId) {
     phone_number: payload.phone_number,
   });
 
+  // A button reply can arrive while the subscriber is still attached to an
+  // older BotSailor input-flow state. Clear that state before deliberately
+  // starting the newly selected flow. A reset failure must not block trigger.
+  let resetResult = null;
+  if (options.resetUserInput !== false) {
+    resetResult = await resetBotSailorUserInputFlow(phone);
+    console.log("CTA DEBUG | reset user input flow result", {
+      success: resetResult.success,
+      status: resetResult.status,
+      message: resetResult.message,
+      phone_number: payload.phone_number,
+    });
+  }
+
   const result = await botSailorPost("https://botsailor.com/api/v1/whatsapp/trigger-bot", payload);
 
   console.log("CTA DEBUG | BotSailor trigger-bot raw result", {
@@ -713,7 +750,7 @@ async function triggerBotSailorFlow(phone, uniqueId) {
     { ...payload, apiToken: "***" },
     result.response || { error: result.error || result.message }
   );
-  return result;
+  return { ...result, resetResult };
 }
 
 
@@ -933,10 +970,24 @@ async function executeRuntimeFlowAction(record, runtimeRow) {
       return sendBotSailorTemplate(record, templateRecord, buildTemplateVariables(templateRecord, record));
     }
 
-    const target = await getSelectedFlowRecord(action.flowValue || "");
-    if (target && getFlowExportData(target)) return executeDirectBotSailorFlow(record, target);
-    if (target?.unique_id) return triggerBotSailorFlow(record.mobile, target.unique_id);
-    return triggerBotSailorFlow(record.mobile, action.flowValue || "");
+    let target = await getSelectedFlowRecord(action.flowValue || "");
+    if (!target && config.botsailorToken && config.botsailorInstanceId) {
+      await importBotSailorFlows();
+      target = await getSelectedFlowRecord(action.flowValue || "");
+    }
+
+    // Always prefer BotSailor's live flow so newly edited flow content is used.
+    const liveResult = await triggerBotSailorFlow(
+      record.mobile,
+      target?.unique_id || action.flowValue || ""
+    );
+    if (liveResult.success) return liveResult;
+
+    // Keep an imported TXT export only as an emergency compatibility fallback.
+    if (target && getFlowExportData(target)) {
+      return executeDirectBotSailorFlow(record, target);
+    }
+    return liveResult;
   }
 
   return { success: true, status: "noop", message: "No next action configured" };
@@ -1551,7 +1602,9 @@ async function importBotSailorFlows() {
          botsailor_id = EXCLUDED.botsailor_id,
          name = EXCLUDED.name,
          status = EXCLUDED.status,
-         raw = EXCLUDED.raw,
+         -- Refresh live BotSailor metadata without deleting an older local
+         -- Export Flow Data snapshot that may be needed as a fallback.
+         raw = COALESCE(botsailor_flows.raw, '{}'::jsonb) || EXCLUDED.raw,
          imported_at = CURRENT_TIMESTAMP`,
       [String(item.id || ""), item.name || "Bot Flow", String(item.unique_id), String(item.status ?? ""), JSON.stringify(item)]
     );
@@ -1989,6 +2042,20 @@ app.get("/api/admin/botsailor/flows", async (req, res) => {
 app.get("/api/admin/call-for-admission-options", async (req, res) => {
   try {
     await loadPersistedConfig();
+
+    // Opening the options panel should discover newly created BotSailor flows
+    // automatically. If BotSailor is temporarily unavailable, retain and show
+    // the last successfully imported list instead of breaking the Admin page.
+    if (config.botsailorToken && config.botsailorInstanceId) {
+      try {
+        const refreshResult = await importBotSailorFlows();
+        if (!refreshResult.success) {
+          console.error("Flow auto-refresh failed:", refreshResult.message);
+        }
+      } catch (refreshError) {
+        console.error("Flow auto-refresh error:", refreshError.message);
+      }
+    }
 
     const [flowsResult, templatesResult] = await Promise.all([
       pool.query(
@@ -2749,9 +2816,16 @@ app.post("/api/webhook/botsailor", async (req, res) => {
           course: payload.course || "",
         };
 
-        const selectedFlowRecord = clickCta.flowUniqueId
+        let selectedFlowRecord = clickCta.flowUniqueId
           ? await getSelectedFlowRecord(clickCta.flowUniqueId)
           : null;
+
+        // A newly created flow may not yet exist in the local cache. Refresh
+        // once from BotSailor and retry before treating the selection as bad.
+        if (!selectedFlowRecord?.unique_id && clickCta.flowUniqueId) {
+          await importBotSailorFlows();
+          selectedFlowRecord = await getSelectedFlowRecord(clickCta.flowUniqueId);
+        }
 
         if (!selectedFlowRecord?.unique_id) {
           console.error("CTA CLICK DEBUG | selected flow not found", {
@@ -2765,52 +2839,24 @@ app.post("/api/webhook/botsailor", async (req, res) => {
           });
         }
 
-        const flowName = normalizeLooseText(selectedFlowRecord.name || "");
-        const configuredLegacyFlow = String(
-          config.callWithCounselorFlowUniqueId || ""
-        ).trim();
+        // Run the current BotSailor version by unique_id. This makes every
+        // imported flow dynamic: edits in BotSailor take effect immediately.
+        let flowResult = await triggerBotSailorFlow(
+          mobile,
+          selectedFlowRecord.unique_id,
+          { resetUserInput: true }
+        );
 
-        const isLegacyCounselorFlow =
-          flowName === "call with counselor" ||
-          String(selectedFlowRecord.botsailor_id || "").trim() === configuredLegacyFlow ||
-          String(selectedFlowRecord.unique_id || "").trim() === configuredLegacyFlow;
-
-        if (isLegacyCounselorFlow) {
-          const directResult = await sendDirectCounselorStep(record);
-
-          await logWhatsAppSend(
-            "leads",
-            record,
-            "flow_direct:call_with_counselor",
-            directResult
-          );
-
-          console.log("CTA CLICK DEBUG | CRM-direct counselor step result", {
-            success: directResult.success,
-            status: directResult.status,
-            message: directResult.message,
-            selectedFlowName: selectedFlowRecord.name,
-            selectedFlowUniqueId: selectedFlowRecord.unique_id,
-            mobile: botSailorPhone(mobile),
-          });
-
-          return res.status(directResult.success ? 200 : 400).json({
-            status: directResult.success ? "ok" : "error",
-            action: "flow_direct_counselor_step",
-            message: directResult.success
-              ? "Counselor step sent directly with Instant Call us button"
-              : (directResult.message || "Failed to send counselor step"),
-            flow: selectedFlowRecord.name,
-            flow_unique_id: selectedFlowRecord.unique_id,
-            result: directResult.response || null,
-          });
-        }
-
-        let flowResult = await executeDirectBotSailorFlow(record, selectedFlowRecord);
-
-        // Compatibility fallback for flows whose Export Flow Data has not yet been imported.
-        if (!flowResult.success && flowResult.status === "missing_flow_export") {
-          flowResult = await triggerBotSailorFlow(mobile, selectedFlowRecord.unique_id);
+        // TXT/JSON export remains only as a fallback if BotSailor's live
+        // trigger endpoint returns a real failure.
+        if (!flowResult.success && getFlowExportData(selectedFlowRecord)) {
+          const liveFailure = flowResult;
+          flowResult = await executeDirectBotSailorFlow(record, selectedFlowRecord);
+          flowResult.liveTriggerFailure = {
+            status: liveFailure.status,
+            message: liveFailure.message,
+            response: liveFailure.response || null,
+          };
         }
 
         await logWhatsAppSend(
