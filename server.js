@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import axios from "axios";
 import pg from "pg";
+import { randomUUID } from "node:crypto";
 
 const { Pool } = pg;
 
@@ -403,6 +404,18 @@ async function initDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_flow_runtime_actions_lookup
       ON flow_runtime_actions (mobile, normalized_title, created_at DESC);
+    CREATE TABLE IF NOT EXISTS cta_sent_buttons (
+      button_id TEXT PRIMARY KEY,
+      mobile TEXT NOT NULL,
+      normalized_title TEXT NOT NULL,
+      visible_title TEXT NOT NULL,
+      cta_config JSONB NOT NULL,
+      message_id TEXT,
+      sent BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_cta_sent_buttons_lookup
+      ON cta_sent_buttons (mobile, normalized_title, created_at DESC);
   `);
 
   await pool.query(`
@@ -1278,7 +1291,41 @@ function getStageCtaConfig(label = "") {
     };
   }
 
-  return base;
+  return { ...base, stage: stage.includes("9h") ? "9h" : stage.includes("6h") ? "6h" : "3h" };
+}
+
+function ctaContextMessageId(payload = {}) {
+  return String(payload.context?.id || payload.message?.context?.id ||
+    payload.messages?.[0]?.context?.id || payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.context?.id || payload.reply_to_message_id ||
+    payload.replied_to_message_id || "").trim();
+}
+
+function ctaSnapshotKey(cta) {
+  return JSON.stringify([cta.stage, cta.mode, cta.templateId, cta.flowUniqueId]);
+}
+
+async function resolveSentCta(mobile, payload, title) {
+  const id = extractButtonReplyId(payload);
+  const phone = botSailorPhone(mobile);
+  const contextId = ctaContextMessageId(payload);
+  if (id.startsWith("gvcta_")) {
+    const found = await pool.query(
+      "SELECT * FROM cta_sent_buttons WHERE mobile = $1 AND button_id = $2", [phone, id]);
+    return { exact: true, cta: found.rows[0]?.cta_config || null, candidates: [] };
+  }
+  if (contextId) {
+    const found = await pool.query(
+      "SELECT * FROM cta_sent_buttons WHERE mobile = $1 AND message_id = $2", [phone, contextId]);
+    if (found.rows.length === 1) return { exact: true, cta: found.rows[0].cta_config, candidates: [] };
+  }
+  const stageMatch = normalizeLooseText(id).match(/^call for admission (3h|6h|9h)$/);
+  if (stageMatch) return { exact: true, cta: getStageCtaConfig(stageMatch[1]), candidates: [] };
+  if (!title) return { exact: false, cta: null, candidates: [] };
+  const found = await pool.query(
+    `SELECT * FROM cta_sent_buttons WHERE mobile = $1 AND normalized_title = $2 AND sent = TRUE
+     ORDER BY created_at DESC`, [phone, title]);
+  const candidates = [...new Map(found.rows.map(row => [ctaSnapshotKey(row.cta_config), row])).values()];
+  return { exact: false, cta: candidates.length === 1 ? candidates[0].cta_config : null, candidates };
 }
 
 async function getAllEffectiveCtaConfigs() {
@@ -1352,13 +1399,27 @@ async function sendAndLogText(table, record, label, message, useCallButton = fal
     // WhatsApp reply-button title max is 20 characters.
     buttonTitle = buttonTitle.slice(0, 20);
 
+    const buttonId = `gvcta_${randomUUID().replaceAll("-", "")}`;
+    // Persist the selected action before sending, so a fast click can resolve it.
+    await pool.query(
+      `INSERT INTO cta_sent_buttons (button_id, mobile, normalized_title, visible_title, cta_config)
+       VALUES ($1,$2,$3,$4,$5::jsonb)`,
+      [buttonId, botSailorPhone(record.mobile), normalizeLooseText(buttonTitle), buttonTitle, JSON.stringify(stageCta)]
+    );
     const result = await sendBotSailorReplyButton(
       record,
       message,
       `${label}_cta_button`,
       buttonTitle,
-      "call_for_admission"
+      buttonId
     );
+    if (result.success) {
+      const messageId = result.response?.wa_message_id || result.response?.message_id ||
+        result.response?.messages?.[0]?.id || result.response?.data?.wa_message_id || null;
+      await pool.query("UPDATE cta_sent_buttons SET sent = TRUE, message_id = $2 WHERE button_id = $1", [buttonId, messageId]);
+    } else {
+      await pool.query("DELETE FROM cta_sent_buttons WHERE button_id = $1", [buttonId]);
+    }
     await logWhatsAppSend(table, record, `${label}:cta_button:${mode}`, result);
     return result;
   }
@@ -2462,6 +2523,8 @@ function extractButtonReplyId(payload = {}) {
     payload.messages?.[0]?.button?.payload ||
     payload.messages?.[0]?.button?.id ||
     payload.messages?.[0]?.interactive?.button_reply?.id ||
+    payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.interactive?.button_reply?.id ||
+    payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.button?.payload ||
     ""
   ).trim();
 }
@@ -2730,12 +2793,14 @@ app.post("/api/webhook/botsailor", async (req, res) => {
 
     const effectiveCtas = await getAllEffectiveCtaConfigs();
     const incomingCtaTitle = webhookUserMessage || buttonReplyTitle;
-    const matchedStageCta = effectiveCtas.find(
+    const titleMatches = effectiveCtas.filter(
       (item) =>
         item.mode !== "off" &&
         item.normalizedTitle &&
         incomingCtaTitle === item.normalizedTitle
-    ) || null;
+    );
+    const sentCta = mobile ? await resolveSentCta(mobile, payload, incomingCtaTitle) : { exact: false, cta: null, candidates: [] };
+    const matchedStageCta = sentCta.cta || (!sentCta.exact && !sentCta.candidates.length && titleMatches.length === 1 ? titleMatches[0] : null);
 
     const selectedFlowForClick = String(
       config.callForAdmissionFlowUniqueId ||
@@ -2753,6 +2818,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     );
 
     const isCallForAdmissionClick =
+      sentCta.exact || sentCta.candidates.length > 0 || titleMatches.length > 0 ||
       buttonReplyId === "call for admission" ||
       buttonReplyId === "call_for_admission" ||
       buttonReplyId === "call for admission 3h" ||
@@ -2793,7 +2859,34 @@ app.post("/api/webhook/botsailor", async (req, res) => {
 
     // Dynamic exported-flow buttons are resolved before the generic CTA gate.
     // BotSailor commonly sends them as user_message "#button_reply#<button title>".
-    const runtimeAction = await findFlowRuntimeAction(mobile, webhookUserMessage || buttonReplyTitle);
+    if (sentCta.exact && !sentCta.cta) {
+      return res.status(200).json({ status: "ignored", message: "Unknown CTA button for this mobile" });
+    }
+    if (!sentCta.exact && (sentCta.candidates.length > 1 || (!sentCta.candidates.length && titleMatches.length > 1))) {
+      // Title-only webhooks cannot identify which identical button was clicked.
+      // Ask explicitly instead of silently choosing the first or latest stage.
+      const choices = sentCta.candidates.length ? sentCta.candidates.map(row => row.cta_config) : titleMatches;
+      const uniqueChoices = [...new Map(choices.map(cta => [ctaSnapshotKey(cta), cta])).values()];
+      if (uniqueChoices.length > 3) return res.status(200).json({ status: "ignored", message: "Ambiguous CTA: more than three saved actions; original button ID required" });
+      const buttons = [];
+      for (const [index, cta] of uniqueChoices.entries()) {
+        const id = `gvcta_${randomUUID().replaceAll("-", "")}`;
+        const title = `${cta.stage} option ${index + 1}`;
+        await pool.query(
+          `INSERT INTO cta_sent_buttons (button_id, mobile, normalized_title, visible_title, cta_config)
+           VALUES ($1,$2,$3,$4,$5::jsonb)`,
+          [id, botSailorPhone(mobile), normalizeLooseText(title), title, JSON.stringify(cta)]
+        );
+        buttons.push({ id, title });
+      }
+      const result = await sendBotSailorReplyButtons({ mobile }, "Kaunsa follow-up kholna hai? Apna message select karein.", buttons, "resolve_same_title_cta");
+      for (const button of buttons) {
+        if (result.success) await pool.query("UPDATE cta_sent_buttons SET sent = TRUE WHERE button_id = $1", [button.id]);
+        else await pool.query("DELETE FROM cta_sent_buttons WHERE button_id = $1", [button.id]);
+      }
+      return res.status(result.success ? 200 : 400).json({ status: result.success ? "choose_stage" : "error" });
+    }
+    const runtimeAction = sentCta.exact || sentCta.cta ? null : await findFlowRuntimeAction(mobile, webhookUserMessage || buttonReplyTitle);
     if (runtimeAction) {
       const clean = cleanMobile(mobile);
       const clean10 = clean.length === 12 && clean.startsWith("91") ? clean.slice(2) : clean;
@@ -2826,8 +2919,8 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     // CRM-direct Flow step 2 MUST be handled before the generic CTA gate.
     // BotSailor sends this reply as user_message "#button_reply#instant call us".
     if (
-      webhookUserMessage === "instant call us" ||
-      buttonReplyTitle === "instant call us"
+      !sentCta.cta && (webhookUserMessage === "instant call us" ||
+      buttonReplyTitle === "instant call us")
     ) {
       console.log("CTA CLICK DEBUG | Instant Call us detected before generic CTA gate", {
         mobile,
