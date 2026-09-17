@@ -1297,7 +1297,7 @@ function getStageCtaConfig(label = "") {
 function ctaContextMessageId(payload = {}) {
   return String(payload.context?.id || payload.message?.context?.id ||
     payload.messages?.[0]?.context?.id || payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.context?.id || payload.reply_to_message_id ||
-    payload.replied_to_message_id || "").trim();
+    payload.replied_to_message_id || payload.reply_message_id || "").trim();
 }
 
 function ctaSnapshotKey(cta) {
@@ -1400,6 +1400,7 @@ async function sendAndLogText(table, record, label, message, useCallButton = fal
     buttonTitle = buttonTitle.slice(0, 20);
 
     const buttonId = `gvcta_${randomUUID().replaceAll("-", "")}`;
+    console.log("CTA ROUTING v2 | sending", { stage: stageCta.stage, templateId: stageCta.templateId, buttonId });
     // Persist the selected action before sending, so a fast click can resolve it.
     await pool.query(
       `INSERT INTO cta_sent_buttons (button_id, mobile, normalized_title, visible_title, cta_config)
@@ -2800,6 +2801,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
         incomingCtaTitle === item.normalizedTitle
     );
     const sentCta = mobile ? await resolveSentCta(mobile, payload, incomingCtaTitle) : { exact: false, cta: null, candidates: [] };
+    console.log("CTA ROUTING v2 | resolving", { contextMessageId: ctaContextMessageId(payload), exact: sentCta.exact, stage: sentCta.cta?.stage || null, templateId: sentCta.cta?.templateId || null, candidates: sentCta.candidates.length });
     const matchedStageCta = sentCta.cta || (!sentCta.exact && !sentCta.candidates.length && titleMatches.length === 1 ? titleMatches[0] : null);
 
     const selectedFlowForClick = String(
