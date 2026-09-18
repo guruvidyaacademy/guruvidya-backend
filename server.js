@@ -76,6 +76,12 @@ const DEFAULT_CONFIG = {
     "Hi {{name}},\n\nAre you planning to proceed with your {{course}} admission?\n\nIf you need any assistance before taking your decision, our Admission Team is available to help you.",
 
   windowClosingEnabled: true,
+  windowClosingUseCallButton: false,
+  windowClosingUseSameCtaAs3: false,
+  windowClosingCtaActionMode: "off",
+  windowClosingCtaTemplateId: "",
+  windowClosingCtaTemplateCustomTitle: "Admission Help",
+  windowClosingCtaFlowUniqueId: "",
   windowClosingHoursBefore: 3,
   windowClosingMessage:
     "Hi {{name}}, do you need any assistance regarding your {{course}} enquiry?\n\nPlease reply YES if you would like our admission counsellor to assist you.\n\nOur counsellor will contact you during working hours (9:00 AM onwards).\n\nGuruvidya Academy",
@@ -1260,7 +1266,8 @@ function withCtaTitle(message, title) {
   return `${body}\n\n*${heading}*`;
 }
 
-function getStageCtaConfig(label = "") {
+function getStageCtaConfig(label = "", stageConfig = config) {
+  const config = stageConfig;
   const stage = String(label || "").toLowerCase();
 
   const base = {
@@ -1271,6 +1278,16 @@ function getStageCtaConfig(label = "") {
     flowUniqueId: String(config.callForAdmissionFlowUniqueId || config.callWithCounselorFlowUniqueId || "").trim(),
   };
 
+  if (stage.includes("window") || stage === "24h") {
+    if (config.windowClosingUseSameCtaAs3 === true) return { ...base, stage: "window" };
+    return {
+      stage: "window",
+      mode: normalize(config.windowClosingCtaActionMode || "off"),
+      templateId: String(config.windowClosingCtaTemplateId || "").trim(),
+      templateTitle: String(config.windowClosingCtaTemplateCustomTitle || "Admission Help").trim(),
+      flowUniqueId: String(config.windowClosingCtaFlowUniqueId || "").trim(),
+    };
+  }
   if (stage.includes("6h") && !Boolean(config.followup6UseSameCtaAs3 ?? true)) {
     return {
       stage: "6h",
@@ -1333,6 +1350,7 @@ async function getAllEffectiveCtaConfigs() {
     getStageCtaConfig("3h"),
     getStageCtaConfig("6h"),
     getStageCtaConfig("9h"),
+    getStageCtaConfig("window"),
   ];
 
   const resolved = [];
@@ -1355,12 +1373,12 @@ async function getAllEffectiveCtaConfigs() {
   return resolved;
 }
 
-async function sendAndLogText(table, record, label, message, useCallButton = false) {
+async function sendAndLogText(table, record, label, message, useCallButton = false, stageConfig = config) {
   // CTA-enabled stages always send ONE interactive CRM follow-up first.
   // Flow/Template is executed only after the student taps the button and
   // /api/webhook/botsailor receives "Call for Admission".
   if (useCallButton) {
-    const stageCta = getStageCtaConfig(label);
+    const stageCta = getStageCtaConfig(label, stageConfig);
     const mode = stageCta.mode;
 
     console.log("STAGE CTA DEBUG", {
@@ -1762,6 +1780,10 @@ async function runFollowupAutomation() {
     const minimumGapMs = Math.max(0, Number(config.minimumAutoMessageGapHours || 3)) * HOUR;
 
     for (const lead of result.rows) {
+      if (!config.whatsappEnabled || !config.whatsappAutoFollowupEnabled) {
+        summary.reason = "automation_disabled";
+        break;
+      }
       summary.checked += 1;
       if (!hasOpenWhatsappWindow(lead, current)) {
         summary.skipped += 1;
@@ -1783,7 +1805,7 @@ async function runFollowupAutomation() {
           lead,
           "window_closing",
           config.windowClosingMessage,
-          false
+          Boolean(config.windowClosingUseCallButton)
         );
 
         if (sendResult.success) {
@@ -1912,12 +1934,29 @@ app.post("/api/admin/automation/run-now", async (req, res) => {
   res.json({ success: !result.error, data: result });
 });
 
+function buildTestAutomationConfig(saved, draft = {}) {
+  const result = { ...saved };
+  // Only copy message/CTA fields. Credentials and live automation switches
+  // always remain server-owned; this object is never persisted or made global.
+  for (const key of Object.keys(saved)) {
+    if (!/^(followup[369](Message|UseCallButton|UseSameCtaAs3|CtaActionMode|CtaTemplateId|CtaTemplateCustomTitle|CtaFlowUniqueId)|windowClosing(Message|UseCallButton|UseSameCtaAs3|CtaActionMode|CtaTemplateId|CtaTemplateCustomTitle|CtaFlowUniqueId)|callForAdmission(ActionMode|TemplateId|TemplateCustomTitle|FlowUniqueId))$/.test(key)) continue;
+    if (!Object.prototype.hasOwnProperty.call(draft, key)) continue;
+    if (typeof saved[key] === "boolean" && typeof draft[key] === "boolean") result[key] = draft[key];
+    else if (typeof draft[key] === "string" || typeof draft[key] === "number") {
+      if (typeof saved[key] !== "boolean") result[key] = String(draft[key]);
+    }
+  }
+  return result;
+}
+
 app.post("/api/admin/automation/test-mobile", async (req, res) => {
   try {
     await loadPersistedConfig();
+    const testConfig = buildTestAutomationConfig(config, req.body?.settings || {});
 
     const mobile = cleanMobile(req.body?.mobile || "");
     const stage = String(req.body?.stage || "3h").trim().toLowerCase();
+    if (!["3h", "6h", "9h", "window"].includes(stage)) return res.status(400).json({ success: false, message: "Invalid test stage" });
 
     if (!mobile || mobile.length < 10) {
       return res.status(400).json({ success: false, message: "Valid test mobile number required" });
@@ -1935,8 +1974,8 @@ app.post("/api/admin/automation/test-mobile", async (req, res) => {
     };
 
     let label = "test_followup_3h";
-    let message = config.followup3Message;
-    let useCallButton = Boolean(config.followup3UseCallButton);
+    let message = testConfig.followup3Message;
+    let useCallButton = Boolean(testConfig.followup3UseCallButton);
 
     console.log("CTA DEBUG | automation test config", {
       stage,
@@ -1948,19 +1987,19 @@ app.post("/api/admin/automation/test-mobile", async (req, res) => {
 
     if (stage === "6h") {
       label = "test_followup_6h";
-      message = config.followup6Message;
-      useCallButton = Boolean(config.followup6UseCallButton);
+      message = testConfig.followup6Message;
+      useCallButton = Boolean(testConfig.followup6UseCallButton);
     } else if (stage === "9h") {
       label = "test_followup_9h";
-      message = config.followup9Message;
-      useCallButton = Boolean(config.followup9UseCallButton);
+      message = testConfig.followup9Message;
+      useCallButton = Boolean(testConfig.followup9UseCallButton);
     } else if (stage === "window") {
       label = "test_window_closing";
-      message = config.windowClosingMessage;
-      useCallButton = false;
+      message = testConfig.windowClosingMessage;
+      useCallButton = Boolean(testConfig.windowClosingUseCallButton);
     }
 
-    const result = await sendAndLogText("automation_test", testRecord, label, message, useCallButton);
+    const result = await sendAndLogText("automation_test", testRecord, label, message, useCallButton, testConfig);
 
     return res.status(result.success ? 200 : 400).json({
       success: Boolean(result.success),
@@ -2869,7 +2908,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       // Ask explicitly instead of silently choosing the first or latest stage.
       const choices = sentCta.candidates.length ? sentCta.candidates.map(row => row.cta_config) : titleMatches;
       const uniqueChoices = [...new Map(choices.map(cta => [ctaSnapshotKey(cta), cta])).values()];
-      if (uniqueChoices.length > 3) return res.status(200).json({ status: "ignored", message: "Ambiguous CTA: more than three saved actions; original button ID required" });
+      if (uniqueChoices.length > 12) return res.status(200).json({ status: "ignored", message: "Too many historical CTA choices; original button ID required" });
       const buttons = [];
       for (const [index, cta] of uniqueChoices.entries()) {
         const id = `gvcta_${randomUUID().replaceAll("-", "")}`;
@@ -2881,10 +2920,15 @@ app.post("/api/webhook/botsailor", async (req, res) => {
         );
         buttons.push({ id, title });
       }
-      const result = await sendBotSailorReplyButtons({ mobile }, "Kaunsa follow-up kholna hai? Apna message select karein.", buttons, "resolve_same_title_cta");
-      for (const button of buttons) {
+      let result = { success: true };
+      for (let offset = 0; offset < buttons.length; offset += 3) {
+        const batch = buttons.slice(offset, offset + 3);
+        result = await sendBotSailorReplyButtons({ mobile }, "Kaunsa follow-up kholna hai? Apna message select karein.", batch, "resolve_same_title_cta");
+        for (const button of batch) {
         if (result.success) await pool.query("UPDATE cta_sent_buttons SET sent = TRUE WHERE button_id = $1", [button.id]);
         else await pool.query("DELETE FROM cta_sent_buttons WHERE button_id = $1", [button.id]);
+        }
+        if (!result.success) break;
       }
       return res.status(result.success ? 200 : 400).json({ status: result.success ? "choose_stage" : "error" });
     }
