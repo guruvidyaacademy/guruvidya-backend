@@ -374,6 +374,13 @@ async function initDatabase() {
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS whatsapp_window_events (
+      mobile TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      received_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (mobile, message_id)
+    );
+
     CREATE TABLE IF NOT EXISTS manual_whatsapp_requests (
       request_id TEXT PRIMARY KEY,
       target TEXT NOT NULL,
@@ -2997,6 +3004,37 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       });
     }
 
+    // Global incoming webhook is a chat event, separate from the course HTTP API.
+    // Update every existing record for this phone, regardless of lead age.
+    // Never create a lead or increment enquiry_count just because someone chats.
+    const direction = String(payload.direction || payload.message_direction || "").toLowerCase();
+    const isCustomerEvent = !["outgoing", "outbound", "sent"].includes(direction) &&
+      Boolean(webhookUserMessageRaw || buttonReplyId || buttonReplyTitle);
+    let refreshedLeadIds = [];
+    if (isCustomerEvent) {
+      const canonical = botSailorPhone(mobile);
+      const national = canonical.startsWith("91") && canonical.length === 12 ? canonical.slice(2) : canonical;
+      // A real message ID prevents repeated webhook deliveries extending the window.
+      const messageId = String(payload.wa_message_id || payload.message_id || "").trim() || `unidentified_${randomUUID()}`;
+      const refreshed = await pool.query(
+        `WITH accepted AS (
+           INSERT INTO whatsapp_window_events(mobile,message_id) VALUES($1,$3)
+           ON CONFLICT DO NOTHING RETURNING received_at
+         )
+         UPDATE leads SET last_customer_message_at = GREATEST(last_customer_message_at, accepted.received_at),
+           window_closing_sent_at = NULL, updated_at = CURRENT_TIMESTAMP
+         FROM accepted
+         WHERE regexp_replace(COALESCE(leads.mobile,''), '[^0-9]', '', 'g') IN ($1,$2)
+         RETURNING leads.*`, [canonical, national, messageId]
+      );
+      refreshedLeadIds = refreshed.rows.map((lead) => lead.id);
+      for (const lead of refreshed.rows) {
+        const index = db.leads.findIndex((item) => Number(item.id) === Number(lead.id));
+        if (index !== -1) db.leads[index] = { ...db.leads[index], ...lead };
+      }
+      console.log("WHATSAPP WINDOW REFRESH", { mobile: canonical, leadIds: refreshedLeadIds, messageId });
+    }
+
 
     // Dynamic exported-flow buttons are resolved before the generic CTA gate.
     // BotSailor commonly sends them as user_message "#button_reply#<button title>".
@@ -3344,25 +3382,33 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       });
     }
 
-    // Any other genuine incoming customer message refreshes the 24-hour window.
+    // Chat events finish here; only the course-selection HTTP request is an enquiry.
+    if (isCustomerEvent) {
+      return res.status(200).json({ status: "ok", message: "Customer message recorded; existing lead windows refreshed", leadIds: refreshedLeadIds });
+    }
+    if (!String(payload.course || "").trim()) {
+      return res.status(200).json({ status: "ignored", message: "No course enquiry or customer message in payload" });
+    }
+
+    // Course-selection enquiry keeps the existing 15-day business rule.
     const duplicateResult = await pool.query(
       `SELECT * FROM leads
-       WHERE regexp_replace(COALESCE(mobile, ''), '\\D', '', 'g') = $1
+       WHERE regexp_replace(COALESCE(mobile, ''), '\\D', '', 'g') IN ($1, $2)
          AND created_at >= CURRENT_TIMESTAMP - INTERVAL '15 days'
        ORDER BY created_at DESC
        LIMIT 1`,
-      [mobile]
+      [botSailorPhone(mobile), botSailorPhone(mobile).startsWith("91") && botSailorPhone(mobile).length === 12 ? botSailorPhone(mobile).slice(2) : botSailorPhone(mobile)]
     );
 
     if (duplicateResult.rows.length) {
       const existingLead = duplicateResult.rows[0];
-      const oldLastCustomer = existingLead.last_customer_message_at
-        ? new Date(existingLead.last_customer_message_at)
+      // Chat-window updates must not suppress an actual later course enquiry.
+      const oldLastCustomer = existingLead.last_enquiry_at
+        ? new Date(existingLead.last_enquiry_at)
         : null;
       const isReplyInsideCurrentWindow = oldLastCustomer && !Number.isNaN(oldLastCustomer.getTime()) && (Date.now() - oldLastCustomer.getTime()) < DAY;
 
-      // Normal customer reply inside the active 24h window:
-      // refresh window only; do NOT count every chat message as a re-enquiry.
+      // Repeat course submissions within a day of the last enquiry are one enquiry.
       if (isReplyInsideCurrentWindow) {
         const update = await pool.query(
           `UPDATE leads
