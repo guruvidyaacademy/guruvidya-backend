@@ -374,6 +374,13 @@ async function initDatabase() {
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS manual_whatsapp_requests (
+      request_id TEXT PRIMARY KEY,
+      target TEXT NOT NULL,
+      result JSONB,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE TABLE IF NOT EXISTS whatsapp_templates (
       id SERIAL PRIMARY KEY,
       botsailor_id TEXT UNIQUE NOT NULL,
@@ -2421,6 +2428,9 @@ for (const t of ["alerts", "reminders", "whatsapp_logs", "integration_logs"]) {
 for (const t of ["leads", "admissions", "appointments", "support", "faculty"]) {
   app.post(`/api/admin/${t}/:id/action`, async (req, res) => {
     try {
+      if (req.body.sendWhatsapp) {
+        return res.status(400).json({ success: false, message: "Use Send WhatsApp Now separately. No changes were saved." });
+      }
       const id = Number(req.params.id);
       const currentResult = await pool.query(`SELECT * FROM ${t} WHERE id = $1`, [id]);
       if (!currentResult.rows.length) {
@@ -2529,6 +2539,96 @@ for (const t of ["leads", "admissions", "appointments", "support", "faculty"]) {
     } catch (err) {
       console.error(`❌ ${t} action error:`, err.message);
       res.status(500).json({ success: false, message: `Failed to update ${t}: ${err.message}` });
+    }
+  });
+}
+
+// ---------- BOTSAILOR INCOMING WEBHOOK ----------
+// Manual sends do not update records, reminders, or automation timestamps.
+for (const t of ["leads", "admissions", "appointments", "support", "faculty"]) {
+  app.post(`/api/admin/${t}/:id/whatsapp`, async (req, res) => {
+    let reserved = false;
+    const requestId = String(req.body.requestId || "");
+    const target = `${t}:${req.params.id}`;
+    const fail = (message) => res.status(400).json({ success: false, message });
+    try {
+      if (!/^[a-zA-Z0-9_-]{16,100}$/.test(requestId)) return fail("A valid send request ID is required.");
+      const previous = await pool.query("SELECT * FROM manual_whatsapp_requests WHERE request_id=$1", [requestId]);
+      if (previous.rows.length) {
+        const prior = previous.rows[0];
+        return res.status(prior.result && prior.target === target ? 200 : 409).json(
+          prior.target === target && prior.result ? prior.result :
+          { success: false, message: "This send is already processing or has an unknown outcome. Check WhatsApp logs before sending again." }
+        );
+      }
+      const found = await pool.query(`SELECT * FROM ${t} WHERE id=$1`, [Number(req.params.id)]);
+      const record = found.rows[0];
+      if (!record) return res.status(404).json({ success: false, message: "Record not found" });
+      if (!config.whatsappEnabled) return fail("WhatsApp integration is OFF.");
+      if (!/^\d{10,15}$/.test(botSailorPhone(record.mobile))) return fail("Valid mobile number required.");
+      const mode = req.body.whatsappMode;
+      if (!["message", "template", "flow", "message_flow"].includes(mode)) return fail("Invalid WhatsApp send type.");
+      // For other modules, use the newest known customer message for this phone.
+      let windowRecord = record;
+      if (t !== "leads") {
+        const matched = await pool.query(
+          `SELECT last_customer_message_at FROM leads
+           WHERE RIGHT(regexp_replace(COALESCE(mobile,''), '[^0-9]', '', 'g'),10)=$1
+           ORDER BY last_customer_message_at DESC NULLS LAST LIMIT 1`,
+          [botSailorPhone(record.mobile).slice(-10)]
+        );
+        windowRecord = matched.rows[0] || {};
+      }
+      if (mode !== "template" && !hasOpenWhatsappWindow(windowRecord)) {
+        return fail("24-hour WhatsApp window closed or unknown. Select an approved template.");
+      }
+      const message = String(req.body.whatsappMessage || "").trim();
+      if (["message", "message_flow"].includes(mode) && !message) return fail("Message is required.");
+      let template, variables = {}, flow;
+      if (mode === "template") {
+        const selected = await pool.query("SELECT * FROM whatsapp_templates WHERE id=$1 AND raw->>'crm_sync_missing' IS DISTINCT FROM 'true'", [Number(req.body.whatsappTemplateId)]);
+        template = selected.rows[0];
+        if (!template || String(template.status).trim().toLowerCase() !== "approved") return fail("Select an approved, active template. Archived templates cannot be sent.");
+        try { variables = typeof req.body.templateVariables === "string" ? JSON.parse(req.body.templateVariables) : req.body.templateVariables || {}; }
+        catch { return fail("Template variables must be valid JSON."); }
+        if (!variables || Array.isArray(variables) || typeof variables !== "object") return fail("Template variables must be a JSON object.");
+        if (["apiToken", "phoneNumberID", "botTemplateID", "sendToPhoneNumber"].some((key) => Object.hasOwn(variables, key))) {
+          return fail("Template variables cannot override the recipient, template, or API credentials.");
+        }
+      }
+      if (["flow", "message_flow"].includes(mode)) {
+        flow = await getSelectedFlowRecord(String(req.body.whatsappFlowId || ""));
+        if (!flow?.unique_id) return fail("Select an available imported BotSailor flow.");
+      }
+      const claim = await pool.query(
+        "INSERT INTO manual_whatsapp_requests(request_id,target) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING request_id",
+        [requestId, target]
+      );
+      if (!claim.rows.length) return res.status(409).json({ success: false, message: "Send already submitted. Check WhatsApp logs." });
+      reserved = true;
+      let result;
+      if (mode === "message_flow") {
+        result = await sendAndLogText(t, record, "manual_flow", message, true, {
+          ...config, callForAdmissionActionMode: "flow", callForAdmissionFlowUniqueId: flow.unique_id,
+        });
+      } else {
+        if (mode === "template") result = await sendBotSailorTemplate(record, template, variables);
+        else if (mode === "flow") result = getFlowExportData(flow)
+          ? await executeDirectBotSailorFlow(record, flow)
+          : await triggerBotSailorFlow(record.mobile, flow.unique_id, { resetUserInput: false });
+        else result = await sendBotSailorText(record, message, "manual_message");
+        await logWhatsAppSend(t, record, `manual:${mode}`, result);
+      }
+      const response = { success: Boolean(result.success), message: result.success
+        ? (mode === "flow" ? "Flow started successfully." : "WhatsApp sent successfully.")
+        : (result.message || "Sending failed. Check logs before trying again."), whatsapp: result };
+      await pool.query("UPDATE manual_whatsapp_requests SET result=$2::jsonb WHERE request_id=$1", [requestId, JSON.stringify(response)]);
+      return res.json(response);
+    } catch (err) {
+      console.error("Manual WhatsApp error:", err.message);
+      return res.status(500).json({ success: false, message: reserved
+        ? "Send outcome could not be confirmed. Check WhatsApp logs; do not resend blindly."
+        : "Could not validate send. No message was sent." });
     }
   });
 }
