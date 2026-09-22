@@ -1,3 +1,8 @@
+import { reconcileStaleBookingAttempts } from './booking-stale-attempts.js';
+import { dispatchBookingReminders } from './booking-delivery.js';
+import { reconcileBookingQueue } from './booking-queue-maintenance.js';
+import { runBookingReminderQueue } from './booking-reminders.js';
+import { initBooking, installBookingRoutes, hasBookingSuppression } from "./booking.js";
 import express from "express";
 import cors from "cors";
 import axios from "axios";
@@ -1799,6 +1804,8 @@ async function runFollowupAutomation() {
         break;
       }
       summary.checked += 1;
+      // Booking suppression is checked on each run before window-closing and staged sends.
+      if (await hasBookingSuppression(pool, lead.id)) { summary.skipped += 1; continue; }
       if (!hasOpenWhatsappWindow(lead, current)) {
         summary.skipped += 1;
         continue;
@@ -3523,11 +3530,14 @@ async function sendWhatsAppMessage(phone, message) {
   return sendBotSailorText({ mobile: phone, name: "Student", course: "" }, message, "legacy_send");
 }
 
+installBookingRoutes(app, pool);
+
 async function bootstrap() {
   try {
     await pool.query("SELECT NOW()");
     console.log("✅ PostgreSQL connected successfully");
     await initDatabase();
+    await initBooking(pool);
     await loadPersistedConfig();
     // Refresh BotSailor flow list first so exported Flow Data can attach by exact flow title.
     if (config.botsailorToken && config.botsailorInstanceId) {
@@ -3542,6 +3552,11 @@ async function bootstrap() {
     // Internal scheduler. Also use /api/admin/automation/run-now for testing.
     const intervalMs = Math.max(1, Number(config.automationCheckMinutes || 5)) * 60 * 1000;
     setInterval(runFollowupAutomation, intervalMs);
+    // Build 5: persist pending booking reminders and internal unanswered alerts only.
+    // No outbound WhatsApp/email is sent by this scheduler.
+    const queueBooking = () => reconcileStaleBookingAttempts(pool).then(() => reconcileBookingQueue(pool)).then(() => runBookingReminderQueue(pool)).then(() => dispatchBookingReminders(pool, sendBotSailorTemplate)).catch(e => console.error('Booking queue error:', e.message));
+    setInterval(queueBooking, 60 * 1000);
+    setTimeout(queueBooking, 15 * 1000);
     setTimeout(runFollowupAutomation, 30 * 1000);
   } catch (err) {
     console.error("❌ Backend startup failed:", err);
