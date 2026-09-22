@@ -39,6 +39,18 @@ export async function initBooking(pool) {
     CREATE INDEX IF NOT EXISTS student_bookings_slot_idx ON student_bookings(counsellor_id,starts_at,ends_at);
     CREATE TABLE IF NOT EXISTS booking_events(id BIGSERIAL PRIMARY KEY, booking_id BIGINT REFERENCES student_bookings(id), actor TEXT NOT NULL, action TEXT NOT NULL, details JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ DEFAULT NOW());
     CREATE TABLE IF NOT EXISTS booking_delivery_logs(id BIGSERIAL PRIMARY KEY, booking_id BIGINT REFERENCES student_bookings(id), event TEXT NOT NULL, recipient TEXT NOT NULL, channel TEXT NOT NULL, status TEXT NOT NULL, detail TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(booking_id,event,recipient,channel));`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS booking_closed_dates (
+    id BIGSERIAL PRIMARY KEY, start_date DATE NOT NULL, end_date DATE NOT NULL,
+    title TEXT NOT NULL, counsellor_id BIGINT REFERENCES booking_counsellors(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), CHECK (end_date >= start_date)
+  );
+  CREATE INDEX IF NOT EXISTS booking_closed_dates_range_idx ON booking_closed_dates(start_date,end_date,counsellor_id);`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS booking_closed_dates (
+    id BIGSERIAL PRIMARY KEY, start_date DATE NOT NULL, end_date DATE NOT NULL,
+    title TEXT NOT NULL, counsellor_id BIGINT REFERENCES booking_counsellors(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), CHECK (end_date >= start_date)
+  );
+  CREATE INDEX IF NOT EXISTS booking_closed_dates_range_idx ON booking_closed_dates(start_date,end_date,counsellor_id);`);
   // Build 31: durable consent and a disabled-by-default private-link outbox foundation.
   // No bearer token or full management URL is stored in these tables.
   await pool.query(`CREATE TABLE IF NOT EXISTS booking_recipient_consents (
@@ -107,8 +119,16 @@ export function installBookingRoutes(app,pool) {
     const cfg=await settings(), duration=Number(cfg.duration_minutes), buffer=Number(cfg.buffer_minutes||0);
     if(!(duration>=10 && duration<=240 && buffer>=0 && buffer<=120)) throw Error('Invalid booking settings');
     const people=await db.query(`SELECT * FROM booking_counsellors WHERE active AND ${mode==='online'?'online':'offline'} AND ($1::bigint IS NULL OR id=$1) ORDER BY id`,[counsellorId||null]);
+    const closed=await db.query(`SELECT counsellor_id FROM booking_closed_dates WHERE start_date<=$1::date AND end_date>=$1::date`,[date]);
+    const allClosed=closed.rows.some(x=>x.counsellor_id===null);
+    const closedIds=new Set(closed.rows.filter(x=>x.counsellor_id!==null).map(x=>String(x.counsellor_id)));
+    const closed=await db.query(`SELECT counsellor_id FROM booking_closed_dates WHERE start_date<=$1::date AND end_date>=$1::date`,[date]);
+    const allClosed=closed.rows.some(x=>x.counsellor_id===null);
+    const closedIds=new Set(closed.rows.filter(x=>x.counsellor_id!==null).map(x=>String(x.counsellor_id)));
     const out=[];
     for(const person of people.rows) {
+      if(allClosed||closedIds.has(String(person.id)))continue;
+      if(allClosed||closedIds.has(String(person.id)))continue;
       const day=new Date(`${date}T12:00:00+05:30`).getUTCDay();
       for(const range of person.working_hours?.[String(day)]||[]) {
         if(!Array.isArray(range)||range.length!==2) continue;
@@ -125,6 +145,18 @@ export function installBookingRoutes(app,pool) {
     return out;
   };
   app.get('/booking',async(req,res)=>{try{res.set({'Referrer-Policy':'no-referrer','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"});res.type('html').send(await readFile(new URL('./booking-page.html',import.meta.url),'utf8'));}catch(e){fail(res,500,'Booking page unavailable');}});
+  app.get('/api/public/booking/closed-dates',async(req,res)=>{
+    try {const date=String(req.query.date||'');if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||Number.isNaN(Date.parse(date+'T00:00:00Z')))return fail(res,400,'Invalid date');
+      const r=await pool.query(`SELECT title,counsellor_id FROM booking_closed_dates WHERE start_date<=$1::date AND end_date>=$1::date ORDER BY id`,[date]);
+      res.set('Cache-Control','no-store').json({success:true,data:r.rows});
+    }catch{fail(res,500,'Closed dates unavailable');}
+  });
+  app.get('/api/public/booking/closed-dates',async(req,res)=>{
+    try {const date=String(req.query.date||'');if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||Number.isNaN(Date.parse(date+'T00:00:00Z')))return fail(res,400,'Invalid date');
+      const r=await pool.query(`SELECT title,counsellor_id FROM booking_closed_dates WHERE start_date<=$1::date AND end_date>=$1::date ORDER BY id`,[date]);
+      res.set('Cache-Control','no-store').json({success:true,data:r.rows});
+    }catch{fail(res,500,'Closed dates unavailable');}
+  });
   app.get('/api/public/booking/slots',async(req,res)=>{try{res.json({success:true,data:await slots(pool,req.query.date,req.query.mode,req.query.counsellor_id||null)});}catch(e){fail(res,400,e.message);}});
   app.post('/api/public/booking',async(req,res)=>{
     const {student_name,student_mobile,parent_name,parent_mobile,course,mode,starts_at,counsellor_id,recipient='both'}=req.body;
@@ -375,6 +407,54 @@ export function installBookingRoutes(app,pool) {
   });
   app.get('/api/admin/booking/settings',admin,async(req,res)=>res.json({success:true,data:await settings()}));
   app.put('/api/admin/booking/settings',admin,async(req,res)=>{const {duration_minutes,buffer_minutes,advance_hours,booking_days,approval_required,reminder_hours,offline_address}=req.body;if(!Number.isInteger(duration_minutes)||duration_minutes<10||duration_minutes>240||!Number.isInteger(buffer_minutes)||buffer_minutes<0||buffer_minutes>120||!Number.isFinite(advance_hours)||advance_hours<0||!Number.isInteger(booking_days)||booking_days<1||booking_days>365||!Array.isArray(reminder_hours)||reminder_hours.some(x=>!Number.isFinite(x)||x<=0)||typeof approval_required!=='boolean'||typeof offline_address!=='string')return fail(res,400,'Invalid settings');const r=await pool.query(`UPDATE booking_settings SET settings=settings||$1::jsonb WHERE id=1 RETURNING settings`,[JSON.stringify(req.body)]);res.json({success:true,data:r.rows[0].settings});});
+  app.get('/api/admin/booking/closed-dates',admin,async(req,res)=>{
+    try {const r=await pool.query(`SELECT h.id,to_char(h.start_date,'YYYY-MM-DD') AS start_date,to_char(h.end_date,'YYYY-MM-DD') AS end_date,h.title,h.counsellor_id,c.name AS counsellor_name FROM booking_closed_dates h LEFT JOIN booking_counsellors c ON c.id=h.counsellor_id ORDER BY h.start_date DESC,h.id DESC LIMIT 500`);res.json({success:true,data:r.rows});}
+    catch{fail(res,500,'Unable to load closed dates');}
+  });
+  app.post('/api/admin/booking/closed-dates',admin,async(req,res)=>{
+    const {start_date,end_date,title,counsellor_id=null}=req.body||{};
+    const validDate=d=>typeof d==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(d)&&!Number.isNaN(Date.parse(d+'T00:00:00Z'))&&new Date(d+'T00:00:00Z').toISOString().slice(0,10)===d;
+    if(!validDate(start_date)||!validDate(end_date)||end_date<start_date||typeof title!=='string'||!title.trim()||title.trim().length>120||counsellor_id!==null&&(!Number.isSafeInteger(Number(counsellor_id))||Number(counsellor_id)<1))return fail(res,400,'Invalid closed date details');
+    try {const db=await pool.connect();try {await db.query('BEGIN');
+      const existing=await db.query(`SELECT COUNT(*)::int AS total FROM student_bookings WHERE status=ANY($3::text[]) AND (starts_at AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $1::date AND $2::date AND ($4::bigint IS NULL OR counsellor_id=$4)`,[start_date,end_date,active,counsellor_id]);
+      if(existing.rows[0].total){await db.query('ROLLBACK');return fail(res,409,`${existing.rows[0].total} existing active booking(s) in this date range. Reschedule or cancel them before closing these dates.`);}
+      const r=await db.query('INSERT INTO booking_closed_dates(start_date,end_date,title,counsellor_id) VALUES($1,$2,$3,$4) RETURNING id',[start_date,end_date,title.trim(),counsellor_id]);await db.query('COMMIT');res.status(201).json({success:true,data:r.rows[0]});
+    }catch(e){await db.query('ROLLBACK').catch(()=>{});throw e;}finally{db.release();}}
+    catch{fail(res,500,'Unable to save closed date');}
+  });
+  app.delete('/api/admin/booking/closed-dates/:id',admin,async(req,res)=>{
+    if(!/^\d+$/.test(req.params.id))return fail(res,400,'Invalid closed date ID');
+    try{const r=await pool.query('DELETE FROM booking_closed_dates WHERE id=$1 RETURNING id',[req.params.id]);if(!r.rowCount)return fail(res,404,'Closed date not found');res.json({success:true});}catch{fail(res,500,'Unable to remove closed date');}
+  });
+  app.delete('/api/admin/booking/counsellors/:id',admin,async(req,res)=>{
+    if(!/^\d+$/.test(req.params.id))return fail(res,400,'Invalid counsellor ID');
+    try {const r=await pool.query('UPDATE booking_counsellors SET active=FALSE,online=FALSE,offline=FALSE WHERE id=$1 RETURNING id',[req.params.id]);if(!r.rowCount)return fail(res,404,'Counsellor not found');res.json({success:true,data:{id:r.rows[0].id,archived:true,message:'Counsellor archived to preserve booking history'}});}
+    catch{fail(res,500,'Unable to archive counsellor');}
+  });
+  app.get('/api/admin/booking/closed-dates',admin,async(req,res)=>{
+    try {const r=await pool.query(`SELECT h.id,to_char(h.start_date,'YYYY-MM-DD') AS start_date,to_char(h.end_date,'YYYY-MM-DD') AS end_date,h.title,h.counsellor_id,c.name AS counsellor_name FROM booking_closed_dates h LEFT JOIN booking_counsellors c ON c.id=h.counsellor_id ORDER BY h.start_date DESC,h.id DESC LIMIT 500`);res.json({success:true,data:r.rows});}
+    catch{fail(res,500,'Unable to load closed dates');}
+  });
+  app.post('/api/admin/booking/closed-dates',admin,async(req,res)=>{
+    const {start_date,end_date,title,counsellor_id=null}=req.body||{};
+    const validDate=d=>typeof d==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(d)&&!Number.isNaN(Date.parse(d+'T00:00:00Z'))&&new Date(d+'T00:00:00Z').toISOString().slice(0,10)===d;
+    if(!validDate(start_date)||!validDate(end_date)||end_date<start_date||typeof title!=='string'||!title.trim()||title.trim().length>120||counsellor_id!==null&&(!Number.isSafeInteger(Number(counsellor_id))||Number(counsellor_id)<1))return fail(res,400,'Invalid closed date details');
+    try {const db=await pool.connect();try {await db.query('BEGIN');
+      const existing=await db.query(`SELECT COUNT(*)::int AS total FROM student_bookings WHERE status=ANY($3::text[]) AND (starts_at AT TIME ZONE 'Asia/Kolkata')::date BETWEEN $1::date AND $2::date AND ($4::bigint IS NULL OR counsellor_id=$4)`,[start_date,end_date,active,counsellor_id]);
+      if(existing.rows[0].total){await db.query('ROLLBACK');return fail(res,409,`${existing.rows[0].total} existing active booking(s) in this date range. Reschedule or cancel them before closing these dates.`);}
+      const r=await db.query('INSERT INTO booking_closed_dates(start_date,end_date,title,counsellor_id) VALUES($1,$2,$3,$4) RETURNING id',[start_date,end_date,title.trim(),counsellor_id]);await db.query('COMMIT');res.status(201).json({success:true,data:r.rows[0]});
+    }catch(e){await db.query('ROLLBACK').catch(()=>{});throw e;}finally{db.release();}}
+    catch{fail(res,500,'Unable to save closed date');}
+  });
+  app.delete('/api/admin/booking/closed-dates/:id',admin,async(req,res)=>{
+    if(!/^\d+$/.test(req.params.id))return fail(res,400,'Invalid closed date ID');
+    try{const r=await pool.query('DELETE FROM booking_closed_dates WHERE id=$1 RETURNING id',[req.params.id]);if(!r.rowCount)return fail(res,404,'Closed date not found');res.json({success:true});}catch{fail(res,500,'Unable to remove closed date');}
+  });
+  app.delete('/api/admin/booking/counsellors/:id',admin,async(req,res)=>{
+    if(!/^\d+$/.test(req.params.id))return fail(res,400,'Invalid counsellor ID');
+    try {const r=await pool.query('UPDATE booking_counsellors SET active=FALSE,online=FALSE,offline=FALSE WHERE id=$1 RETURNING id',[req.params.id]);if(!r.rowCount)return fail(res,404,'Counsellor not found');res.json({success:true,data:{id:r.rows[0].id,archived:true,message:'Counsellor archived to preserve booking history'}});}
+    catch{fail(res,500,'Unable to archive counsellor');}
+  });
   app.get('/api/admin/booking/counsellors',admin,async(req,res)=>{const r=await pool.query('SELECT * FROM booking_counsellors ORDER BY id');res.json({success:true,data:r.rows});});
   app.post('/api/admin/booking/counsellors',admin,async(req,res)=>{const {name,mobile='',meeting_link='',online=true,offline=true,working_hours}=req.body;if(!name?.trim()||typeof working_hours!=='object'||!working_hours||Array.isArray(working_hours))return fail(res,400,'Invalid counsellor');const r=await pool.query('INSERT INTO booking_counsellors(name,mobile,meeting_link,online,offline,working_hours) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',[name.trim(),mobile,meeting_link,online,offline,JSON.stringify(working_hours)]);res.status(201).json({success:true,data:r.rows[0]});});
   app.post('/api/admin/booking/:id/link',admin,async(req,res)=>{const leadId=Number(req.body.lead_id);if(!Number.isSafeInteger(leadId))return fail(res,400,'Invalid lead');const lead=await pool.query('SELECT id,mobile FROM leads WHERE id=$1',[leadId]);if(!lead.rowCount)return fail(res,404,'Lead not found');const booking=await pool.query('SELECT student_mobile FROM student_bookings WHERE id=$1',[req.params.id]);if(!booking.rowCount)return fail(res,404,'Booking not found');if(!phone(booking.rows[0].student_mobile)||phone(booking.rows[0].student_mobile)!==phone(lead.rows[0].mobile))return fail(res,409,'Student mobile does not match lead mobile; manual identity verification workflow is required');const r=await pool.query(`UPDATE student_bookings SET lead_id=$2,linking_status='linked',updated_at=NOW() WHERE id=$1 RETURNING id`,[req.params.id,leadId]);if(!r.rowCount)return fail(res,404,'Booking not found');await log(pool,r.rows[0].id,'admin','linked',{lead_id:leadId});res.json({success:true});});
