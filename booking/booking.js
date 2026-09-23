@@ -65,6 +65,7 @@ export async function initBooking(pool) {
     UNIQUE(booking_id,kind,event_key)
   );`);
   await pool.query(`ALTER TABLE booking_delivery_logs ADD COLUMN IF NOT EXISTS sending_claimed_at TIMESTAMPTZ`);
+  await pool.query('ALTER TABLE booking_counsellors ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ');
 }
 
 export async function hasBookingSuppression(pool, leadId) {
@@ -387,7 +388,7 @@ export function installBookingRoutes(app,pool) {
     const values=Object.entries(req.body||{}).filter(([key])=>allowed.includes(key));
     if(!values.length||Object.keys(req.body||{}).some(key=>!allowed.includes(key)))return fail(res,400,'Invalid counsellor changes');
     if(values.some(([key,val])=>['online','offline','active'].includes(key)&&typeof val!=='boolean'||key==='name'&&(!String(val||'').trim())||key==='working_hours'&&(!val||typeof val!=='object'||Array.isArray(val))))return fail(res,400,'Invalid counsellor details');
-    try {const sql=values.map(([key],i)=>`${key}=$${i+2}`).join(',');const r=await pool.query(`UPDATE booking_counsellors SET ${sql} WHERE id=$1 RETURNING *`,[req.params.id,...values.map(([key,value])=>key==='working_hours'?JSON.stringify(value):value)]);if(!r.rowCount)return fail(res,404,'Counsellor not found');res.json({success:true,data:r.rows[0]});}catch(e){fail(res,500,'Unable to update counsellor');}
+    try {const sql=values.map(([key],i)=>`${key}=$${i+2}`).join(',');const r=await pool.query(`UPDATE booking_counsellors SET ${sql} WHERE id=$1 AND archived_at IS NULL RETURNING *`,[req.params.id,...values.map(([key,value])=>key==='working_hours'?JSON.stringify(value):value)]);if(!r.rowCount)return fail(res,404,'Counsellor not found');res.json({success:true,data:r.rows[0]});}catch(e){fail(res,500,'Unable to update counsellor');}
   });
   app.get('/api/admin/booking/settings',admin,async(req,res)=>res.json({success:true,data:await settings()}));
   app.put('/api/admin/booking/settings',admin,async(req,res)=>{const {duration_minutes,buffer_minutes,advance_hours,booking_days,approval_required,reminder_hours,offline_address}=req.body;if(!Number.isInteger(duration_minutes)||duration_minutes<10||duration_minutes>240||!Number.isInteger(buffer_minutes)||buffer_minutes<0||buffer_minutes>120||!Number.isFinite(advance_hours)||advance_hours<0||!Number.isInteger(booking_days)||booking_days<1||booking_days>365||!Array.isArray(reminder_hours)||reminder_hours.some(x=>!Number.isFinite(x)||x<=0)||typeof approval_required!=='boolean'||typeof offline_address!=='string')return fail(res,400,'Invalid settings');const r=await pool.query(`UPDATE booking_settings SET settings=settings||$1::jsonb WHERE id=1 RETURNING settings`,[JSON.stringify(req.body)]);res.json({success:true,data:r.rows[0].settings});});
@@ -412,10 +413,11 @@ export function installBookingRoutes(app,pool) {
   });
   app.delete('/api/admin/booking/counsellors/:id',admin,async(req,res)=>{
     if(!/^\d+$/.test(req.params.id))return fail(res,400,'Invalid counsellor ID');
-    try {const r=await pool.query('UPDATE booking_counsellors SET active=FALSE,online=FALSE,offline=FALSE WHERE id=$1 RETURNING id',[req.params.id]);if(!r.rowCount)return fail(res,404,'Counsellor not found');res.json({success:true,data:{id:r.rows[0].id,archived:true,message:'Counsellor archived to preserve booking history'}});}
+    try {const r=await pool.query('UPDATE booking_counsellors SET active=FALSE,online=FALSE,offline=FALSE,archived_at=COALESCE(archived_at,NOW()) WHERE id=$1 RETURNING id',[req.params.id]);if(!r.rowCount)return fail(res,404,'Counsellor not found');res.json({success:true,data:{id:r.rows[0].id,archived:true,message:'Counsellor archived to preserve booking history'}});}
     catch{fail(res,500,'Unable to archive counsellor');}
   });
-  app.get('/api/admin/booking/counsellors',admin,async(req,res)=>{const r=await pool.query('SELECT * FROM booking_counsellors ORDER BY id');res.json({success:true,data:r.rows});});
+  });
+  app.get('/api/admin/booking/counsellors',admin,async(req,res)=>{const r=await pool.query('SELECT * FROM booking_counsellors WHERE archived_at IS NULL AND (active OR online OR offline) ORDER BY id');res.json({success:true,data:r.rows});});
   app.post('/api/admin/booking/counsellors',admin,async(req,res)=>{const {name,mobile='',meeting_link='',online=true,offline=true,working_hours}=req.body;if(!name?.trim()||typeof working_hours!=='object'||!working_hours||Array.isArray(working_hours))return fail(res,400,'Invalid counsellor');const r=await pool.query('INSERT INTO booking_counsellors(name,mobile,meeting_link,online,offline,working_hours) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',[name.trim(),mobile,meeting_link,online,offline,JSON.stringify(working_hours)]);res.status(201).json({success:true,data:r.rows[0]});});
   app.post('/api/admin/booking/:id/link',admin,async(req,res)=>{const leadId=Number(req.body.lead_id);if(!Number.isSafeInteger(leadId))return fail(res,400,'Invalid lead');const lead=await pool.query('SELECT id,mobile FROM leads WHERE id=$1',[leadId]);if(!lead.rowCount)return fail(res,404,'Lead not found');const booking=await pool.query('SELECT student_mobile FROM student_bookings WHERE id=$1',[req.params.id]);if(!booking.rowCount)return fail(res,404,'Booking not found');if(!phone(booking.rows[0].student_mobile)||phone(booking.rows[0].student_mobile)!==phone(lead.rows[0].mobile))return fail(res,409,'Student mobile does not match lead mobile; manual identity verification workflow is required');const r=await pool.query(`UPDATE student_bookings SET lead_id=$2,linking_status='linked',updated_at=NOW() WHERE id=$1 RETURNING id`,[req.params.id,leadId]);if(!r.rowCount)return fail(res,404,'Booking not found');await log(pool,r.rows[0].id,'admin','linked',{lead_id:leadId});res.json({success:true});});
 }
