@@ -142,6 +142,15 @@ export function installBookingRoutes(app,pool) {
       res.set('Cache-Control','no-store').json({success:true,data:r.rows});
     }catch{fail(res,500,'Closed dates unavailable');}
   });
+  // Public mode availability reflects active, non-archived counsellors only.
+  app.get('/api/public/booking/modes',async(req,res)=>{
+    try {
+      const r=await pool.query(`SELECT
+        EXISTS(SELECT 1 FROM booking_counsellors WHERE active AND archived_at IS NULL AND online AND NULLIF(BTRIM(COALESCE(meeting_link,'')),'') IS NOT NULL) AS online,
+        EXISTS(SELECT 1 FROM booking_counsellors WHERE active AND archived_at IS NULL AND offline) AS offline`);
+      res.set('Cache-Control','no-store').json({success:true,data:r.rows[0]});
+    }catch(e){fail(res,503,'Booking modes unavailable');}
+  });
   app.get('/api/public/booking/slots',async(req,res)=>{try{res.json({success:true,data:await slots(pool,req.query.date,req.query.mode,req.query.counsellor_id||null)});}catch(e){fail(res,400,e.message);}});
   app.post('/api/public/booking',async(req,res)=>{
     const {student_name,student_mobile,parent_name,parent_mobile,course,mode,starts_at,counsellor_id,recipient='both'}=req.body;
