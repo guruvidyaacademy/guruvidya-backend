@@ -349,7 +349,7 @@ export function installBookingRoutes(app,pool) {
     }catch(e){await db.query('ROLLBACK');fail(res,500,'Unable to acknowledge alert');}
     finally{db.release();}
   });
-  app.get('/api/admin/booking',admin,async(req,res)=>{const r=await pool.query(`SELECT b.id,b.booking_ref,b.lead_id,b.linking_status,b.student_name,b.student_mobile,b.parent_name,b.parent_mobile,b.recipient,b.course,b.mode,b.counsellor_id,b.starts_at,b.ends_at,b.status,b.customer_response,b.response_at,b.admin_alert_sent_at,b.created_at,b.updated_at,c.name AS counsellor_name FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id ORDER BY b.starts_at DESC LIMIT 500`);res.json({success:true,data:r.rows});});
+  app.get('/api/admin/booking',admin,async(req,res)=>{const r=await pool.query(`SELECT b.id,b.booking_ref,b.lead_id,b.linking_status,b.student_name,b.student_mobile,b.parent_name,b.parent_mobile,b.recipient,b.course,b.mode,b.counsellor_id,b.starts_at,b.ends_at,b.status,b.customer_response,b.response_at,b.admin_alert_sent_at,b.created_at,b.updated_at,c.name AS counsellor_name,c.meeting_link FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id ORDER BY b.starts_at DESC LIMIT 500`);res.json({success:true,data:r.rows});});
   // Admin operations use the existing server-side secret guard; do not expose it in a frontend bundle.
   app.get('/api/admin/booking/:id/events',admin,async(req,res)=>{
     try {const r=await pool.query('SELECT actor,action,details,created_at FROM booking_events WHERE booking_id=$1 ORDER BY created_at DESC LIMIT 200',[req.params.id]);res.json({success:true,data:r.rows});}
