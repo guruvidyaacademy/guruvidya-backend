@@ -357,8 +357,11 @@ export function installBookingRoutes(app,pool) {
     catch {fail(res,500,'Unable to load booking trash');}
   });
   app.post('/api/admin/booking/trash',admin,async(req,res)=>{
-    const ids=req.body?.ids;
-    if(!Array.isArray(ids)||!ids.length||ids.length>500||ids.some(id=>!Number.isSafeInteger(id)||id<1)||new Set(ids).size!==ids.length)return fail(res,400,'Select 1–500 valid bookings');
+    const rawIds=req.body?.ids;
+    // PostgreSQL BIGSERIAL ids are serialized as strings by node-postgres. Accept decimal strings safely.
+    if(!Array.isArray(rawIds)||!rawIds.length||rawIds.length>500||rawIds.some(id=>!((typeof id==='string'&&/^[1-9]\d*$/.test(id)&&BigInt(id)<=9223372036854775807n)||(typeof id==='number'&&Number.isSafeInteger(id)&&id>0))))return fail(res,400,'Select 1–500 valid bookings');
+    const ids=rawIds.map(String);
+    if(new Set(ids).size!==ids.length)return fail(res,400,'Duplicate booking selection');
     const db=await pool.connect();
     try {await db.query('BEGIN');const r=await db.query('SELECT id,status,starts_at FROM student_bookings WHERE id=ANY($1::bigint[]) AND trashed_at IS NULL FOR UPDATE',[ids]);
       if(r.rowCount!==ids.length){await db.query('ROLLBACK');return fail(res,409,'Some bookings are missing or already in Trash. Refresh and retry.');}
@@ -369,8 +372,10 @@ export function installBookingRoutes(app,pool) {
     }catch {await db.query('ROLLBACK');fail(res,500,'Unable to move bookings to Trash');}finally{db.release();}
   });
   app.post('/api/admin/booking/trash/restore',admin,async(req,res)=>{
-    const ids=req.body?.ids;
-    if(!Array.isArray(ids)||!ids.length||ids.length>500||ids.some(id=>!Number.isSafeInteger(id)||id<1)||new Set(ids).size!==ids.length)return fail(res,400,'Select valid bookings');
+    const rawIds=req.body?.ids;
+    if(!Array.isArray(rawIds)||!rawIds.length||rawIds.length>500||rawIds.some(id=>!((typeof id==='string'&&/^[1-9]\d*$/.test(id)&&BigInt(id)<=9223372036854775807n)||(typeof id==='number'&&Number.isSafeInteger(id)&&id>0))))return fail(res,400,'Select valid bookings');
+    const ids=rawIds.map(String);
+    if(new Set(ids).size!==ids.length)return fail(res,400,'Duplicate booking selection');
     try {const r=await pool.query('UPDATE student_bookings SET trashed_at=NULL,updated_at=NOW() WHERE id=ANY($1::bigint[]) AND trashed_at IS NOT NULL RETURNING id',[ids]);if(r.rowCount!==ids.length)return fail(res,409,'Some bookings could not be restored. Refresh and retry.');res.json({success:true,data:{count:r.rowCount}});}
     catch {fail(res,500,'Unable to restore bookings');}
   });
