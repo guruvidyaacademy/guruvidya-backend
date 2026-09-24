@@ -179,7 +179,8 @@ export function installBookingRoutes(app,pool) {
       const cfg=await settings();
       const token=randomBytes(32).toString('hex'), ref='GV-'+randomBytes(6).toString('hex').toUpperCase();
       const result=await db.query(`INSERT INTO student_bookings(booking_ref,token_hash,lead_id,linking_status,student_name,student_mobile,parent_name,parent_mobile,recipient,course,mode,counsellor_id,starts_at,ends_at,status)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id,booking_ref,starts_at,ends_at,status,linking_status`,[ref,hash(token),leadId,leadId?'linked':'pending',student_name.trim(),sm,parent_name||'',pm,recipient,course.trim(),mode,Number(counsellor_id),slot.starts_at,slot.ends_at,cfg.approval_required?'requested':'approved']);
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id,booking_ref,starts_at,ends_at,status,linking_status`,[ref,hash(token),leadId,leadId?'linked':'pending',student_name.trim(),sm,parent_name||'',pm,recipient,course.trim(),mode,Number(counsellor_id),slot.starts_at,slot.ends_at,cfg.approval_required?'requested':'confirmed']);
+      if(!cfg.approval_required) await db.query("UPDATE student_bookings SET customer_response='confirmed',response_at=NOW() WHERE id=$1",[result.rows[0].id]);
       await log(db,result.rows[0].id,'customer','booked',{lead_id:leadId,mode});
       await enqueueLifecycleBlockedIntents(db,{bookingId:Number(result.rows[0].id),event:'created',eventKey:'created:'+randomUUID()});
       await db.query('COMMIT');
@@ -217,6 +218,7 @@ export function installBookingRoutes(app,pool) {
       const r=await db.query('SELECT * FROM student_bookings WHERE id=$1 FOR UPDATE',[identity.rows[0].id]);
       if(!r.rowCount){await db.query('ROLLBACK');return fail(res,404,'Booking not found');}
       const b=r.rows[0];if(!active.includes(b.status)){await db.query('ROLLBACK');return fail(res,409,'Booking is no longer active');}
+      if(req.body.action==='confirm'){await db.query('ROLLBACK');return fail(res,409,'Student confirmation is not required');}
       if(req.body.action==='reschedule'){
         const slotError=validateLifecycleSlot(req.body.starts_at,b.starts_at);
         if(slotError){await db.query('ROLLBACK');return fail(res,400,slotError);}
@@ -226,7 +228,8 @@ export function installBookingRoutes(app,pool) {
         const available=await slots(db,date,b.mode,b.counsellor_id,{excludeBookingId:Number(b.id)});
         const slot=findMatchingBookingSlot(available,req.body.starts_at);
         if(!slot){await db.query('ROLLBACK');return fail(res,409,'New slot unavailable');}
-        await db.query(`UPDATE student_bookings SET starts_at=$2,ends_at=$3,status='rescheduled',customer_response='awaiting',response_at=NOW(),admin_alert_sent_at=NULL,admin_alert_ack_at=NULL,admin_alert_ack_note=NULL,updated_at=NOW() WHERE id=$1`,[b.id,slot.starts_at,slot.ends_at]);
+        const cfg=await settings();
+        await db.query(`UPDATE student_bookings SET starts_at=$2,ends_at=$3,status=$4,customer_response=$5,response_at=NOW(),admin_alert_sent_at=NULL,admin_alert_ack_at=NULL,admin_alert_ack_note=NULL,updated_at=NOW() WHERE id=$1`,[b.id,slot.starts_at,slot.ends_at,cfg.approval_required?'requested':'confirmed',cfg.approval_required?'awaiting':'confirmed']);
       }else if(req.body.action==='cancel')await db.query(`UPDATE student_bookings SET status='cancelled',customer_response='cancelled',response_at=NOW(),updated_at=NOW() WHERE id=$1`,[b.id]);
       else await db.query(`UPDATE student_bookings SET customer_response='confirmed',response_at=NOW(),status='confirmed',updated_at=NOW() WHERE id=$1`,[b.id]);
       await log(db,b.id,'customer',req.body.action,{old_starts_at:b.starts_at,new_starts_at:req.body.starts_at||null});
@@ -361,7 +364,7 @@ export function installBookingRoutes(app,pool) {
       const b=found.rows[0];
       if(!active.includes(b.status)){await db.query('ROLLBACK');return fail(res,409,'Booking is not active');}
       let nextStatus=b.status,nextCounsellor=b.counsellor_id,nextStart=b.starts_at,nextEnd=b.ends_at;
-      if(action==='approve') {if(b.status!=='requested'){await db.query('ROLLBACK');return fail(res,409,'Booking does not need approval');}nextStatus='approved';}
+      if(action==='approve') {if(b.status!=='requested'){await db.query('ROLLBACK');return fail(res,409,'Booking does not need approval');}nextStatus='confirmed';}
       if(action==='cancel')nextStatus='cancelled';
       if(action==='complete'||action==='no_show'){
         if(new Date(b.starts_at).getTime()>Date.now()){await db.query('ROLLBACK');return fail(res,409,'Appointment has not started');}
@@ -386,7 +389,7 @@ export function installBookingRoutes(app,pool) {
         nextStart=choice.starts_at;nextEnd=choice.ends_at;
         nextStatus=action==='reschedule'?'rescheduled':b.status;
       }
-      await db.query(`UPDATE student_bookings SET status=$2,counsellor_id=$3,starts_at=$4,ends_at=$5,updated_at=NOW(),customer_response=CASE WHEN $6='reschedule' THEN 'awaiting' ELSE customer_response END,response_at=CASE WHEN $6='reschedule' THEN NOW() ELSE response_at END,admin_alert_sent_at=CASE WHEN $6='reschedule' THEN NULL ELSE admin_alert_sent_at END,admin_alert_ack_at=CASE WHEN $6='reschedule' THEN NULL ELSE admin_alert_ack_at END,admin_alert_ack_note=CASE WHEN $6='reschedule' THEN NULL ELSE admin_alert_ack_note END WHERE id=$1`,[b.id,nextStatus,nextCounsellor,nextStart,nextEnd,action]);
+      await db.query(`UPDATE student_bookings SET status=$2,counsellor_id=$3,starts_at=$4,ends_at=$5,updated_at=NOW(),customer_response=CASE WHEN $6='approve' THEN 'confirmed' WHEN $6='reschedule' THEN 'awaiting' ELSE customer_response END,response_at=CASE WHEN $6='reschedule' THEN NOW() ELSE response_at END,admin_alert_sent_at=CASE WHEN $6='reschedule' THEN NULL ELSE admin_alert_sent_at END,admin_alert_ack_at=CASE WHEN $6='reschedule' THEN NULL ELSE admin_alert_ack_at END,admin_alert_ack_note=CASE WHEN $6='reschedule' THEN NULL ELSE admin_alert_ack_note END WHERE id=$1`,[b.id,nextStatus,nextCounsellor,nextStart,nextEnd,action]);
       await log(db,b.id,'admin',action,{previous_status:b.status,previous_counsellor_id:b.counsellor_id,previous_starts_at:b.starts_at,new_status:nextStatus,new_counsellor_id:nextCounsellor,new_starts_at:nextStart});
       if(['approve','reschedule'].includes(action)) await enqueueLifecycleBlockedIntents(db,{bookingId:Number(b.id),event:action==='approve'?'approved':'rescheduled',eventKey:action+':'+randomUUID()});
       await db.query('COMMIT');res.json({success:true,data:{id:b.id,status:nextStatus,counsellor_id:nextCounsellor,starts_at:nextStart}});
