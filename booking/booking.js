@@ -176,11 +176,14 @@ export function installBookingRoutes(app,pool) {
         const leads=await db.query(`SELECT id FROM leads WHERE regexp_replace(COALESCE(mobile,''),'[^0-9]','','g') IN ($1,$2,$3) ORDER BY id DESC LIMIT 2`,[sm,'91'+sm,'0'+sm]);
         if(leads.rowCount===1)leadId=leads.rows[0].id;
       }
-      const cfg=await settings();
+      // Read the persisted approval switch within this booking transaction.
+      const cfgRow=await db.query('SELECT settings FROM booking_settings WHERE id=1');
+      const cfg=cfgRow.rows[0]?.settings||{};
+      const approvalRequired=cfg.approval_required===true || cfg.approval_required==='true';
       const token=randomBytes(32).toString('hex'), ref='GV-'+randomBytes(6).toString('hex').toUpperCase();
       const result=await db.query(`INSERT INTO student_bookings(booking_ref,token_hash,lead_id,linking_status,student_name,student_mobile,parent_name,parent_mobile,recipient,course,mode,counsellor_id,starts_at,ends_at,status)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id,booking_ref,starts_at,ends_at,status,linking_status`,[ref,hash(token),leadId,leadId?'linked':'pending',student_name.trim(),sm,parent_name||'',pm,recipient,course.trim(),mode,Number(counsellor_id),slot.starts_at,slot.ends_at,cfg.approval_required?'requested':'confirmed']);
-      if(!cfg.approval_required) await db.query("UPDATE student_bookings SET customer_response='confirmed',response_at=NOW() WHERE id=$1",[result.rows[0].id]);
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id,booking_ref,starts_at,ends_at,status,linking_status`,[ref,hash(token),leadId,leadId?'linked':'pending',student_name.trim(),sm,parent_name||'',pm,recipient,course.trim(),mode,Number(counsellor_id),slot.starts_at,slot.ends_at,approvalRequired?'requested':'confirmed']);
+      if(!approvalRequired) await db.query("UPDATE student_bookings SET customer_response='confirmed',response_at=NOW() WHERE id=$1",[result.rows[0].id]);
       await log(db,result.rows[0].id,'customer','booked',{lead_id:leadId,mode});
       await enqueueLifecycleBlockedIntents(db,{bookingId:Number(result.rows[0].id),event:'created',eventKey:'created:'+randomUUID()});
       await db.query('COMMIT');
