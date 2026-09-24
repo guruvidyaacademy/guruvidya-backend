@@ -353,7 +353,7 @@ export function installBookingRoutes(app,pool) {
   app.get('/api/admin/booking',admin,async(req,res)=>{const r=await pool.query(`SELECT b.id,b.booking_ref,b.lead_id,b.linking_status,b.student_name,b.student_mobile,b.parent_name,b.parent_mobile,b.recipient,b.course,b.mode,b.counsellor_id,b.starts_at,b.ends_at,b.status,b.customer_response,b.response_at,b.admin_alert_sent_at,b.created_at,b.updated_at,c.name AS counsellor_name,c.meeting_link FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id WHERE b.trashed_at IS NULL ORDER BY b.starts_at DESC LIMIT 500`);res.json({success:true,data:r.rows});});
   // Booking trash: reversible soft-delete; active appointments must be cancelled first.
   app.get('/api/admin/booking/trash',admin,async(req,res)=>{
-    try {const r=await pool.query(`SELECT id,booking_ref,student_name,course,starts_at,status,trashed_at FROM student_bookings WHERE trashed_at IS NOT NULL ORDER BY trashed_at DESC LIMIT 500`);res.json({success:true,data:r.rows});}
+    try {const r=await pool.query(`SELECT id,booking_ref,student_name,course,mode,starts_at,status,trashed_at FROM student_bookings WHERE trashed_at IS NOT NULL ORDER BY trashed_at DESC LIMIT 500`);res.json({success:true,data:r.rows});}
     catch {fail(res,500,'Unable to load booking trash');}
   });
   app.post('/api/admin/booking/trash',admin,async(req,res)=>{
