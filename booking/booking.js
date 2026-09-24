@@ -66,6 +66,7 @@ export async function initBooking(pool) {
   );`);
   await pool.query(`ALTER TABLE booking_delivery_logs ADD COLUMN IF NOT EXISTS sending_claimed_at TIMESTAMPTZ`);
   await pool.query('ALTER TABLE booking_counsellors ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ');
+  await pool.query('ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS trashed_at TIMESTAMPTZ');
 }
 
 export async function hasBookingSuppression(pool, leadId) {
@@ -349,7 +350,30 @@ export function installBookingRoutes(app,pool) {
     }catch(e){await db.query('ROLLBACK');fail(res,500,'Unable to acknowledge alert');}
     finally{db.release();}
   });
-  app.get('/api/admin/booking',admin,async(req,res)=>{const r=await pool.query(`SELECT b.id,b.booking_ref,b.lead_id,b.linking_status,b.student_name,b.student_mobile,b.parent_name,b.parent_mobile,b.recipient,b.course,b.mode,b.counsellor_id,b.starts_at,b.ends_at,b.status,b.customer_response,b.response_at,b.admin_alert_sent_at,b.created_at,b.updated_at,c.name AS counsellor_name,c.meeting_link FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id ORDER BY b.starts_at DESC LIMIT 500`);res.json({success:true,data:r.rows});});
+  app.get('/api/admin/booking',admin,async(req,res)=>{const r=await pool.query(`SELECT b.id,b.booking_ref,b.lead_id,b.linking_status,b.student_name,b.student_mobile,b.parent_name,b.parent_mobile,b.recipient,b.course,b.mode,b.counsellor_id,b.starts_at,b.ends_at,b.status,b.customer_response,b.response_at,b.admin_alert_sent_at,b.created_at,b.updated_at,c.name AS counsellor_name,c.meeting_link FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id WHERE b.trashed_at IS NULL ORDER BY b.starts_at DESC LIMIT 500`);res.json({success:true,data:r.rows});});
+  // Booking trash: reversible soft-delete; active appointments must be cancelled first.
+  app.get('/api/admin/booking/trash',admin,async(req,res)=>{
+    try {const r=await pool.query(`SELECT id,booking_ref,student_name,course,starts_at,status,trashed_at FROM student_bookings WHERE trashed_at IS NOT NULL ORDER BY trashed_at DESC LIMIT 500`);res.json({success:true,data:r.rows});}
+    catch {fail(res,500,'Unable to load booking trash');}
+  });
+  app.post('/api/admin/booking/trash',admin,async(req,res)=>{
+    const ids=req.body?.ids;
+    if(!Array.isArray(ids)||!ids.length||ids.length>500||ids.some(id=>!Number.isSafeInteger(id)||id<1)||new Set(ids).size!==ids.length)return fail(res,400,'Select 1–500 valid bookings');
+    const db=await pool.connect();
+    try {await db.query('BEGIN');const r=await db.query('SELECT id,status,starts_at FROM student_bookings WHERE id=ANY($1::bigint[]) AND trashed_at IS NULL FOR UPDATE',[ids]);
+      if(r.rowCount!==ids.length){await db.query('ROLLBACK');return fail(res,409,'Some bookings are missing or already in Trash. Refresh and retry.');}
+      if(r.rows.some(b=>!['cancelled','completed','no_show'].includes(b.status))){await db.query('ROLLBACK');return fail(res,409,'Cancel active appointments before moving them to Trash.');}
+      await db.query('UPDATE student_bookings SET trashed_at=NOW(),updated_at=NOW() WHERE id=ANY($1::bigint[])',[ids]);
+      for(const row of r.rows)await db.query("INSERT INTO booking_events(booking_id,actor,action) VALUES($1,'booking_admin','moved_to_trash')",[row.id]);
+      await db.query('COMMIT');res.json({success:true,data:{count:ids.length}});
+    }catch {await db.query('ROLLBACK');fail(res,500,'Unable to move bookings to Trash');}finally{db.release();}
+  });
+  app.post('/api/admin/booking/trash/restore',admin,async(req,res)=>{
+    const ids=req.body?.ids;
+    if(!Array.isArray(ids)||!ids.length||ids.length>500||ids.some(id=>!Number.isSafeInteger(id)||id<1)||new Set(ids).size!==ids.length)return fail(res,400,'Select valid bookings');
+    try {const r=await pool.query('UPDATE student_bookings SET trashed_at=NULL,updated_at=NOW() WHERE id=ANY($1::bigint[]) AND trashed_at IS NOT NULL RETURNING id',[ids]);if(r.rowCount!==ids.length)return fail(res,409,'Some bookings could not be restored. Refresh and retry.');res.json({success:true,data:{count:r.rowCount}});}
+    catch {fail(res,500,'Unable to restore bookings');}
+  });
   // Admin operations use the existing server-side secret guard; do not expose it in a frontend bundle.
   app.get('/api/admin/booking/:id/events',admin,async(req,res)=>{
     try {const r=await pool.query('SELECT actor,action,details,created_at FROM booking_events WHERE booking_id=$1 ORDER BY created_at DESC LIMIT 200',[req.params.id]);res.json({success:true,data:r.rows});}
