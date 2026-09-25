@@ -110,7 +110,7 @@ export function installBookingRoutes(app,pool) {
   });
   const settings = async () => (await pool.query('SELECT settings FROM booking_settings WHERE id=1')).rows[0].settings;
   const log = (db,id,actor,action,details={}) => db.query('INSERT INTO booking_events(booking_id,actor,action,details) VALUES($1,$2,$3,$4)',[id,actor,action,JSON.stringify(details)]);
-  const slots = async (db,date,mode,counsellorId,{excludeBookingId=null}={}) => {
+  const slots = async (db,date,mode,counsellorId,{excludeBookingId=null,includeBooked=false}={}) => {
     if(!/^\d{4}-\d{2}-\d{2}$/.test(date) || !['online','offline'].includes(mode)) throw Error('Invalid date or mode');
     const cfg=await settings(), duration=Number(cfg.duration_minutes), buffer=Number(cfg.buffer_minutes||0);
     if(!(duration>=10 && duration<=240 && buffer>=0 && buffer<=120)) throw Error('Invalid booking settings');
@@ -130,11 +130,21 @@ export function installBookingRoutes(app,pool) {
           if(start<Date.now()+Number(cfg.advance_hours||0)*3600000 || start>Date.now()+Number(cfg.booking_days||30)*86400000) continue;
           const conflict=bookingSlotConflictQuery({excludeBookingId});
           const busy=await db.query(conflict.sql,[person.id,active,new Date(start+(duration+buffer)*60000),new Date(start-buffer*60000),conflict.excludedId]);
-          if(!busy.rowCount) out.push({counsellor_id:person.id,counsellor_name:person.name,starts_at:new Date(start).toISOString(),ends_at:new Date(start+duration*60000).toISOString()});
+          if(!busy.rowCount) out.push({counsellor_id:person.id,counsellor_name:person.name,starts_at:new Date(start).toISOString(),ends_at:new Date(start+duration*60000).toISOString(),available:true});
+          else if(includeBooked) out.push({counsellor_id:null,counsellor_name:null,starts_at:new Date(start).toISOString(),ends_at:new Date(start+duration*60000).toISOString(),available:false});
         }
       }
     }
-    return out;
+    if(!includeBooked) return out;
+    // Public slot picker is time-based: merge counsellors that share the same time.
+    // A time remains available when at least one eligible counsellor is free.
+    const byTime=new Map();
+    for(const slot of out){
+      const key=slot.starts_at;
+      const current=byTime.get(key);
+      if(!current || (!current.available && slot.available)) byTime.set(key,slot);
+    }
+    return [...byTime.values()].sort((a,b)=>Date.parse(a.starts_at)-Date.parse(b.starts_at));
   };
   app.get('/booking',async(req,res)=>{try{res.set({'Referrer-Policy':'no-referrer','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"});res.type('html').send(await readFile(new URL('./booking-page.html',import.meta.url),'utf8'));}catch(e){fail(res,500,'Booking page unavailable');}});
   app.get('/api/public/booking/closed-dates',async(req,res)=>{
@@ -152,7 +162,7 @@ export function installBookingRoutes(app,pool) {
       res.set('Cache-Control','no-store').json({success:true,data:r.rows[0]});
     }catch(e){fail(res,503,'Booking modes unavailable');}
   });
-  app.get('/api/public/booking/slots',async(req,res)=>{try{res.json({success:true,data:await slots(pool,req.query.date,req.query.mode,req.query.counsellor_id||null)});}catch(e){fail(res,400,e.message);}});
+  app.get('/api/public/booking/slots',async(req,res)=>{try{res.json({success:true,data:await slots(pool,req.query.date,req.query.mode,req.query.counsellor_id||null,{includeBooked:true})});}catch(e){fail(res,400,e.message);}});
   app.post('/api/public/booking',async(req,res)=>{
     const {student_name,student_mobile,parent_name,parent_mobile,course,mode,starts_at,counsellor_id,recipient='both'}=req.body;
     const sm=phone(student_mobile),pm=phone(parent_mobile);
