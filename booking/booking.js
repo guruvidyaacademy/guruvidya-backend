@@ -215,9 +215,10 @@ export function installBookingRoutes(app,pool) {
     const token=String(req.body?.token||'');
     if(!/^[a-f0-9]{64}$/i.test(token))return fail(res,404,'Booking not found');
     try {
-      const r=await pool.query(`SELECT b.booking_ref,b.student_name,b.course,b.mode,b.starts_at,b.ends_at,b.status,b.customer_response,c.name AS counsellor_name,c.mobile AS counsellor_mobile,c.meeting_link FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id WHERE b.booking_ref=$1 AND b.token_hash=$2`,[req.params.ref,hash(token)]);
+      const r=await pool.query(`SELECT b.booking_ref,b.student_name,b.parent_name,b.course,b.mode,b.starts_at,b.ends_at,b.status,b.customer_response,b.recipient,c.name AS counsellor_name,c.mobile AS counsellor_mobile,c.meeting_link FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id WHERE b.booking_ref=$1 AND b.token_hash=$2`,[req.params.ref,hash(token)]);
       if(!r.rowCount)return fail(res,404,'Booking not found');
-      res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer','Pragma':'no-cache'}).json({success:true,data:r.rows[0]});
+      const cfg=await settings();
+      res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer','Pragma':'no-cache'}).json({success:true,data:{...r.rows[0],offline_address:String(cfg.offline_address||'')}});
     }catch(e){fail(res,500,'Unable to load booking');}
   });
   app.post('/api/public/booking/manage/:ref/action',async(req,res)=>{
