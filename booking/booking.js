@@ -136,7 +136,7 @@ export function installBookingRoutes(app,pool) {
     }
     return out;
   };
-  app.get('/booking',async(req,res)=>{try{res.set({'Referrer-Policy':'no-referrer','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"});res.type('html').send(await readFile(new URL('./booking-page.html',import.meta.url),'utf8'));}catch(e){fail(res,500,'Booking page unavailable');}});
+  app.get('/booking',async(req,res)=>{try{res.set({'Referrer-Policy':'no-referrer','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"});res.type('html').send(await readFile(new URL('./booking-page.html',import.meta.url),'utf8'));}catch(e){fail(res,500,'Booking page unavailable');}});
   app.get('/api/public/booking/closed-dates',async(req,res)=>{
     try {const date=String(req.query.date||'');if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||Number.isNaN(Date.parse(date+'T00:00:00Z')))return fail(res,400,'Invalid date');
       const r=await pool.query(`SELECT title,counsellor_id FROM booking_closed_dates WHERE start_date<=$1::date AND end_date>=$1::date ORDER BY id`,[date]);
