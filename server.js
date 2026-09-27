@@ -1719,31 +1719,33 @@ async function importBotSailorTemplates() {
       variableMap = {};
     }
 
-    await db.query(
-      `INSERT INTO whatsapp_templates
-       (botsailor_id, meta_template_id, template_name, locale, status, body_content, variable_map, raw, imported_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CURRENT_TIMESTAMP)
-       ON CONFLICT (botsailor_id)
-       DO UPDATE SET
-         meta_template_id = EXCLUDED.meta_template_id,
-         template_name = EXCLUDED.template_name,
-         locale = EXCLUDED.locale,
-         status = EXCLUDED.status,
-         body_content = EXCLUDED.body_content,
-         variable_map = EXCLUDED.variable_map,
-         raw = EXCLUDED.raw,
-         imported_at = CURRENT_TIMESTAMP`,
-      [
-        String(item.id),
-        String(item.template_id || ""),
-        item.template_name || item.name || `Template ${item.id}`,
-        item.locale || "",
-        item.status || "",
-        item.body_content || "",
-        JSON.stringify(variableMap),
-        JSON.stringify(item),
-      ]
+    const templateValues = [
+      String(item.id),
+      String(item.template_id || ""),
+      item.template_name || item.name || `Template ${item.id}`,
+      item.locale || "",
+      item.status || "",
+      item.body_content || "",
+      JSON.stringify(variableMap),
+      JSON.stringify(item),
+    ];
+    // Compatibility with older databases where botsailor_id may not have a UNIQUE constraint.
+    // Update first; insert only when this BotSailor template does not already exist.
+    const updatedTemplate = await db.query(
+      `UPDATE whatsapp_templates SET
+         meta_template_id=$2, template_name=$3, locale=$4, status=$5,
+         body_content=$6, variable_map=$7, raw=$8, imported_at=CURRENT_TIMESTAMP
+       WHERE botsailor_id=$1`,
+      templateValues
     );
+    if (!updatedTemplate.rowCount) {
+      await db.query(
+        `INSERT INTO whatsapp_templates
+         (botsailor_id, meta_template_id, template_name, locale, status, body_content, variable_map, raw, imported_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CURRENT_TIMESTAMP)`,
+        templateValues
+      );
+    }
     imported += 1;
   }
 
@@ -1764,21 +1766,31 @@ async function importBotSailorFlows() {
 
   for (const item of list) {
     if (!item?.unique_id) continue;
-    await db.query(
-      `INSERT INTO botsailor_flows
-       (botsailor_id, name, unique_id, status, raw, imported_at)
-       VALUES ($1,$2,$3,$4,$5,CURRENT_TIMESTAMP)
-       ON CONFLICT (unique_id)
-       DO UPDATE SET
-         botsailor_id = EXCLUDED.botsailor_id,
-         name = EXCLUDED.name,
-         status = EXCLUDED.status,
-         -- Refresh live BotSailor metadata without deleting an older local
-         -- Export Flow Data snapshot that may be needed as a fallback.
-         raw = COALESCE(botsailor_flows.raw, '{}'::jsonb) || EXCLUDED.raw,
-         imported_at = CURRENT_TIMESTAMP`,
-      [String(item.id || ""), item.name || "Bot Flow", String(item.unique_id), String(item.status ?? ""), JSON.stringify(item)]
+    const flowValues = [
+      String(item.id || ""),
+      item.name || "Bot Flow",
+      String(item.unique_id),
+      String(item.status ?? ""),
+      JSON.stringify(item),
+    ];
+    // Compatibility with older databases where unique_id may not have a UNIQUE constraint.
+    // Keep any locally imported/exported flow data while refreshing live BotSailor metadata.
+    const updatedFlow = await db.query(
+      `UPDATE botsailor_flows SET
+         botsailor_id=$1, name=$2, status=$4,
+         raw=COALESCE(raw, '{}'::jsonb) || $5::jsonb,
+         imported_at=CURRENT_TIMESTAMP
+       WHERE unique_id=$3`,
+      flowValues
     );
+    if (!updatedFlow.rowCount) {
+      await db.query(
+        `INSERT INTO botsailor_flows
+         (botsailor_id, name, unique_id, status, raw, imported_at)
+         VALUES ($1,$2,$3,$4,$5::jsonb,CURRENT_TIMESTAMP)`,
+        flowValues
+      );
+    }
     imported += 1;
   }
 
