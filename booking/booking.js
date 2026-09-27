@@ -244,7 +244,13 @@ export function installBookingRoutes(app,pool) {
       const r=await pool.query(`SELECT b.booking_ref,b.student_name,b.parent_name,b.course,b.mode,b.starts_at,b.ends_at,b.status,b.customer_response,b.recipient,b.location_name_snapshot,b.location_address_snapshot,b.location_map_url_snapshot,c.name AS counsellor_name,c.mobile AS counsellor_mobile,c.meeting_link FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id WHERE b.booking_ref=$1 AND b.token_hash=$2`,[req.params.ref,hash(token)]);
       if(!r.rowCount)return fail(res,404,'Booking not found');
       const cfg=await settings();
-      res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer','Pragma':'no-cache'}).json({success:true,data:{...r.rows[0],offline_address:String(r.rows[0].location_address_snapshot||cfg.offline_address||''),offline_location_name:String(r.rows[0].location_name_snapshot||'Head Office - Tagore Garden'),offline_map_url:String(r.rows[0].location_map_url_snapshot||'')}});
+      let offlineMapUrl=String(r.rows[0].location_map_url_snapshot||'');
+      // Legacy bookings created/backfilled before a Maps URL was saved can safely use the current URL for the same named location.
+      if(r.rows[0].mode==='offline'&&!offlineMapUrl&&r.rows[0].location_name_snapshot){
+        const lm=await pool.query('SELECT map_url FROM booking_locations WHERE name=$1 ORDER BY is_default DESC,id ASC LIMIT 1',[r.rows[0].location_name_snapshot]);
+        offlineMapUrl=String(lm.rows[0]?.map_url||'');
+      }
+      res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer','Pragma':'no-cache'}).json({success:true,data:{...r.rows[0],offline_address:String(r.rows[0].location_address_snapshot||cfg.offline_address||''),offline_location_name:String(r.rows[0].location_name_snapshot||'Head Office - Tagore Garden'),offline_map_url:offlineMapUrl}});
     }catch(e){fail(res,500,'Unable to load booking');}
   });
   app.post('/api/public/booking/manage/:ref/action',async(req,res)=>{
