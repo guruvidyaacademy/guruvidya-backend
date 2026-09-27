@@ -476,13 +476,25 @@ async function loadPersistedConfig() {
 
 async function savePersistedConfig(patch = {}) {
   config = { ...config, ...patch };
-  await pool.query(
-    `INSERT INTO integration_settings (id, config, updated_at)
-     VALUES (1, $1::jsonb, CURRENT_TIMESTAMP)
-     ON CONFLICT (id)
-     DO UPDATE SET config = EXCLUDED.config, updated_at = CURRENT_TIMESTAMP`,
-    [JSON.stringify(config)]
-  );
+
+  // Compatibility fix for databases where integration_settings was created
+  // previously without a PRIMARY KEY / UNIQUE constraint on id.
+  // We intentionally keep this table as a single-row settings store, so no
+  // ON CONFLICT constraint is required.
+  await pool.query("BEGIN");
+  try {
+    await pool.query("DELETE FROM integration_settings WHERE id = 1");
+    await pool.query(
+      `INSERT INTO integration_settings (id, config, updated_at)
+       VALUES (1, $1::jsonb, CURRENT_TIMESTAMP)`,
+      [JSON.stringify(config)]
+    );
+    await pool.query("COMMIT");
+  } catch (err) {
+    await pool.query("ROLLBACK");
+    throw err;
+  }
+
   return config;
 }
 
