@@ -3035,6 +3035,35 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       });
     }
 
+    // Booking confirmation quick reply from the approved appointment template.
+    // The template button has no booking token, so confirm only when this phone has
+    // exactly one future booking still awaiting a response. This avoids confirming
+    // the wrong booking if the same number owns multiple appointments.
+    const isBookingConfirmClick =
+      buttonReplyId === "confirm appointment" ||
+      buttonReplyId === "confirm_appointment" ||
+      buttonReplyTitle === "confirm appointment" ||
+      webhookUserMessage === "confirm appointment";
+    if (isBookingConfirmClick) {
+      const canonical=botSailorPhone(mobile);
+      const national=canonical.startsWith("91")&&canonical.length===12?canonical.slice(2):canonical;
+      const matches=await pool.query(`SELECT id,booking_ref FROM student_bookings
+        WHERE customer_response='awaiting' AND status=ANY($1::text[]) AND starts_at>NOW()
+        AND (regexp_replace(COALESCE(student_mobile,''),'[^0-9]','','g') IN ($2,$3)
+          OR regexp_replace(COALESCE(parent_mobile,''),'[^0-9]','','g') IN ($2,$3))
+        ORDER BY starts_at LIMIT 2`,[['requested','approved','confirmed','rescheduled'],canonical,national]);
+      if(matches.rowCount===1){
+        const b=matches.rows[0];
+        await pool.query(`UPDATE student_bookings SET customer_response='confirmed',response_at=NOW(),status='confirmed',updated_at=NOW()
+          WHERE id=$1 AND customer_response='awaiting'`,[b.id]);
+        await pool.query(`INSERT INTO booking_events(booking_id,actor,action,details) VALUES($1,'student','whatsapp_confirmed',$2)`,
+          [b.id,JSON.stringify({booking_ref:b.booking_ref,source:'botsailor_quick_reply'})]);
+        return res.status(200).json({status:'success',message:'Booking confirmed',booking_ref:b.booking_ref});
+      }
+      if(matches.rowCount>1) return res.status(200).json({status:'ignored',message:'Multiple awaiting bookings; confirmation requires secure booking link'});
+      return res.status(200).json({status:'ignored',message:'No awaiting future booking found'});
+    }
+
     // Global incoming webhook is a chat event, separate from the course HTTP API.
     // Update every existing record for this phone, regardless of lead age.
     // Never create a lead or increment enquiry_count just because someone chats.
