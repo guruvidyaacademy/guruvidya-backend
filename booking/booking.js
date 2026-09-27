@@ -66,6 +66,18 @@ export async function initBooking(pool) {
   );`);
   await pool.query(`ALTER TABLE booking_delivery_logs ADD COLUMN IF NOT EXISTS sending_claimed_at TIMESTAMPTZ`);
   await pool.query('ALTER TABLE booking_counsellors ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ');
+  // Booking locations are persisted separately so branch/address/map settings survive deploys and restarts.
+  await pool.query(`CREATE TABLE IF NOT EXISTS booking_locations (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    address TEXT NOT NULL DEFAULT '',
+    map_url TEXT NOT NULL DEFAULT '',
+    is_default BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS booking_locations_single_default_idx ON booking_locations ((is_default)) WHERE is_default=TRUE;`);
+  await pool.query('ALTER TABLE booking_counsellors ADD COLUMN IF NOT EXISTS location_id BIGINT REFERENCES booking_locations(id) ON DELETE SET NULL');
   await pool.query('ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS trashed_at TIMESTAMPTZ');
 }
 
@@ -222,7 +234,7 @@ export function installBookingRoutes(app,pool) {
     // Only enable temporarily for a controlled migration of old links.
     if(process.env.BOOKING_ALLOW_LEGACY_QUERY_TOKEN !== 'true') return fail(res,410,'Legacy booking link retired; request a new private link');
     if(!/^[a-f0-9]{64}$/i.test(String(req.query.token||''))) return fail(res,404,'Booking not found');
-    const r=await pool.query(`SELECT b.booking_ref,b.student_name,b.course,b.mode,b.starts_at,b.ends_at,b.status,b.customer_response,c.name AS counsellor_name,c.mobile AS counsellor_mobile,c.meeting_link FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id WHERE b.booking_ref=$1 AND b.token_hash=$2`,[req.params.ref,hash(String(req.query.token||''))]);
+    const r=await pool.query(`SELECT b.booking_ref,b.student_name,b.course,b.mode,b.starts_at,b.ends_at,b.status,b.customer_response,c.name AS counsellor_name,c.mobile AS counsellor_mobile,c.meeting_link,l.name AS offline_location_name,l.address AS offline_address,l.map_url AS offline_map_url FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id LEFT JOIN booking_locations l ON l.id=c.location_id WHERE b.booking_ref=$1 AND b.token_hash=$2`,[req.params.ref,hash(String(req.query.token||''))]);
     if(!r.rowCount)return fail(res,404,'Booking not found');res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer'}).json({success:true,data:r.rows[0]});
   });
   // Build 25: read management details via POST body; URL fragments never reach the server.
@@ -231,7 +243,7 @@ export function installBookingRoutes(app,pool) {
     const token=String(req.body?.token||'');
     if(!/^[a-f0-9]{64}$/i.test(token))return fail(res,404,'Booking not found');
     try {
-      const r=await pool.query(`SELECT b.booking_ref,b.student_name,b.parent_name,b.course,b.mode,b.starts_at,b.ends_at,b.status,b.customer_response,b.recipient,c.name AS counsellor_name,c.mobile AS counsellor_mobile,c.meeting_link FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id WHERE b.booking_ref=$1 AND b.token_hash=$2`,[req.params.ref,hash(token)]);
+      const r=await pool.query(`SELECT b.booking_ref,b.student_name,b.parent_name,b.course,b.mode,b.starts_at,b.ends_at,b.status,b.customer_response,b.recipient,c.name AS counsellor_name,c.mobile AS counsellor_mobile,c.meeting_link,l.name AS offline_location_name,l.address AS offline_address,l.map_url AS offline_map_url FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id LEFT JOIN booking_locations l ON l.id=c.location_id WHERE b.booking_ref=$1 AND b.token_hash=$2`,[req.params.ref,hash(token)]);
       if(!r.rowCount)return fail(res,404,'Booking not found');
       const cfg=await settings();
       res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer','Pragma':'no-cache'}).json({success:true,data:{...r.rows[0],offline_address:String(cfg.offline_address||'')}});
@@ -377,7 +389,7 @@ export function installBookingRoutes(app,pool) {
     }catch(e){await db.query('ROLLBACK');fail(res,500,'Unable to acknowledge alert');}
     finally{db.release();}
   });
-  app.get('/api/admin/booking',admin,async(req,res)=>{const r=await pool.query(`SELECT b.id,b.booking_ref,b.lead_id,b.linking_status,b.student_name,b.student_mobile,b.parent_name,b.parent_mobile,b.recipient,b.course,b.mode,b.counsellor_id,b.starts_at,b.ends_at,b.status,b.customer_response,b.response_at,b.admin_alert_sent_at,b.created_at,b.updated_at,c.name AS counsellor_name,c.meeting_link FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id WHERE b.trashed_at IS NULL ORDER BY b.starts_at DESC LIMIT 500`);res.json({success:true,data:r.rows});});
+  app.get('/api/admin/booking',admin,async(req,res)=>{const r=await pool.query(`SELECT b.id,b.booking_ref,b.lead_id,b.linking_status,b.student_name,b.student_mobile,b.parent_name,b.parent_mobile,b.recipient,b.course,b.mode,b.counsellor_id,b.starts_at,b.ends_at,b.status,b.customer_response,b.response_at,b.admin_alert_sent_at,b.created_at,b.updated_at,c.name AS counsellor_name,c.meeting_link,c.location_id,l.name AS location_name FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id LEFT JOIN booking_locations l ON l.id=c.location_id WHERE b.trashed_at IS NULL ORDER BY b.starts_at DESC LIMIT 500`);res.json({success:true,data:r.rows});});
   // Booking trash: reversible soft-delete; active appointments must be cancelled first.
   app.get('/api/admin/booking/trash',admin,async(req,res)=>{
     try {const r=await pool.query(`SELECT id,booking_ref,student_name,course,mode,starts_at,status,trashed_at FROM student_bookings WHERE trashed_at IS NOT NULL ORDER BY trashed_at DESC LIMIT 500`);res.json({success:true,data:r.rows});}
@@ -455,14 +467,45 @@ export function installBookingRoutes(app,pool) {
     }catch(e){await db.query('ROLLBACK');fail(res,500,'Unable to update booking');}finally{db.release();}
   });
   app.patch('/api/admin/booking/counsellors/:id',admin,async(req,res)=>{
-    const allowed=['name','mobile','meeting_link','online','offline','active','working_hours'];
+    const allowed=['name','mobile','meeting_link','online','offline','active','working_hours','location_id'];
     const values=Object.entries(req.body||{}).filter(([key])=>allowed.includes(key));
     if(!values.length||Object.keys(req.body||{}).some(key=>!allowed.includes(key)))return fail(res,400,'Invalid counsellor changes');
-    if(values.some(([key,val])=>['online','offline','active'].includes(key)&&typeof val!=='boolean'||key==='name'&&(!String(val||'').trim())||key==='working_hours'&&(!val||typeof val!=='object'||Array.isArray(val))))return fail(res,400,'Invalid counsellor details');
+    if(values.some(([key,val])=>['online','offline','active'].includes(key)&&typeof val!=='boolean'||key==='name'&&(!String(val||'').trim())||key==='working_hours'&&(!val||typeof val!=='object'||Array.isArray(val))||key==='location_id'&&val!==null&&(!Number.isSafeInteger(Number(val))||Number(val)<1)))return fail(res,400,'Invalid counsellor details');
     try {const existing=await pool.query('SELECT meeting_link,online FROM booking_counsellors WHERE id=$1 AND archived_at IS NULL',[req.params.id]);if(!existing.rowCount)return fail(res,404,'Counsellor not found');const next=Object.fromEntries(values);if((next.online===undefined?existing.rows[0].online:next.online)&&!String(next.meeting_link===undefined?existing.rows[0].meeting_link:next.meeting_link||'').trim())return fail(res,400,'Meeting link is required for online bookings');const sql=values.map(([key],i)=>`${key}=$${i+2}`).join(',');const r=await pool.query(`UPDATE booking_counsellors SET ${sql} WHERE id=$1 AND archived_at IS NULL RETURNING *`,[req.params.id,...values.map(([key,value])=>key==='working_hours'?JSON.stringify(value):value)]);if(!r.rowCount)return fail(res,404,'Counsellor not found');res.json({success:true,data:r.rows[0]});}catch(e){fail(res,500,'Unable to update counsellor');}
   });
   app.get('/api/admin/booking/settings',admin,async(req,res)=>res.json({success:true,data:await settings()}));
   app.put('/api/admin/booking/settings',admin,async(req,res)=>{const {duration_minutes,buffer_minutes,advance_hours,booking_days,approval_required,reminder_hours,offline_address}=req.body;if(!Number.isInteger(duration_minutes)||duration_minutes<10||duration_minutes>240||!Number.isInteger(buffer_minutes)||buffer_minutes<0||buffer_minutes>120||!Number.isFinite(advance_hours)||advance_hours<0||!Number.isInteger(booking_days)||booking_days<1||booking_days>365||!Array.isArray(reminder_hours)||reminder_hours.some(x=>!Number.isFinite(x)||x<=0)||typeof approval_required!=='boolean'||typeof offline_address!=='string')return fail(res,400,'Invalid settings');const r=await pool.query(`UPDATE booking_settings SET settings=settings||$1::jsonb WHERE id=1 RETURNING settings`,[JSON.stringify(req.body)]);res.json({success:true,data:r.rows[0].settings});});
+  app.get('/api/admin/booking/locations',admin,async(req,res)=>{
+    try {const r=await pool.query('SELECT id,name,address,map_url,is_default,created_at,updated_at FROM booking_locations ORDER BY is_default DESC,name ASC,id ASC');res.json({success:true,data:r.rows});}
+    catch{fail(res,500,'Unable to load locations');}
+  });
+  app.post('/api/admin/booking/locations',admin,async(req,res)=>{
+    const {name,address='',map_url='',is_default=false}=req.body||{};
+    if(typeof name!=='string'||!name.trim()||name.trim().length>120||typeof address!=='string'||address.length>1000||typeof map_url!=='string'||map_url.length>2000||typeof is_default!=='boolean')return fail(res,400,'Invalid location details');
+    const db=await pool.connect();try{await db.query('BEGIN');
+      const count=await db.query('SELECT COUNT(*)::int AS total FROM booking_locations');const makeDefault=is_default||count.rows[0].total===0;
+      if(makeDefault)await db.query('UPDATE booking_locations SET is_default=FALSE,updated_at=NOW() WHERE is_default=TRUE');
+      const r=await db.query('INSERT INTO booking_locations(name,address,map_url,is_default) VALUES($1,$2,$3,$4) RETURNING *',[name.trim(),address.trim(),map_url.trim(),makeDefault]);
+      await db.query('COMMIT');res.status(201).json({success:true,data:r.rows[0]});
+    }catch(e){await db.query('ROLLBACK').catch(()=>{});fail(res,500,'Unable to save location');}finally{db.release();}
+  });
+  app.patch('/api/admin/booking/locations/:id',admin,async(req,res)=>{
+    if(!/^\d+$/.test(req.params.id))return fail(res,400,'Invalid location ID');
+    const {name,address='',map_url='',is_default=false}=req.body||{};
+    if(typeof name!=='string'||!name.trim()||name.trim().length>120||typeof address!=='string'||address.length>1000||typeof map_url!=='string'||map_url.length>2000||typeof is_default!=='boolean')return fail(res,400,'Invalid location details');
+    const db=await pool.connect();try{await db.query('BEGIN');
+      const current=await db.query('SELECT id,is_default FROM booking_locations WHERE id=$1 FOR UPDATE',[req.params.id]);if(!current.rowCount){await db.query('ROLLBACK');return fail(res,404,'Location not found');}
+      if(is_default)await db.query('UPDATE booking_locations SET is_default=FALSE,updated_at=NOW() WHERE is_default=TRUE AND id<>$1',[req.params.id]);
+      const r=await db.query('UPDATE booking_locations SET name=$2,address=$3,map_url=$4,is_default=$5,updated_at=NOW() WHERE id=$1 RETURNING *',[req.params.id,name.trim(),address.trim(),map_url.trim(),is_default]);
+      await db.query('COMMIT');res.json({success:true,data:r.rows[0]});
+    }catch(e){await db.query('ROLLBACK').catch(()=>{});fail(res,500,'Unable to update location');}finally{db.release();}
+  });
+  app.delete('/api/admin/booking/locations/:id',admin,async(req,res)=>{
+    if(!/^\d+$/.test(req.params.id))return fail(res,400,'Invalid location ID');
+    try{const used=await pool.query('SELECT EXISTS(SELECT 1 FROM booking_counsellors WHERE location_id=$1 AND archived_at IS NULL) AS used',[req.params.id]);if(used.rows[0].used)return fail(res,409,'Location is assigned to a counsellor. Reassign the counsellor before deleting it.');
+      const r=await pool.query('DELETE FROM booking_locations WHERE id=$1 AND is_default=FALSE RETURNING id',[req.params.id]);if(!r.rowCount){const exists=await pool.query('SELECT is_default FROM booking_locations WHERE id=$1',[req.params.id]);if(!exists.rowCount)return fail(res,404,'Location not found');return fail(res,409,'Default location cannot be deleted. Set another location as default first.');}res.json({success:true});
+    }catch(e){if(!res.headersSent)fail(res,500,'Unable to delete location');}
+  });
   app.get('/api/admin/booking/closed-dates',admin,async(req,res)=>{
     try {const r=await pool.query(`SELECT h.id,to_char(h.start_date,'YYYY-MM-DD') AS start_date,to_char(h.end_date,'YYYY-MM-DD') AS end_date,h.title,h.counsellor_id,c.name AS counsellor_name FROM booking_closed_dates h LEFT JOIN booking_counsellors c ON c.id=h.counsellor_id ORDER BY h.start_date DESC,h.id DESC LIMIT 500`);res.json({success:true,data:r.rows});}
     catch{fail(res,500,'Unable to load closed dates');}
@@ -503,6 +546,6 @@ export function installBookingRoutes(app,pool) {
     catch{fail(res,500,'Unable to archive counsellor');}
   });
   app.get('/api/admin/booking/counsellors',admin,async(req,res)=>{const r=await pool.query('SELECT * FROM booking_counsellors WHERE archived_at IS NULL AND (active OR online OR offline) ORDER BY id');res.json({success:true,data:r.rows});});
-  app.post('/api/admin/booking/counsellors',admin,async(req,res)=>{const {name,mobile='',meeting_link='',online=false,offline=true,working_hours}=req.body;if(online&&!String(meeting_link||'').trim())return fail(res,400,'Meeting link is required for online bookings');if(!name?.trim()||typeof working_hours!=='object'||!working_hours||Array.isArray(working_hours))return fail(res,400,'Invalid counsellor');const r=await pool.query('INSERT INTO booking_counsellors(name,mobile,meeting_link,online,offline,working_hours) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',[name.trim(),mobile,meeting_link,online,offline,JSON.stringify(working_hours)]);res.status(201).json({success:true,data:r.rows[0]});});
+  app.post('/api/admin/booking/counsellors',admin,async(req,res)=>{const {name,mobile='',meeting_link='',online=false,offline=true,working_hours,location_id=null}=req.body;if(online&&!String(meeting_link||'').trim())return fail(res,400,'Meeting link is required for online bookings');if(!name?.trim()||typeof working_hours!=='object'||!working_hours||Array.isArray(working_hours)||location_id!==null&&(!Number.isSafeInteger(Number(location_id))||Number(location_id)<1))return fail(res,400,'Invalid counsellor');const r=await pool.query('INSERT INTO booking_counsellors(name,mobile,meeting_link,online,offline,working_hours,location_id) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[name.trim(),mobile,meeting_link,online,offline,JSON.stringify(working_hours),location_id]);res.status(201).json({success:true,data:r.rows[0]});});
   app.post('/api/admin/booking/:id/link',admin,async(req,res)=>{const leadId=Number(req.body.lead_id);if(!Number.isSafeInteger(leadId))return fail(res,400,'Invalid lead');const lead=await pool.query('SELECT id,mobile FROM leads WHERE id=$1',[leadId]);if(!lead.rowCount)return fail(res,404,'Lead not found');const booking=await pool.query('SELECT student_mobile FROM student_bookings WHERE id=$1',[req.params.id]);if(!booking.rowCount)return fail(res,404,'Booking not found');if(!phone(booking.rows[0].student_mobile)||phone(booking.rows[0].student_mobile)!==phone(lead.rows[0].mobile))return fail(res,409,'Student mobile does not match lead mobile; manual identity verification workflow is required');const r=await pool.query(`UPDATE student_bookings SET lead_id=$2,linking_status='linked',updated_at=NOW() WHERE id=$1 RETURNING id`,[req.params.id,leadId]);if(!r.rowCount)return fail(res,404,'Booking not found');await log(pool,r.rows[0].id,'admin','linked',{lead_id:leadId});res.json({success:true});});
 }
