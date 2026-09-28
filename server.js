@@ -3070,8 +3070,10 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     // Booking gate template: once the student taps Confirm Appointment, the inbound
     // reply itself opens/refreshes the 24-hour session. Rotate the private manage token
     // and immediately send the full session confirmation with actionable links.
+    const bookingReplyText = normalizeLooseText(webhookUserMessage);
     const isBookingConfirmClick = [buttonReplyTitle, buttonReplyId, webhookUserMessage]
-      .some(v => normalizeLooseText(v) === 'confirm appointment');
+      .some(v => normalizeLooseText(v) === 'confirm appointment') ||
+      bookingReplyText.startsWith('my appointment is confirmed');
     if (isBookingConfirmClick) {
       const canonical=botSailorPhone(mobile);
       const national=canonical.startsWith('91')&&canonical.length===12?canonical.slice(2):canonical;
@@ -3683,8 +3685,15 @@ async function sendBookingGateTemplate(b) {
 }
 
 async function onBookingCreatedWhatsApp(created) {
-  const b=await loadBookingWhatsAppContext(created.booking_ref); if(!b||!b.student_mobile) return {success:false,status:'no_student_mobile'};
-  if(hasOpenWhatsappWindow(b)) return sendBookingSessionConfirmation(b,created.manage_token,'booking_confirmation_24h');
+  const b=await loadBookingWhatsAppContext(created.booking_ref);
+  if(!b||!b.student_mobile) return {success:false,status:'no_student_mobile'};
+
+  // Do not depend only on CRM's cached last_customer_message_at. BotSailor/Meta may
+  // already have an open customer-service window even when the CRM timestamp is stale.
+  // First try the professional Booking Confirmation flow. If BotSailor rejects it,
+  // fall back to the approved outside-24h gate template.
+  const sessionResult=await sendBookingSessionConfirmation(b,created.manage_token,'booking_confirmation_24h');
+  if(sessionResult?.success) return sessionResult;
   return sendBookingGateTemplate(b);
 }
 
