@@ -87,7 +87,7 @@ export async function hasBookingSuppression(pool, leadId) {
   return r.rows[0].blocked;
 }
 
-export function installBookingRoutes(app,pool) {
+export function installBookingRoutes(app,pool,hooks={}) {
   // Booking-only, server-verified short-lived bearer sessions. Never ship credentials in React.
   const sessions = new Map();
   const attempts = new Map();
@@ -226,7 +226,12 @@ export function installBookingRoutes(app,pool) {
       await log(db,result.rows[0].id,'customer','booked',{lead_id:leadId,mode});
       await enqueueLifecycleBlockedIntents(db,{bookingId:Number(result.rows[0].id),event:'created',eventKey:'created:'+randomUUID()});
       await db.query('COMMIT');
-      res.status(201).json({success:true,data:{...result.rows[0],manage_token:token}});
+      const created={...result.rows[0],manage_token:token,student_name:student_name.trim(),student_mobile:sm,parent_name:parent_name||'',parent_mobile:pm,recipient,course:course.trim(),mode,counsellor_id:Number(counsellor_id)};
+      // Booking WhatsApp confirmation is deliberately post-commit: a messaging failure must never roll back a valid booking.
+      if(typeof hooks.onBookingCreated==='function'){
+        try{created.whatsapp=await hooks.onBookingCreated(created);}catch(err){console.error('BOOKING WHATSAPP CREATE HOOK',err?.message||err);created.whatsapp={success:false,status:'hook_error'};}
+      }
+      res.status(201).json({success:true,data:created});
     }catch(e){await db.query('ROLLBACK');fail(res,500,'Unable to create booking');}finally{db.release();}
   });
   app.get('/api/public/booking/manage/:ref',async(req,res)=>{
