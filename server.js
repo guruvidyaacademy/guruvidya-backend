@@ -3671,79 +3671,61 @@ function svgWrap(text, x, y, maxChars=38, line=34, attrs='') {
   return out.map(v=>`<text x="${x}" y="${yy+=line}" ${attrs}>${xmlEsc(v)}</text>`).join('');
 }
 async function bookingCardPng(b) {
-  // FINAL LOCKED visual card (28-Sep): visual-only change.
-  // IMPORTANT: WhatsApp/BotSailor sending logic lives outside this function and is unchanged.
+  // FINAL APPROVED 28-Sep WhatsApp confirmation graphic.
+  // IMPORTANT: image contains ONLY the confirmation + dynamic booking details.
+  // The three working WhatsApp action buttons remain outside the image.
   const {date,time}=bookingIstParts(b.starts_at);
   const place=b.mode==='offline'?(b.offline_location_name||'Head Office - Tagore Garden'):'Online Counselling';
   const address=b.mode==='offline'?(b.offline_address||'GuruVidya Academy, New Delhi'):'Online counselling appointment';
   let logo=''; try { logo=(await readFile(new URL('./booking/guruvidya-logo.png',import.meta.url))).toString('base64'); } catch {}
-
   const rows=[
-    ['doc','Booking Reference',b.booking_ref],
+    ['ref','Booking Reference',b.booking_ref],
     ['person','Student Name',b.student_name],
-    ['cap','Course',b.course],
-    ['calendar','Date & Time (IST)',`${date} ${time}`],
+    ['course','Course',b.course],
+    ['calendar','Date & Time (IST)',`${date} • ${time}`],
     ['person','Counsellor',b.counsellor_name||'GuruVidya Admission Counsellor'],
-    ['screen','Mode',b.mode==='offline'?`Offline – ${place}`:'Online'],
+    ['mode','Mode',b.mode==='offline'?`Offline – ${place}`:'Online'],
     ['pin','Location',address]
   ];
-
-  const iconSvg=(kind,x,y)=>{
-    if(kind==='person') return `<circle cx="${x}" cy="${y-12}" r="13" fill="#0b3a96"/><path d="M${x-25} ${y+25}c2-22 12-32 25-32s23 10 25 32z" fill="#0b3a96"/>`;
-    if(kind==='cap') return `<path d="M${x-28} ${y-10}l28-15 28 15-28 15z" fill="#0b3a96"/><path d="M${x-18} ${y}v17c12 8 24 8 36 0V0" fill="#0b3a96"/><path d="M${x+28} ${y-10}v27" stroke="#0b3a96" stroke-width="4"/>`;
-    if(kind==='calendar') return `<rect x="${x-25}" y="${y-24}" width="50" height="49" rx="5" fill="none" stroke="#0b3a96" stroke-width="7"/><path d="M${x-25} ${y-9}h50M${x-13} ${y-31}v14M${x+13} ${y-31}v14" stroke="#0b3a96" stroke-width="7" stroke-linecap="round"/><rect x="${x-12}" y="${y}" width="8" height="8" fill="#0b3a96"/><rect x="${x+5}" y="${y}" width="8" height="8" fill="#0b3a96"/>`;
-    if(kind==='screen') return `<rect x="${x-28}" y="${y-23}" width="56" height="39" rx="4" fill="none" stroke="#0b3a96" stroke-width="7"/><path d="M${x} ${y+16}v15M${x-16} ${y+31}h32" stroke="#0b3a96" stroke-width="7" stroke-linecap="round"/>`;
-    if(kind==='pin') return `<path d="M${x} ${y+30}s-28-29-28-51a28 28 0 1 1 56 0c0 22-28 51-28 51z" fill="#0b3a96"/><circle cx="${x}" cy="${y-20}" r="9" fill="white"/>`;
-    return `<path d="M${x-23} ${y-28}h33l14 14v43h-47z" fill="#0b3a96"/><path d="M${x+10} ${y-28}v15h14M${x-13} ${y-1}h26M${x-13} ${y+10}h26" stroke="white" stroke-width="4"/>`;
+  const icon=(type,x,y)=>{
+    if(type==='person') return `<circle cx="${x}" cy="${y-8}" r="8" fill="#0b3b91"/><path d="M${x-15} ${y+16}c2-13 8-19 15-19s13 6 15 19z" fill="#0b3b91"/>`;
+    if(type==='calendar') return `<rect x="${x-15}" y="${y-15}" width="30" height="28" rx="5" fill="none" stroke="#0b3b91" stroke-width="4"/><path d="M${x-9} ${y-20}v9M${x+9} ${y-20}v9M${x-15} ${y-5}h30" stroke="#0b3b91" stroke-width="4" stroke-linecap="round"/>`;
+    if(type==='pin') return `<path d="M${x} ${y+17}s-17-18-17-30a17 17 0 1 1 34 0c0 12-17 30-17 30z" fill="#0b3b91"/><circle cx="${x}" cy="${y-13}" r="6" fill="white"/>`;
+    if(type==='course') return `<path d="M${x-19} ${y-10}l19-10 19 10-19 10zM${x-13} ${y-1}v12c8 6 18 6 26 0V-1" fill="#0b3b91"/>`;
+    if(type==='mode') return `<rect x="${x-18}" y="${y-17}" width="36" height="29" rx="5" fill="none" stroke="#0b3b91" stroke-width="4"/><path d="M${x-8} ${y+20}h16M${x} ${y+12}v8" stroke="#0b3b91" stroke-width="4" stroke-linecap="round"/>`;
+    return `<rect x="${x-16}" y="${y-17}" width="32" height="34" rx="5" fill="none" stroke="#0b3b91" stroke-width="4"/><path d="M${x-8} ${y-6}h16M${x-8} ${y+3}h16" stroke="#0b3b91" stroke-width="3"/>`;
   };
-
-  let rowSvg='', y=695;
-  for (let i=0;i<rows.length;i++) {
-    const [ic,k,v]=rows[i];
-    const isLocation=i===rows.length-1;
-    rowSvg += iconSvg(ic,112,y-8);
-    rowSvg += `<text x="185" y="${y}" class="key">${xmlEsc(k)}</text><text x="468" y="${y}" class="colon">:</text>`;
-    rowSvg += svgWrap(v,520,y-38,isLocation?39:34,36,'class="val"');
-    if(!isLocation) rowSvg += `<line x1="62" y1="${y+48}" x2="1018" y2="${y+48}" class="sep"/>`;
-    y += isLocation ? 170 : (i===3 || i===4 || i===5 ? 125 : 100);
+  let rowSvg='', y=535;
+  for(const [ic,k,v] of rows){
+    rowSvg += icon(ic,166,y-7);
+    rowSvg += `<text x="215" y="${y}" class="key">${xmlEsc(k)}</text><text x="445" y="${y}" class="colon">:</text>${svgWrap(v,485,y-32,36,30,'class="val"')}`;
+    if(y<920) rowSvg += `<line x1="145" y1="${y+29}" x2="935" y2="${y+29}" class="sep"/>`;
+    y += 68;
   }
-
-  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1536" viewBox="0 0 1080 1536">
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080">
   <defs>
-    <linearGradient id="hero" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#082a86"/><stop offset=".58" stop-color="#064fc5"/><stop offset="1" stop-color="#08a8ff"/></linearGradient>
-    <linearGradient id="cal" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#00bfff"/><stop offset="1" stop-color="#edfaff"/></linearGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="12" flood-opacity=".14"/></filter>
-    <style>
-      .key{font:700 29px Arial,sans-serif;fill:#0b3489}.colon{font:700 29px Arial,sans-serif;fill:#0b3489}.val{font:500 28px Arial,sans-serif;fill:#123278}.sep{stroke:#d4e3ef;stroke-width:1.5}
-    </style>
-    <pattern id="paper" width="100" height="100" patternUnits="userSpaceOnUse"><circle cx="15" cy="18" r="2" fill="#d9d0c4" opacity=".28"/><path d="M70 15c18 8 18 25 0 33M20 70c15-14 30-14 45 0" fill="none" stroke="#d9d0c4" stroke-width="2" opacity=".18"/></pattern>
+    <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0a2d84"/><stop offset="1" stop-color="#087cf3"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#17315f" flood-opacity=".18"/></filter>
+    <style>.key{font:700 24px Arial,sans-serif;fill:#0b3b91}.colon{font:700 24px Arial,sans-serif;fill:#0b3b91}.val{font:500 23px Arial,sans-serif;fill:#17366f}.sep{stroke:#cbdff0;stroke-width:1.5}</style>
   </defs>
-  <rect width="1080" height="1536" fill="#f6f1e8"/><rect width="1080" height="1536" fill="url(#paper)"/>
-  <rect x="18" y="165" width="1044" height="1185" rx="38" fill="#fff" filter="url(#shadow)"/>
-
-  ${logo?`<image href="data:image/png;base64,${logo}" x="105" y="188" width="470" height="145" preserveAspectRatio="xMidYMid meet"/>`:''}
-  <!-- confetti -->
-  <path d="M54 300l28 20-15 30-30-18z" fill="#ffcc00"/><circle cx="52" cy="274" r="8" fill="#ff2c6d"/><circle cx="83" cy="282" r="7" fill="#00a9ff"/><path d="M91 307q35 20 4 52" fill="none" stroke="#8d1cff" stroke-width="8"/>
-  <!-- graduation cap -->
-  <path d="M750 225l145-35 135 54-145 42z" fill="#162235"/><path d="M804 268q80 48 157 3l-8 82q-73 40-145-2z" fill="#202b3c"/><path d="M965 255q35 12 35 48v74" fill="none" stroke="#ffd21c" stroke-width="9"/><circle cx="1000" cy="386" r="12" fill="#ffd21c"/>
-
-  <!-- curved blue hero -->
-  <path d="M28 365Q55 325 112 322H1062V608Q820 650 600 622Q320 586 28 635Z" fill="url(#hero)"/>
-  <path d="M28 365Q260 300 520 328Q760 355 1062 310V360Q780 410 535 382Q280 350 28 420Z" fill="#0d9eff" opacity=".88"/>
-  <text x="112" y="448" font-family="Arial,sans-serif" font-size="64" font-weight="800" fill="white">Appointment Booked</text>
-  <text x="112" y="520" font-family="Arial,sans-serif" font-size="64" font-weight="800" fill="white">Successfully!</text>
-  <text x="112" y="580" font-family="Arial,sans-serif" font-size="36" fill="white">Your counselling appointment</text><text x="112" y="624" font-family="Arial,sans-serif" font-size="36" fill="white">has been confirmed.</text>
-
-  <!-- calendar art -->
-  <g transform="translate(760 410) rotate(-8)"><rect x="0" y="0" width="150" height="160" rx="22" fill="url(#cal)" filter="url(#shadow)"/><rect x="0" y="0" width="150" height="42" rx="22" fill="#05a8ed"/><path d="M35 -12v35M112 -12v35" stroke="#0469d9" stroke-width="14" stroke-linecap="round"/><g fill="#04a9e8"><rect x="30" y="66" width="22" height="22" rx="4"/><rect x="64" y="66" width="22" height="22" rx="4"/><rect x="98" y="66" width="22" height="22" rx="4"/><rect x="30" y="101" width="22" height="22" rx="4"/><rect x="64" y="101" width="22" height="22" rx="4"/></g></g>
-  <g transform="translate(900 365) rotate(8)"><rect width="120" height="130" rx="20" fill="#ffb20c" filter="url(#shadow)"/><rect y="0" width="120" height="35" rx="20" fill="#ff7b00"/><g fill="#55c84c"><rect x="24" y="57" width="18" height="18" rx="3"/><rect x="52" y="57" width="18" height="18" rx="3"/><rect x="80" y="57" width="18" height="18" rx="3"/></g></g>
-  <circle cx="902" cy="555" r="64" fill="#13cf47" filter="url(#shadow)"/><path d="M872 555l21 22 42-48" fill="none" stroke="white" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
-
-  <!-- details panel -->
-  <rect x="34" y="625" width="1012" height="690" rx="42" fill="#f4f9fd" stroke="#e1edf6" stroke-width="2"/>
+  <rect width="1080" height="1080" fill="#f5efe4"/>
+  <g opacity=".17" fill="none" stroke="#86a58d" stroke-width="2"><circle cx="35" cy="100" r="13"/><path d="M65 35l24 18-25 18M1010 85l18 20-20 18M35 930l25 12-18 24M1000 990l28-8-4 29"/></g>
+  <rect x="72" y="35" width="936" height="1010" rx="34" fill="#fff" filter="url(#shadow)"/>
+  <path d="M72 35h936v355c-205 87-376 4-563 48-150 35-259 82-373 145z" fill="url(#blue)"/>
+  <path d="M72 35h936v155c-166 66-331 44-490 74-173 32-304 95-446 168z" fill="#fff"/>
+  ${logo?`<image href="data:image/png;base64,${logo}" x="125" y="72" width="350" height="105" preserveAspectRatio="xMinYMid meet"/>`:''}
+  <!-- graduation cap + confetti -->
+  <g transform="translate(830 116) rotate(-8)"><path d="M-74 0L0-36 74 0 0 36z" fill="#07327f"/><path d="M-45 17v38c29 22 61 22 90 0V17" fill="#0b66d8"/><path d="M74 0v48" stroke="#f3b22d" stroke-width="7"/><circle cx="74" cy="55" r="8" fill="#f3b22d"/></g>
+  <g stroke-width="7" stroke-linecap="round"><path d="M650 95l-13-20" stroke="#ffbf2e"/><path d="M690 65l8-24" stroke="#24c96b"/><path d="M746 77l18-18" stroke="#ef4d72"/><path d="M925 170l20-7" stroke="#ffbf2e"/><path d="M936 220l24 8" stroke="#24c96b"/></g>
+  <!-- confirmation headline -->
+  <text x="135" y="310" font-family="Arial,sans-serif" font-size="49" font-weight="800" fill="white">Appointment Booked Successfully!</text>
+  <text x="137" y="355" font-family="Arial,sans-serif" font-size="25" fill="#eaf5ff">Your counselling appointment has been confirmed.</text>
+  <!-- calendar illustration -->
+  <g transform="translate(835 325)"><rect x="-72" y="-67" width="144" height="125" rx="18" fill="white"/><rect x="-72" y="-67" width="144" height="35" rx="18" fill="#dcecff"/><path d="M-40-78v28M40-78v28" stroke="#0a4ba7" stroke-width="10" stroke-linecap="round"/><circle cx="42" cy="33" r="43" fill="#19c865"/><path d="M20 33l15 15 29-34" fill="none" stroke="white" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/></g>
+  <rect x="112" y="452" width="856" height="550" rx="31" fill="#f3f9fd" stroke="#e1eef8" stroke-width="2"/>
   ${rowSvg}
   </svg>`;
-  return sharp(Buffer.from(svg)).png({quality:95}).toBuffer();
+  return sharp(Buffer.from(svg)).png({quality:96}).toBuffer();
 }
 
 app.get('/api/public/booking/whatsapp-card/:ref.png', async (req,res)=>{
@@ -3763,9 +3745,9 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   const {date,time}=bookingIstParts(b.starts_at);
   const place=b.mode==='offline'?(b.offline_location_name||'Head Office - Tagore Garden'):'Online Counselling';
   const address=b.mode==='offline'?(b.offline_address||'GuruVidya Academy, New Delhi'):'Meeting link is available in your booking.';
-  // BotSailor interactive-buttons requires a visible, non-empty message body.
-  // Keep it to one small indicator so booking details are not duplicated below the image.
-  const msg='👇';
+  // Keep the interactive message body visually empty: all booking content is in the image.
+  // U+2063 is an invisible separator, used so BotSailor still receives a non-empty body.
+  const msg='\u2063';
   const result=await sendBotSailorReplyButtons(
     {mobile:b.student_mobile,name:b.student_name,course:b.course},
     msg,
