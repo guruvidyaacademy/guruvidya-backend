@@ -3708,9 +3708,9 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   const {date,time}=bookingIstParts(b.starts_at);
   const place=b.mode==='offline'?(b.offline_location_name||'Head Office - Tagore Garden'):'Online Counselling';
   const address=b.mode==='offline'?(b.offline_address||'GuruVidya Academy, New Delhi'):'Meeting link is available in your booking.';
-  // Keep the interactive message body visually empty: all booking content is in the image.
-  // U+2063 is an invisible separator, used so BotSailor still receives a non-empty body.
-  const msg='\u2063';
+  // BotSailor interactive-buttons requires a visible, non-empty message body.
+  // Keep it to one small indicator so booking details are not duplicated below the image.
+  const msg='👇';
   const result=await sendBotSailorReplyButtons(
     {mobile:b.student_mobile,name:b.student_name,course:b.course},
     msg,
