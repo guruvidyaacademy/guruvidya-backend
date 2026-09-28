@@ -7,7 +7,7 @@ import express from "express";
 import cors from "cors";
 import axios from "axios";
 import pg from "pg";
-import { randomUUID } from "node:crypto";
+import { randomUUID, randomBytes, createHash } from "node:crypto";
 
 const { Pool } = pg;
 
@@ -3035,35 +3035,6 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       });
     }
 
-    // Booking confirmation quick reply from the approved appointment template.
-    // The template button has no booking token, so confirm only when this phone has
-    // exactly one future booking still awaiting a response. This avoids confirming
-    // the wrong booking if the same number owns multiple appointments.
-    const isBookingConfirmClick =
-      buttonReplyId === "confirm appointment" ||
-      buttonReplyId === "confirm_appointment" ||
-      buttonReplyTitle === "confirm appointment" ||
-      webhookUserMessage === "confirm appointment";
-    if (isBookingConfirmClick) {
-      const canonical=botSailorPhone(mobile);
-      const national=canonical.startsWith("91")&&canonical.length===12?canonical.slice(2):canonical;
-      const matches=await pool.query(`SELECT id,booking_ref FROM student_bookings
-        WHERE customer_response='awaiting' AND status=ANY($1::text[]) AND starts_at>NOW()
-        AND (regexp_replace(COALESCE(student_mobile,''),'[^0-9]','','g') IN ($2,$3)
-          OR regexp_replace(COALESCE(parent_mobile,''),'[^0-9]','','g') IN ($2,$3))
-        ORDER BY starts_at LIMIT 2`,[['requested','approved','confirmed','rescheduled'],canonical,national]);
-      if(matches.rowCount===1){
-        const b=matches.rows[0];
-        await pool.query(`UPDATE student_bookings SET customer_response='confirmed',response_at=NOW(),status='confirmed',updated_at=NOW()
-          WHERE id=$1 AND customer_response='awaiting'`,[b.id]);
-        await pool.query(`INSERT INTO booking_events(booking_id,actor,action,details) VALUES($1,'student','whatsapp_confirmed',$2)`,
-          [b.id,JSON.stringify({booking_ref:b.booking_ref,source:'botsailor_quick_reply'})]);
-        return res.status(200).json({status:'success',message:'Booking confirmed',booking_ref:b.booking_ref});
-      }
-      if(matches.rowCount>1) return res.status(200).json({status:'ignored',message:'Multiple awaiting bookings; confirmation requires secure booking link'});
-      return res.status(200).json({status:'ignored',message:'No awaiting future booking found'});
-    }
-
     // Global incoming webhook is a chat event, separate from the course HTTP API.
     // Update every existing record for this phone, regardless of lead age.
     // Never create a lead or increment enquiry_count just because someone chats.
@@ -3093,6 +3064,29 @@ app.post("/api/webhook/botsailor", async (req, res) => {
         if (index !== -1) db.leads[index] = { ...db.leads[index], ...lead };
       }
       console.log("WHATSAPP WINDOW REFRESH", { mobile: canonical, leadIds: refreshedLeadIds, messageId });
+    }
+
+
+    // Booking gate template: once the student taps Confirm Appointment, the inbound
+    // reply itself opens/refreshes the 24-hour session. Rotate the private manage token
+    // and immediately send the full session confirmation with actionable links.
+    const isBookingConfirmClick = [buttonReplyTitle, buttonReplyId, webhookUserMessage]
+      .some(v => normalizeLooseText(v) === 'confirm appointment');
+    if (isBookingConfirmClick) {
+      const canonical=botSailorPhone(mobile);
+      const national=canonical.startsWith('91')&&canonical.length===12?canonical.slice(2):canonical;
+      const br=await pool.query(`SELECT b.booking_ref FROM student_bookings b
+        WHERE regexp_replace(COALESCE(b.student_mobile,''),'[^0-9]','','g') IN ($1,$2)
+          AND b.status IN ('requested','approved','confirmed','rescheduled')
+        ORDER BY b.created_at DESC LIMIT 1`,[canonical,national]);
+      if(!br.rows[0]) return res.status(200).json({status:'ignored',message:'No active booking found for this mobile'});
+      const token=randomBytes(32).toString('hex');
+      const tokenHash=createHash('sha256').update(token).digest('hex');
+      await pool.query(`UPDATE student_bookings SET token_hash=$1,customer_response='confirmed',response_at=NOW(),
+        status=CASE WHEN status='requested' THEN 'confirmed' ELSE status END,updated_at=NOW() WHERE booking_ref=$2`,[tokenHash,br.rows[0].booking_ref]);
+      const booking=await loadBookingWhatsAppContext(br.rows[0].booking_ref);
+      const result=await sendBookingSessionConfirmation(booking,token,'booking_confirmation_after_gate');
+      return res.status(result.success?200:400).json({status:result.success?'ok':'error',action:'booking_confirmation_after_gate'});
     }
 
 
@@ -3578,12 +3572,89 @@ app.post("/api/webhook/botsailor", async (req, res) => {
   }
 });
 
+
+async function loadBookingWhatsAppContext(bookingRef) {
+  const r = await pool.query(`SELECT b.*, c.name AS counsellor_name, c.meeting_link,
+    l.last_customer_message_at, loc.name AS offline_location_name, loc.address AS offline_address, loc.map_url AS offline_map_url
+    FROM student_bookings b
+    LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id
+    LEFT JOIN leads l ON l.id=b.lead_id
+    LEFT JOIN booking_locations loc ON loc.id=c.location_id
+    WHERE b.booking_ref=$1 LIMIT 1`, [bookingRef]);
+  return r.rows[0] || null;
+}
+
+function bookingIstParts(startsAt) {
+  const d = new Date(startsAt);
+  return {
+    date: new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Kolkata',day:'2-digit',month:'long',year:'numeric',weekday:'long'}).format(d),
+    time: new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',hour:'numeric',minute:'2-digit',hour12:true}).format(d).replace(/am|pm/i,m=>m.toUpperCase())
+  };
+}
+
+function bookingManageUrl(b, token) {
+  const base = String(process.env.PUBLIC_BOOKING_URL || 'https://guruvidya-backend.onrender.com/booking').replace(/#.*$/,'');
+  return `${base}#${new URLSearchParams({ref:b.booking_ref,token}).toString()}`;
+}
+
+async function sendBookingSessionConfirmation(b, token, action='booking_confirmation_24h') {
+  const {date,time}=bookingIstParts(b.starts_at);
+  const manage=bookingManageUrl(b,token);
+  const mapOrMeet=b.mode==='offline'?(b.offline_map_url||manage):(b.meeting_link||manage);
+  const place=b.mode==='offline'?(b.offline_location_name||'Head Office - Tagore Garden'):'Online Counselling';
+  const address=b.mode==='offline'?(b.offline_address||'GuruVidya Academy, New Delhi'):'Meeting link is available in your booking.';
+  const msg=`🎉 *Appointment Booked Successfully!*\nYour counselling appointment has been confirmed. ✅\n\n📋 *Booking Reference:* ${b.booking_ref}\n👤 *Student Name:* ${b.student_name}\n🎓 *Course:* ${b.course}\n📅 *Date:* ${date}\n⏰ *Time:* ${time}\n👨‍💼 *Counsellor:* ${b.counsellor_name||'GuruVidya Admission Counsellor'}\n💻 *Mode:* ${b.mode==='offline'?'Offline – '+place:'Online'}\n📍 *Location:* ${address}\n\n🔗 *Manage Appointment*\n${manage}\n\n📍 *${b.mode==='offline'?'View on Google Maps':'Join Online Meeting'}*\n${mapOrMeet}\n\n☎️ *Call / WhatsApp Us*\nhttps://wa.me/919821627725\n\n*GuruVidya Academy Pvt. Ltd.*\n_REAL EDUCATION • REAL RESULTS_`;
+  const result=await sendBotSailorText({mobile:b.student_mobile,name:b.student_name,course:b.course},msg,action);
+  await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail)
+    VALUES($1,$2,'student','whatsapp',$3,$4) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status=EXCLUDED.status,detail=EXCLUDED.detail,created_at=NOW()`,
+    [b.id,action,result.success?'sent':'failed',result.message||result.status||'']);
+  return result;
+}
+
+async function findBookingConfirmationTemplate() {
+  const q=await pool.query(`SELECT * FROM whatsapp_templates WHERE raw->>'crm_sync_missing' IS DISTINCT FROM 'true'
+    AND LOWER(template_name)=LOWER('booking_confirmation_fifteen_min') AND LOWER(COALESCE(status,'')) IN ('approved','active - quality pending','active') ORDER BY imported_at DESC LIMIT 1`);
+  if(q.rows[0]) return q.rows[0];
+  await importBotSailorTemplates();
+  const q2=await pool.query(`SELECT * FROM whatsapp_templates WHERE raw->>'crm_sync_missing' IS DISTINCT FROM 'true'
+    AND LOWER(template_name)=LOWER('booking_confirmation_fifteen_min') ORDER BY imported_at DESC LIMIT 1`);
+  return q2.rows[0]||null;
+}
+
+function bookingTemplateVariables(t,b) {
+  let map=t?.variable_map||{}; if(typeof map==='string'){try{map=JSON.parse(map)}catch{map={}}}
+  const raw=JSON.stringify(map), keys=[...new Set(raw.match(/templateVariable-[A-Za-z0-9_-]+-\d+/g)||[])];
+  const {date,time}=bookingIstParts(b.starts_at); const vals=[b.student_name,b.booking_ref,b.course,date,time];
+  const out={};
+  keys.sort((a,z)=>{const an=Number(a.match(/(\d+)$/)?.[1]||999),zn=Number(z.match(/(\d+)$/)?.[1]||999);return an-zn});
+  keys.forEach((k,i)=>{const x=k.toLowerCase();out[k]=x.includes('student')||x.includes('name')?b.student_name:x.includes('ref')?b.booking_ref:x.includes('course')?b.course:x.includes('date')?date:x.includes('time')?time:(vals[i]||b.student_name)});
+  // Common BotSailor numeric-variable generated keys; harmless extras are accepted by its endpoint.
+  vals.forEach((v,i)=>{out[`templateVariable-${i+1}-${i+1}`]=v});
+  return out;
+}
+
+async function sendBookingGateTemplate(b) {
+  const t=await findBookingConfirmationTemplate();
+  if(!t) return {success:false,status:'missing_template',message:'booking_confirmation_fifteen_min not imported'};
+  const result=await sendBotSailorTemplate({mobile:b.student_mobile,name:b.student_name,course:b.course},t,bookingTemplateVariables(t,b));
+  await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail)
+    VALUES($1,'booking_confirmation_gate','student','whatsapp',$2,$3) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status=EXCLUDED.status,detail=EXCLUDED.detail,created_at=NOW()`,
+    [b.id,result.success?'sent':'failed',result.message||result.status||'']);
+  return result;
+}
+
+async function onBookingCreatedWhatsApp(created) {
+  const b=await loadBookingWhatsAppContext(created.booking_ref); if(!b||!b.student_mobile) return {success:false,status:'no_student_mobile'};
+  if(hasOpenWhatsappWindow(b)) return sendBookingSessionConfirmation(b,created.manage_token,'booking_confirmation_24h');
+  return sendBookingGateTemplate(b);
+}
+
 // Kept for compatibility with any older code paths.
 async function sendWhatsAppMessage(phone, message) {
   return sendBotSailorText({ mobile: phone, name: "Student", course: "" }, message, "legacy_send");
 }
 
-installBookingRoutes(app, pool);
+installBookingRoutes(app, pool, { onBookingCreated: onBookingCreatedWhatsApp });
 
 async function bootstrap() {
   try {
