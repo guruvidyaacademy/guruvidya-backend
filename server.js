@@ -3067,6 +3067,41 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     }
 
 
+    // FINAL APPROVED booking confirmation action buttons.
+    const bookingAction = [buttonReplyId, buttonReplyTitle, webhookUserMessage]
+      .map(v => normalizeLooseText(v));
+    const bookingActionType = bookingAction.includes('booking_manage') || bookingAction.includes('manage appointment') ? 'manage'
+      : bookingAction.includes('booking_maps') || bookingAction.includes('view on google maps') ? 'maps'
+      : bookingAction.includes('booking_help') || bookingAction.includes('call / whatsapp us') || bookingAction.includes('call whatsapp us') ? 'help'
+      : '';
+    if (bookingActionType) {
+      const canonical=botSailorPhone(mobile);
+      const national=canonical.startsWith('91')&&canonical.length===12?canonical.slice(2):canonical;
+      const br=await pool.query(`SELECT b.booking_ref FROM student_bookings b
+        WHERE regexp_replace(COALESCE(b.student_mobile,''),'[^0-9]','','g') IN ($1,$2)
+          AND b.status IN ('requested','approved','confirmed','rescheduled')
+        ORDER BY b.created_at DESC LIMIT 1`,[canonical,national]);
+      if(!br.rows[0]) return res.status(200).json({status:'ignored',message:'No active booking found for this mobile'});
+      const booking=await loadBookingWhatsAppContext(br.rows[0].booking_ref);
+      if(!booking) return res.status(200).json({status:'ignored',message:'Booking not found'});
+      let reply='';
+      if(bookingActionType==='manage') {
+        // Rotate the private token each time the customer requests the manage link.
+        const token=randomBytes(32).toString('hex');
+        const tokenHash=createHash('sha256').update(token).digest('hex');
+        await pool.query(`UPDATE student_bookings SET token_hash=$1,updated_at=NOW() WHERE id=$2`,[tokenHash,booking.id]);
+        reply=`🔗 *Manage Appointment*\n${bookingManageUrl(booking,token)}\n\nUse this secure link to reschedule or cancel your appointment.`;
+      } else if(bookingActionType==='maps') {
+        reply=booking.mode==='offline'
+          ? `📍 *Head Office Location*\n${booking.offline_location_name||'Head Office - Tagore Garden'}\n${booking.offline_address||''}\n\n${booking.offline_map_url||'Google Maps link is not configured yet.'}`
+          : `🎥 *Online Counselling*\n${booking.meeting_link||'Your meeting link will be shared here.'}`;
+      } else {
+        reply=`☎️ *Need Help?*\nCall / WhatsApp GuruVidya\n+91 98216 27725\nhttps://wa.me/919821627725`;
+      }
+      const actionResult=await sendBotSailorText({mobile:booking.student_mobile,name:booking.student_name,course:booking.course},reply,`booking_action_${bookingActionType}`);
+      return res.status(actionResult.success?200:400).json({status:actionResult.success?'ok':'error',action:`booking_action_${bookingActionType}`});
+    }
+
     // Booking gate template: once the student taps Confirm Appointment, the inbound
     // reply itself opens/refreshes the 24-hour session. Rotate the private manage token
     // and immediately send the full session confirmation with actionable links.
@@ -3627,29 +3662,32 @@ async function findBookingConfirmationFlow() {
 }
 
 async function sendBookingSessionConfirmation(b, token, action='booking_confirmation_24h') {
-  // Inside an open 24h window prefer the imported professional BotSailor
-  // "Booking Confirmation" flow (interactive design/buttons). Plain text remains
-  // a safe fallback only if that flow is missing or BotSailor rejects the trigger.
-  const flow = await findBookingConfirmationFlow();
-  if (flow?.unique_id) {
-    const flowResult = await triggerBotSailorFlow(b.student_mobile, flow.unique_id, { resetUserInput: false });
-    await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail)
-      VALUES($1,$2,'student','whatsapp',$3,$4) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status=EXCLUDED.status,detail=EXCLUDED.detail,created_at=NOW()`,
-      [b.id,action,flowResult.success?'sent':'failed',flowResult.message||flowResult.status||('flow:'+flow.name)]);
-    if (flowResult.success) return { ...flowResult, mode: 'flow', flow: flow.name };
-  }
-
+  // FINAL APPROVED 28-Sep within-24h WhatsApp design.
+  // Use one native WhatsApp interactive card with three clean action buttons.
+  // WhatsApp itself controls the exact button radius/colour; CRM controls the
+  // content, order, icons/titles and booking-specific data.
   const {date,time}=bookingIstParts(b.starts_at);
-  const manage=bookingManageUrl(b,token);
-  const mapOrMeet=b.mode==='offline'?(b.offline_map_url||manage):(b.meeting_link||manage);
   const place=b.mode==='offline'?(b.offline_location_name||'Head Office - Tagore Garden'):'Online Counselling';
   const address=b.mode==='offline'?(b.offline_address||'GuruVidya Academy, New Delhi'):'Meeting link is available in your booking.';
-  const msg=`🎉 *Appointment Booked Successfully!*\nYour counselling appointment has been confirmed. ✅\n\n📋 *Booking Reference:* ${b.booking_ref}\n👤 *Student Name:* ${b.student_name}\n🎓 *Course:* ${b.course}\n📅 *Date:* ${date}\n⏰ *Time:* ${time}\n👨‍💼 *Counsellor:* ${b.counsellor_name||'GuruVidya Admission Counsellor'}\n💻 *Mode:* ${b.mode==='offline'?'Offline – '+place:'Online'}\n📍 *Location:* ${address}\n\n🔗 *Manage Appointment*\n${manage}\n\n📍 *${b.mode==='offline'?'View on Google Maps':'Join Online Meeting'}*\n${mapOrMeet}\n\n☎️ *Call / WhatsApp Us*\nhttps://wa.me/919821627725\n\n*GuruVidya Academy Pvt. Ltd.*\n_REAL EDUCATION • REAL RESULTS_`;
-  const result=await sendBotSailorText({mobile:b.student_mobile,name:b.student_name,course:b.course},msg,action);
+  const msg=`🎉 *Appointment Booked Successfully!*\nYour counselling appointment has been confirmed.\n\n📋 *Booking Reference*  :  ${b.booking_ref}\n👤 *Student Name*  :  ${b.student_name}\n🎓 *Course*  :  ${b.course}\n📅 *Date & Time (IST)*  :  ${date} • ${time}\n👨‍💼 *Counsellor*  :  ${b.counsellor_name||'GuruVidya Admission Counsellor'}\n💻 *Mode*  :  ${b.mode==='offline'?'Offline – '+place:'Online'}\n📍 *Location*  :  ${address}`;
+  const result=await sendBotSailorReplyButtons(
+    {mobile:b.student_mobile,name:b.student_name,course:b.course},
+    msg,
+    [
+      {id:'booking_manage',title:'Manage Appointment'},
+      {id:'booking_maps',title:'View on Google Maps'},
+      {id:'booking_help',title:'Call / WhatsApp Us'}
+    ],
+    action,
+    {
+      headerText:'🎓 GuruVidya Academy  •  Your Appointment is Confirmed ✅',
+      footerText:'GuruVidya Academy Pvt. Ltd. • REAL EDUCATION • REAL RESULTS'
+    }
+  );
   await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail)
     VALUES($1,$2,'student','whatsapp',$3,$4) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status=EXCLUDED.status,detail=EXCLUDED.detail,created_at=NOW()`,
     [b.id,action,result.success?'sent':'failed',result.message||result.status||'']);
-  return result;
+  return { ...result, mode:'interactive_final_design' };
 }
 
 async function findBookingConfirmationTemplate() {
