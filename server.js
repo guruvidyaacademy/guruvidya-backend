@@ -3679,14 +3679,17 @@ async function bookingCardPng(b) {
   let rowSvg='', y=545;
   for(const [ic,k,v] of rows){rowSvg+=`<text x="170" y="${y}" class="ico">${ic}</text><text x="235" y="${y}" class="key">${xmlEsc(k)}</text><text x="455" y="${y}" class="key">:</text>${svgWrap(v,500,y-34,34,31,'class="val"')}<line x1="150" y1="${y+30}" x2="895" y2="${y+30}" class="sep"/>`;y+=70;}
   rowSvg+=`<text x="170" y="${y}" class="ico">●</text><text x="235" y="${y}" class="key">Location</text><text x="455" y="${y}" class="key">:</text>${svgWrap(address,500,y-34,34,31,'class="val"')}`;
-  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1120" viewBox="0 0 1080 1120">
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1420" viewBox="0 0 1080 1420">
   <defs><linearGradient id="blue" x1="0" x2="1"><stop stop-color="#092d86"/><stop offset="1" stop-color="#087cff"/></linearGradient><linearGradient id="b1"><stop stop-color="#087ef8"/><stop offset="1" stop-color="#005be7"/></linearGradient><linearGradient id="g1"><stop stop-color="#00c85b"/><stop offset="1" stop-color="#00a843"/></linearGradient><linearGradient id="p1"><stop stop-color="#8a19f6"/><stop offset="1" stop-color="#4b00d9"/></linearGradient><style>.key{font:700 25px Arial;fill:#0b3489}.val{font:500 24px Arial;fill:#123278}.ico{font:700 27px Arial;fill:#0b3489}.sep{stroke:#cce0f1;stroke-width:1.5}.btn{font:700 29px Arial;fill:white}.sub{font:400 20px Arial;fill:#dbeaff}.arrow{font:700 45px Arial;fill:white}</style></defs>
-  <rect width="1080" height="1120" fill="#f5f0e7"/><rect x="85" y="35" width="910" height="1040" rx="34" fill="#fff"/>
+  <rect width="1080" height="1420" fill="#f5f0e7"/><rect x="85" y="35" width="910" height="1340" rx="34" fill="#fff"/>
   <rect x="110" y="65" width="860" height="330" rx="28" fill="url(#blue)"/><path d="M110 65h860v105c-180 80-370 28-560 70-130 29-220 76-300 105z" fill="#fff" opacity=".98"/>
   ${logo?`<image href="data:image/png;base64,${logo}" x="145" y="80" width="350" height="105" preserveAspectRatio="xMidYMid meet"/>`:''}
   <text x="170" y="270" font-family="Arial" font-size="48" font-weight="800" fill="white">Appointment Booked</text><text x="170" y="325" font-family="Arial" font-size="48" font-weight="800" fill="white">Successfully!</text><text x="170" y="365" font-family="Arial" font-size="25" fill="white">Your counselling appointment has been confirmed.</text>
   <circle cx="835" cy="305" r="58" fill="#16c85d"/><text x="802" y="326" font-family="Arial" font-size="62" font-weight="800" fill="white">✓</text>
   <rect x="125" y="405" width="830" height="585" rx="35" fill="#f3f9fd"/>${rowSvg}
+  <rect x="125" y="1015" width="830" height="105" rx="42" fill="url(#b1)"/><text x="175" y="1076" font-size="46">🗓</text><text x="305" y="1061" class="btn">Manage Appointment</text><text x="305" y="1092" class="sub">Reschedule, cancel or view details</text><text x="875" y="1081" class="arrow">›</text>
+  <rect x="125" y="1135" width="830" height="105" rx="42" fill="url(#g1)"/><text x="175" y="1198" font-size="45">📍</text><text x="305" y="1181" class="btn">View on Google Maps</text><text x="305" y="1212" class="sub">Get directions to our office</text><text x="875" y="1201" class="arrow">›</text>
+  <rect x="125" y="1255" width="830" height="105" rx="42" fill="url(#p1)"/><text x="175" y="1318" font-size="44">☎</text><text x="235" y="1318" font-size="44">◉</text><text x="350" y="1301" class="btn">Call / WhatsApp Us</text><text x="350" y="1332" class="sub">Speak to our admission team</text><text x="875" y="1321" class="arrow">›</text>
   </svg>`;
   return sharp(Buffer.from(svg)).png({quality:95}).toBuffer();
 }
@@ -3708,9 +3711,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   const {date,time}=bookingIstParts(b.starts_at);
   const place=b.mode==='offline'?(b.offline_location_name||'Head Office - Tagore Garden'):'Online Counselling';
   const address=b.mode==='offline'?(b.offline_address||'GuruVidya Academy, New Delhi'):'Meeting link is available in your booking.';
-  // Keep the interactive body visually empty: all booking content is in the image.
-  // A zero-width character is used because WhatsApp interactive messages require a body.
-  const msg='\u200B';
+  const msg=`🎉 *Appointment Booked Successfully!*\nYour counselling appointment has been confirmed.\n\n📋 *Booking Reference*  :  ${b.booking_ref}\n👤 *Student Name*  :  ${b.student_name}\n🎓 *Course*  :  ${b.course}\n📅 *Date & Time (IST)*  :  ${date} • ${time}\n👨‍💼 *Counsellor*  :  ${b.counsellor_name||'GuruVidya Admission Counsellor'}\n💻 *Mode*  :  ${b.mode==='offline'?'Offline – '+place:'Online'}\n📍 *Location*  :  ${address}`;
   const result=await sendBotSailorReplyButtons(
     {mobile:b.student_mobile,name:b.student_name,course:b.course},
     msg,
@@ -3722,7 +3723,8 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
     action,
     {
       mediaUrl:`${String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/whatsapp-card/${encodeURIComponent(b.booking_ref)}.png?token=${encodeURIComponent(token)}`,
-      mediaType:'image'
+      mediaType:'image',
+      footerText:'GuruVidya Academy Pvt. Ltd. • REAL EDUCATION • REAL RESULTS'
     }
   );
   await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail)
