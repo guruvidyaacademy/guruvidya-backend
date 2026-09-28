@@ -3730,7 +3730,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   const address=b.mode==='offline'?(b.offline_address||'GuruVidya Academy, New Delhi'):'Meeting link is available in your booking.';
   // Keep the interactive message body visually empty: all booking content is in the image.
   // U+2063 is an invisible separator, used so BotSailor still receives a non-empty body.
-  const msg='\u2063';
+  const msg='Appointment confirmed.';
   const result=await sendBotSailorReplyButtons(
     {mobile:b.student_mobile,name:b.student_name,course:b.course},
     msg,
