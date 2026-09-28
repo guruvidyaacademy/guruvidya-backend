@@ -3671,61 +3671,46 @@ function svgWrap(text, x, y, maxChars=38, line=34, attrs='') {
   return out.map(v=>`<text x="${x}" y="${yy+=line}" ${attrs}>${xmlEsc(v)}</text>`).join('');
 }
 async function bookingCardPng(b) {
-  // FINAL APPROVED 28-Sep WhatsApp confirmation graphic.
-  // IMPORTANT: image contains ONLY the confirmation + dynamic booking details.
-  // The three working WhatsApp action buttons remain outside the image.
+  // Graphic-only renderer. IMPORTANT: WhatsApp/BotSailor send + 3-button logic below is unchanged.
   const {date,time}=bookingIstParts(b.starts_at);
   const place=b.mode==='offline'?(b.offline_location_name||'Head Office - Tagore Garden'):'Online Counselling';
   const address=b.mode==='offline'?(b.offline_address||'GuruVidya Academy, New Delhi'):'Online counselling appointment';
   let logo=''; try { logo=(await readFile(new URL('./booking/guruvidya-logo.png',import.meta.url))).toString('base64'); } catch {}
   const rows=[
-    ['ref','Booking Reference',b.booking_ref],
-    ['person','Student Name',b.student_name],
-    ['course','Course',b.course],
-    ['calendar','Date & Time (IST)',`${date} • ${time}`],
-    ['person','Counsellor',b.counsellor_name||'GuruVidya Admission Counsellor'],
-    ['mode','Mode',b.mode==='offline'?`Offline – ${place}`:'Online'],
-    ['pin','Location',address]
+    ['#','Booking Reference',b.booking_ref],
+    ['●','Student Name',b.student_name],
+    ['◆','Course',b.course],
+    ['▣','Date & Time (IST)',`${date} • ${time}`],
+    ['●','Counsellor',b.counsellor_name||'GuruVidya Admission Counsellor'],
+    ['▣','Mode',b.mode==='offline'?`Offline – ${place}`:'Online'],
+    ['●','Location',address]
   ];
-  const icon=(type,x,y)=>{
-    if(type==='person') return `<circle cx="${x}" cy="${y-8}" r="8" fill="#0b3b91"/><path d="M${x-15} ${y+16}c2-13 8-19 15-19s13 6 15 19z" fill="#0b3b91"/>`;
-    if(type==='calendar') return `<rect x="${x-15}" y="${y-15}" width="30" height="28" rx="5" fill="none" stroke="#0b3b91" stroke-width="4"/><path d="M${x-9} ${y-20}v9M${x+9} ${y-20}v9M${x-15} ${y-5}h30" stroke="#0b3b91" stroke-width="4" stroke-linecap="round"/>`;
-    if(type==='pin') return `<path d="M${x} ${y+17}s-17-18-17-30a17 17 0 1 1 34 0c0 12-17 30-17 30z" fill="#0b3b91"/><circle cx="${x}" cy="${y-13}" r="6" fill="white"/>`;
-    if(type==='course') return `<path d="M${x-19} ${y-10}l19-10 19 10-19 10zM${x-13} ${y-1}v12c8 6 18 6 26 0V-1" fill="#0b3b91"/>`;
-    if(type==='mode') return `<rect x="${x-18}" y="${y-17}" width="36" height="29" rx="5" fill="none" stroke="#0b3b91" stroke-width="4"/><path d="M${x-8} ${y+20}h16M${x} ${y+12}v8" stroke="#0b3b91" stroke-width="4" stroke-linecap="round"/>`;
-    return `<rect x="${x-16}" y="${y-17}" width="32" height="34" rx="5" fill="none" stroke="#0b3b91" stroke-width="4"/><path d="M${x-8} ${y-6}h16M${x-8} ${y+3}h16" stroke="#0b3b91" stroke-width="3"/>`;
-  };
-  let rowSvg='', y=535;
+  let rowSvg='', y=515;
   for(const [ic,k,v] of rows){
-    rowSvg += icon(ic,166,y-7);
-    rowSvg += `<text x="215" y="${y}" class="key">${xmlEsc(k)}</text><text x="445" y="${y}" class="colon">:</text>${svgWrap(v,485,y-32,36,30,'class="val"')}`;
-    if(y<920) rowSvg += `<line x1="145" y1="${y+29}" x2="935" y2="${y+29}" class="sep"/>`;
-    y += 68;
+    rowSvg+=`<circle cx="176" cy="${y-8}" r="22" fill="#e7f0ff"/><text x="176" y="${y}" text-anchor="middle" class="ico">${ic}</text><text x="220" y="${y}" class="key">${xmlEsc(k)}</text><text x="455" y="${y}" class="colon">:</text>${svgWrap(v,490,y-34,38,29,'class="val"')}<line x1="155" y1="${y+29}" x2="925" y2="${y+29}" class="sep"/>`;
+    y+=72;
   }
-  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080">
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1100" viewBox="0 0 1080 1100">
   <defs>
-    <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0a2d84"/><stop offset="1" stop-color="#087cf3"/></linearGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#17315f" flood-opacity=".18"/></filter>
-    <style>.key{font:700 24px Arial,sans-serif;fill:#0b3b91}.colon{font:700 24px Arial,sans-serif;fill:#0b3b91}.val{font:500 23px Arial,sans-serif;fill:#17366f}.sep{stroke:#cbdff0;stroke-width:1.5}</style>
+    <linearGradient id="hero" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#08358f"/><stop offset=".58" stop-color="#075fc7"/><stop offset="1" stop-color="#1394ef"/></linearGradient>
+    <filter id="shadow"><feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#102d5b" flood-opacity=".16"/></filter>
+    <style>.key{font:700 24px Arial;fill:#123b86}.colon{font:700 24px Arial;fill:#123b86}.val{font:600 23px Arial;fill:#17356d}.ico{font:700 18px Arial;fill:#0b63ce}.sep{stroke:#d9e6f3;stroke-width:1.4}</style>
   </defs>
-  <rect width="1080" height="1080" fill="#f5efe4"/>
-  <g opacity=".17" fill="none" stroke="#86a58d" stroke-width="2"><circle cx="35" cy="100" r="13"/><path d="M65 35l24 18-25 18M1010 85l18 20-20 18M35 930l25 12-18 24M1000 990l28-8-4 29"/></g>
-  <rect x="72" y="35" width="936" height="1010" rx="34" fill="#fff" filter="url(#shadow)"/>
-  <path d="M72 35h936v355c-205 87-376 4-563 48-150 35-259 82-373 145z" fill="url(#blue)"/>
-  <path d="M72 35h936v155c-166 66-331 44-490 74-173 32-304 95-446 168z" fill="#fff"/>
-  ${logo?`<image href="data:image/png;base64,${logo}" x="125" y="72" width="350" height="105" preserveAspectRatio="xMinYMid meet"/>`:''}
-  <!-- graduation cap + confetti -->
-  <g transform="translate(830 116) rotate(-8)"><path d="M-74 0L0-36 74 0 0 36z" fill="#07327f"/><path d="M-45 17v38c29 22 61 22 90 0V17" fill="#0b66d8"/><path d="M74 0v48" stroke="#f3b22d" stroke-width="7"/><circle cx="74" cy="55" r="8" fill="#f3b22d"/></g>
-  <g stroke-width="7" stroke-linecap="round"><path d="M650 95l-13-20" stroke="#ffbf2e"/><path d="M690 65l8-24" stroke="#24c96b"/><path d="M746 77l18-18" stroke="#ef4d72"/><path d="M925 170l20-7" stroke="#ffbf2e"/><path d="M936 220l24 8" stroke="#24c96b"/></g>
-  <!-- confirmation headline -->
-  <text x="135" y="310" font-family="Arial,sans-serif" font-size="49" font-weight="800" fill="white">Appointment Booked Successfully!</text>
-  <text x="137" y="355" font-family="Arial,sans-serif" font-size="25" fill="#eaf5ff">Your counselling appointment has been confirmed.</text>
-  <!-- calendar illustration -->
-  <g transform="translate(835 325)"><rect x="-72" y="-67" width="144" height="125" rx="18" fill="white"/><rect x="-72" y="-67" width="144" height="35" rx="18" fill="#dcecff"/><path d="M-40-78v28M40-78v28" stroke="#0a4ba7" stroke-width="10" stroke-linecap="round"/><circle cx="42" cy="33" r="43" fill="#19c865"/><path d="M20 33l15 15 29-34" fill="none" stroke="white" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/></g>
-  <rect x="112" y="452" width="856" height="550" rx="31" fill="#f3f9fd" stroke="#e1eef8" stroke-width="2"/>
+  <rect width="1080" height="1100" fill="#f4efe5"/>
+  <g opacity=".16" fill="#b6aa97"><circle cx="45" cy="75" r="5"/><circle cx="1015" cy="110" r="5"/><circle cx="55" cy="1010" r="5"/><circle cx="1015" cy="1025" r="5"/></g>
+  <rect x="72" y="34" width="936" height="1032" rx="38" fill="#fff" filter="url(#shadow)"/>
+  <rect x="102" y="62" width="876" height="348" rx="30" fill="url(#hero)"/>
+  <path d="M102 62h876v132c-132 48-248 49-356 24-151-34-274-11-520 101z" fill="#fff"/>
+  ${logo?`<image href="data:image/png;base64,${logo}" x="142" y="83" width="350" height="100" preserveAspectRatio="xMidYMid meet"/>`:''}
+  <text x="820" y="126" font-family="Arial" font-size="54">🎓</text>
+  <text x="145" y="282" font-family="Arial" font-size="46" font-weight="800" fill="#fff">Appointment Booked Successfully!</text>
+  <text x="145" y="327" font-family="Arial" font-size="25" fill="#e9f4ff">Your counselling appointment has been confirmed.</text>
+  <rect x="742" y="342" width="164" height="78" rx="20" fill="#fff" opacity=".98"/><text x="768" y="394" font-family="Arial" font-size="47">📅</text><circle cx="880" cy="379" r="24" fill="#18bf62"/><text x="880" y="389" text-anchor="middle" font-family="Arial" font-size="29" font-weight="800" fill="#fff">✓</text>
+  <rect x="122" y="438" width="836" height="574" rx="30" fill="#f5faff" stroke="#e2edf7" stroke-width="2"/>
+  <text x="155" y="478" font-family="Arial" font-size="22" font-weight="800" fill="#0b4da7" letter-spacing="1.2">BOOKING DETAILS</text>
   ${rowSvg}
   </svg>`;
-  return sharp(Buffer.from(svg)).png({quality:96}).toBuffer();
+  return sharp(Buffer.from(svg)).png({quality:95}).toBuffer();
 }
 
 app.get('/api/public/booking/whatsapp-card/:ref.png', async (req,res)=>{
