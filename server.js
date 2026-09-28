@@ -3574,8 +3574,17 @@ app.post("/api/webhook/botsailor", async (req, res) => {
 
 
 async function loadBookingWhatsAppContext(bookingRef) {
+  // Booking may not have lead_id populated even though the same student's WhatsApp
+  // conversation is already inside Meta's 24-hour customer-service window. Resolve
+  // the newest inbound timestamp by BOTH linked lead and normalized student mobile.
   const r = await pool.query(`SELECT b.*, c.name AS counsellor_name, c.meeting_link,
-    l.last_customer_message_at, loc.name AS offline_location_name, loc.address AS offline_address, loc.map_url AS offline_map_url
+    GREATEST(
+      l.last_customer_message_at,
+      (SELECT MAX(lm.last_customer_message_at) FROM leads lm
+       WHERE RIGHT(REGEXP_REPLACE(COALESCE(lm.mobile,''),'[^0-9]','','g'),10)
+           = RIGHT(REGEXP_REPLACE(COALESCE(b.student_mobile,''),'[^0-9]','','g'),10))
+    ) AS last_customer_message_at,
+    loc.name AS offline_location_name, loc.address AS offline_address, loc.map_url AS offline_map_url
     FROM student_bookings b
     LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id
     LEFT JOIN leads l ON l.id=b.lead_id
@@ -3597,7 +3606,37 @@ function bookingManageUrl(b, token) {
   return `${base}#${new URLSearchParams({ref:b.booking_ref,token}).toString()}`;
 }
 
+async function findBookingConfirmationFlow() {
+  // The imported BotSailor flow is the professional within-24h design with buttons.
+  // Keep name matching tolerant so an existing imported catalogue continues to work.
+  const q = await pool.query(`SELECT * FROM botsailor_flows
+    WHERE raw->>'crm_sync_missing' IS DISTINCT FROM 'true'
+      AND LOWER(TRIM(name)) IN ('booking confirmation','booking_confirmation')
+      AND COALESCE(unique_id,'') <> ''
+    ORDER BY imported_at DESC LIMIT 1`);
+  if (q.rows[0]) return q.rows[0];
+  try { await importBotSailorFlows(); } catch (e) { console.error('Booking Confirmation flow refresh failed:', e.message); }
+  const q2 = await pool.query(`SELECT * FROM botsailor_flows
+    WHERE raw->>'crm_sync_missing' IS DISTINCT FROM 'true'
+      AND LOWER(TRIM(name)) IN ('booking confirmation','booking_confirmation')
+      AND COALESCE(unique_id,'') <> ''
+    ORDER BY imported_at DESC LIMIT 1`);
+  return q2.rows[0] || null;
+}
+
 async function sendBookingSessionConfirmation(b, token, action='booking_confirmation_24h') {
+  // Inside an open 24h window prefer the imported professional BotSailor
+  // "Booking Confirmation" flow (interactive design/buttons). Plain text remains
+  // a safe fallback only if that flow is missing or BotSailor rejects the trigger.
+  const flow = await findBookingConfirmationFlow();
+  if (flow?.unique_id) {
+    const flowResult = await triggerBotSailorFlow(b.student_mobile, flow.unique_id, { resetUserInput: false });
+    await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail)
+      VALUES($1,$2,'student','whatsapp',$3,$4) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status=EXCLUDED.status,detail=EXCLUDED.detail,created_at=NOW()`,
+      [b.id,action,flowResult.success?'sent':'failed',flowResult.message||flowResult.status||('flow:'+flow.name)]);
+    if (flowResult.success) return { ...flowResult, mode: 'flow', flow: flow.name };
+  }
+
   const {date,time}=bookingIstParts(b.starts_at);
   const manage=bookingManageUrl(b,token);
   const mapOrMeet=b.mode==='offline'?(b.offline_map_url||manage):(b.meeting_link||manage);
