@@ -3671,22 +3671,77 @@ function svgWrap(text, x, y, maxChars=38, line=34, attrs='') {
   return out.map(v=>`<text x="${x}" y="${yy+=line}" ${attrs}>${xmlEsc(v)}</text>`).join('');
 }
 async function bookingCardPng(b) {
+  // FINAL LOCKED visual card (28-Sep): visual-only change.
+  // IMPORTANT: WhatsApp/BotSailor sending logic lives outside this function and is unchanged.
   const {date,time}=bookingIstParts(b.starts_at);
   const place=b.mode==='offline'?(b.offline_location_name||'Head Office - Tagore Garden'):'Online Counselling';
   const address=b.mode==='offline'?(b.offline_address||'GuruVidya Academy, New Delhi'):'Online counselling appointment';
   let logo=''; try { logo=(await readFile(new URL('./booking/guruvidya-logo.png',import.meta.url))).toString('base64'); } catch {}
-  const rows=[['▣','Booking Reference',b.booking_ref],['●','Student Name',b.student_name],['◆','Course',b.course],['▦','Date & Time (IST)',`${date} ${time}`],['●','Counsellor',b.counsellor_name||'GuruVidya Admission Counsellor'],['▣','Mode',b.mode==='offline'?`Offline – ${place}`:'Online']];
-  let rowSvg='', y=545;
-  for(const [ic,k,v] of rows){rowSvg+=`<text x="170" y="${y}" class="ico">${ic}</text><text x="235" y="${y}" class="key">${xmlEsc(k)}</text><text x="455" y="${y}" class="key">:</text>${svgWrap(v,500,y-34,34,31,'class="val"')}<line x1="150" y1="${y+30}" x2="895" y2="${y+30}" class="sep"/>`;y+=70;}
-  rowSvg+=`<text x="170" y="${y}" class="ico">●</text><text x="235" y="${y}" class="key">Location</text><text x="455" y="${y}" class="key">:</text>${svgWrap(address,500,y-34,34,31,'class="val"')}`;
-  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1040" viewBox="0 0 1080 1040">
-  <defs><linearGradient id="blue" x1="0" x2="1"><stop stop-color="#092d86"/><stop offset="1" stop-color="#087cff"/></linearGradient><linearGradient id="b1"><stop stop-color="#087ef8"/><stop offset="1" stop-color="#005be7"/></linearGradient><linearGradient id="g1"><stop stop-color="#00c85b"/><stop offset="1" stop-color="#00a843"/></linearGradient><linearGradient id="p1"><stop stop-color="#8a19f6"/><stop offset="1" stop-color="#4b00d9"/></linearGradient><style>.key{font:700 25px Arial;fill:#0b3489}.val{font:500 24px Arial;fill:#123278}.ico{font:700 27px Arial;fill:#0b3489}.sep{stroke:#cce0f1;stroke-width:1.5}.btn{font:700 29px Arial;fill:white}.sub{font:400 20px Arial;fill:#dbeaff}.arrow{font:700 45px Arial;fill:white}</style></defs>
-  <rect width="1080" height="1040" fill="#f5f0e7"/><rect x="85" y="35" width="910" height="970" rx="34" fill="#fff"/>
-  <rect x="110" y="65" width="860" height="330" rx="28" fill="url(#blue)"/><path d="M110 65h860v105c-180 80-370 28-560 70-130 29-220 76-300 105z" fill="#fff" opacity=".98"/>
-  ${logo?`<image href="data:image/png;base64,${logo}" x="145" y="80" width="350" height="105" preserveAspectRatio="xMidYMid meet"/>`:''}
-  <text x="170" y="270" font-family="Arial" font-size="48" font-weight="800" fill="white">Appointment Booked</text><text x="170" y="325" font-family="Arial" font-size="48" font-weight="800" fill="white">Successfully!</text><text x="170" y="365" font-family="Arial" font-size="25" fill="white">Your counselling appointment has been confirmed.</text>
-  <circle cx="835" cy="305" r="58" fill="#16c85d"/><text x="802" y="326" font-family="Arial" font-size="62" font-weight="800" fill="white">✓</text>
-  <rect x="125" y="405" width="830" height="585" rx="35" fill="#f3f9fd"/>${rowSvg}
+
+  const rows=[
+    ['doc','Booking Reference',b.booking_ref],
+    ['person','Student Name',b.student_name],
+    ['cap','Course',b.course],
+    ['calendar','Date & Time (IST)',`${date} ${time}`],
+    ['person','Counsellor',b.counsellor_name||'GuruVidya Admission Counsellor'],
+    ['screen','Mode',b.mode==='offline'?`Offline – ${place}`:'Online'],
+    ['pin','Location',address]
+  ];
+
+  const iconSvg=(kind,x,y)=>{
+    if(kind==='person') return `<circle cx="${x}" cy="${y-12}" r="13" fill="#0b3a96"/><path d="M${x-25} ${y+25}c2-22 12-32 25-32s23 10 25 32z" fill="#0b3a96"/>`;
+    if(kind==='cap') return `<path d="M${x-28} ${y-10}l28-15 28 15-28 15z" fill="#0b3a96"/><path d="M${x-18} ${y}v17c12 8 24 8 36 0V0" fill="#0b3a96"/><path d="M${x+28} ${y-10}v27" stroke="#0b3a96" stroke-width="4"/>`;
+    if(kind==='calendar') return `<rect x="${x-25}" y="${y-24}" width="50" height="49" rx="5" fill="none" stroke="#0b3a96" stroke-width="7"/><path d="M${x-25} ${y-9}h50M${x-13} ${y-31}v14M${x+13} ${y-31}v14" stroke="#0b3a96" stroke-width="7" stroke-linecap="round"/><rect x="${x-12}" y="${y}" width="8" height="8" fill="#0b3a96"/><rect x="${x+5}" y="${y}" width="8" height="8" fill="#0b3a96"/>`;
+    if(kind==='screen') return `<rect x="${x-28}" y="${y-23}" width="56" height="39" rx="4" fill="none" stroke="#0b3a96" stroke-width="7"/><path d="M${x} ${y+16}v15M${x-16} ${y+31}h32" stroke="#0b3a96" stroke-width="7" stroke-linecap="round"/>`;
+    if(kind==='pin') return `<path d="M${x} ${y+30}s-28-29-28-51a28 28 0 1 1 56 0c0 22-28 51-28 51z" fill="#0b3a96"/><circle cx="${x}" cy="${y-20}" r="9" fill="white"/>`;
+    return `<path d="M${x-23} ${y-28}h33l14 14v43h-47z" fill="#0b3a96"/><path d="M${x+10} ${y-28}v15h14M${x-13} ${y-1}h26M${x-13} ${y+10}h26" stroke="white" stroke-width="4"/>`;
+  };
+
+  let rowSvg='', y=695;
+  for (let i=0;i<rows.length;i++) {
+    const [ic,k,v]=rows[i];
+    const isLocation=i===rows.length-1;
+    rowSvg += iconSvg(ic,112,y-8);
+    rowSvg += `<text x="185" y="${y}" class="key">${xmlEsc(k)}</text><text x="468" y="${y}" class="colon">:</text>`;
+    rowSvg += svgWrap(v,520,y-38,isLocation?39:34,36,'class="val"');
+    if(!isLocation) rowSvg += `<line x1="62" y1="${y+48}" x2="1018" y2="${y+48}" class="sep"/>`;
+    y += isLocation ? 170 : (i===3 || i===4 || i===5 ? 125 : 100);
+  }
+
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1536" viewBox="0 0 1080 1536">
+  <defs>
+    <linearGradient id="hero" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#082a86"/><stop offset=".58" stop-color="#064fc5"/><stop offset="1" stop-color="#08a8ff"/></linearGradient>
+    <linearGradient id="cal" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#00bfff"/><stop offset="1" stop-color="#edfaff"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="12" flood-opacity=".14"/></filter>
+    <style>
+      .key{font:700 29px Arial,sans-serif;fill:#0b3489}.colon{font:700 29px Arial,sans-serif;fill:#0b3489}.val{font:500 28px Arial,sans-serif;fill:#123278}.sep{stroke:#d4e3ef;stroke-width:1.5}
+    </style>
+    <pattern id="paper" width="100" height="100" patternUnits="userSpaceOnUse"><circle cx="15" cy="18" r="2" fill="#d9d0c4" opacity=".28"/><path d="M70 15c18 8 18 25 0 33M20 70c15-14 30-14 45 0" fill="none" stroke="#d9d0c4" stroke-width="2" opacity=".18"/></pattern>
+  </defs>
+  <rect width="1080" height="1536" fill="#f6f1e8"/><rect width="1080" height="1536" fill="url(#paper)"/>
+  <rect x="18" y="165" width="1044" height="1185" rx="38" fill="#fff" filter="url(#shadow)"/>
+
+  ${logo?`<image href="data:image/png;base64,${logo}" x="105" y="188" width="470" height="145" preserveAspectRatio="xMidYMid meet"/>`:''}
+  <!-- confetti -->
+  <path d="M54 300l28 20-15 30-30-18z" fill="#ffcc00"/><circle cx="52" cy="274" r="8" fill="#ff2c6d"/><circle cx="83" cy="282" r="7" fill="#00a9ff"/><path d="M91 307q35 20 4 52" fill="none" stroke="#8d1cff" stroke-width="8"/>
+  <!-- graduation cap -->
+  <path d="M750 225l145-35 135 54-145 42z" fill="#162235"/><path d="M804 268q80 48 157 3l-8 82q-73 40-145-2z" fill="#202b3c"/><path d="M965 255q35 12 35 48v74" fill="none" stroke="#ffd21c" stroke-width="9"/><circle cx="1000" cy="386" r="12" fill="#ffd21c"/>
+
+  <!-- curved blue hero -->
+  <path d="M28 365Q55 325 112 322H1062V608Q820 650 600 622Q320 586 28 635Z" fill="url(#hero)"/>
+  <path d="M28 365Q260 300 520 328Q760 355 1062 310V360Q780 410 535 382Q280 350 28 420Z" fill="#0d9eff" opacity=".88"/>
+  <text x="112" y="448" font-family="Arial,sans-serif" font-size="64" font-weight="800" fill="white">Appointment Booked</text>
+  <text x="112" y="520" font-family="Arial,sans-serif" font-size="64" font-weight="800" fill="white">Successfully!</text>
+  <text x="112" y="580" font-family="Arial,sans-serif" font-size="36" fill="white">Your counselling appointment</text><text x="112" y="624" font-family="Arial,sans-serif" font-size="36" fill="white">has been confirmed.</text>
+
+  <!-- calendar art -->
+  <g transform="translate(760 410) rotate(-8)"><rect x="0" y="0" width="150" height="160" rx="22" fill="url(#cal)" filter="url(#shadow)"/><rect x="0" y="0" width="150" height="42" rx="22" fill="#05a8ed"/><path d="M35 -12v35M112 -12v35" stroke="#0469d9" stroke-width="14" stroke-linecap="round"/><g fill="#04a9e8"><rect x="30" y="66" width="22" height="22" rx="4"/><rect x="64" y="66" width="22" height="22" rx="4"/><rect x="98" y="66" width="22" height="22" rx="4"/><rect x="30" y="101" width="22" height="22" rx="4"/><rect x="64" y="101" width="22" height="22" rx="4"/></g></g>
+  <g transform="translate(900 365) rotate(8)"><rect width="120" height="130" rx="20" fill="#ffb20c" filter="url(#shadow)"/><rect y="0" width="120" height="35" rx="20" fill="#ff7b00"/><g fill="#55c84c"><rect x="24" y="57" width="18" height="18" rx="3"/><rect x="52" y="57" width="18" height="18" rx="3"/><rect x="80" y="57" width="18" height="18" rx="3"/></g></g>
+  <circle cx="902" cy="555" r="64" fill="#13cf47" filter="url(#shadow)"/><path d="M872 555l21 22 42-48" fill="none" stroke="white" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- details panel -->
+  <rect x="34" y="625" width="1012" height="690" rx="42" fill="#f4f9fd" stroke="#e1edf6" stroke-width="2"/>
+  ${rowSvg}
   </svg>`;
   return sharp(Buffer.from(svg)).png({quality:95}).toBuffer();
 }
