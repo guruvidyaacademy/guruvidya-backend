@@ -3680,7 +3680,8 @@ async function bookingCardPng(b) {
     ['doc','Booking Reference',b.booking_ref],
     ['person','Student Name',b.student_name],
     ['cap','Course',b.course],
-    ['calendar','Date & Time (IST)',`${date} ${time}`],
+    ['calendar','Date',date],
+    ['clock','Time (IST)',time],
     ['person','Counsellor',b.counsellor_name||'GuruVidya Admission Counsellor'],
     ['screen','Mode',b.mode==='offline'?`Offline - ${place}`:'Online'],
     ['pin','Location',address]
@@ -3690,6 +3691,7 @@ async function bookingCardPng(b) {
     if(type==='person') return `<circle cx="${cx}" cy="${cy-13}" r="13" fill="${s}"/><path d="M${cx-24} ${cy+23}c2-20 13-30 24-30s22 10 24 30z" fill="${s}"/>`;
     if(type==='cap') return `<path d="M${cx-28} ${cy-8}l28-15 28 15-28 15z" fill="${s}"/><path d="M${cx-18} ${cy+1}v15c10 8 26 8 36 0V${cy+1}z" fill="${s}"/><circle cx="${cx+27}" cy="${cy-7}" r="3" fill="${s}"/>`;
     if(type==='calendar') return `<rect x="${cx-24}" y="${cy-21}" width="48" height="45" rx="5" fill="none" stroke="${s}" stroke-width="6"/><path d="M${cx-24} ${cy-7}h48M${cx-13} ${cy-27}v12M${cx+13} ${cy-27}v12" stroke="${s}" stroke-width="6" stroke-linecap="round"/><rect x="${cx-12}" y="${cy+2}" width="8" height="8" fill="${s}"/><rect x="${cx+5}" y="${cy+2}" width="8" height="8" fill="${s}"/>`;
+    if(type==='clock') return `<circle cx="${cx}" cy="${cy}" r="24" fill="none" stroke="${s}" stroke-width="6"/><path d="M${cx} ${cy-13}v15l12 8" fill="none" stroke="${s}" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>`;
     if(type==='screen') return `<rect x="${cx-27}" y="${cy-20}" width="54" height="38" rx="4" fill="none" stroke="${s}" stroke-width="6"/><path d="M${cx} ${cy+18}v13M${cx-15} ${cy+31}h30" stroke="${s}" stroke-width="6" stroke-linecap="round"/>`;
     if(type==='pin') return `<path d="M${cx} ${cy+28}s-24-27-24-45a24 24 0 1148 0c0 18-24 45-24 45z" fill="${s}"/><circle cx="${cx}" cy="${cy-17}" r="8" fill="white"/>`;
     // Document icon intentionally uses filled rectangles only (no SVG <line>,
