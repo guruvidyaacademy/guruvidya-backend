@@ -3104,7 +3104,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       // Never fall through to another active booking on the same mobile number.
       let bookingRef='';
       if(['cancel','cancel_yes','reschedule'].includes(bookingActionType)){
-        const stateQ=await pool.query(`SELECT booking_ref FROM booking_whatsapp_states WHERE mobile=$1 LIMIT 1`,[canonical]);
+        const stateQ=await pool.query(`SELECT booking_ref,payload FROM booking_whatsapp_states WHERE mobile=$1 LIMIT 1`,[canonical]);
         bookingRef=String(stateQ.rows[0]?.booking_ref||'').trim();
       }
       if(!bookingRef){
@@ -3147,18 +3147,30 @@ app.post("/api/webhook/botsailor", async (req, res) => {
           [canonical,booking.id,booking.booking_ref]);
         reply=`✅ *Appointment Cancelled*\n\nYour appointment *${booking.booking_ref}* has been cancelled successfully.\n\nIf you need counselling later, please book a new appointment.`;
       } else if(bookingActionType==='reschedule') {
-        // Open the existing secure browser reschedule calendar. Normal browser booking
-        // management remains unchanged; this action only deep-links to rescheduling.
-        const token=randomBytes(32).toString('hex');
-        const tokenHash=createHash('sha256').update(token).digest('hex');
-        await pool.query(`UPDATE student_bookings SET token_hash=$1,updated_at=NOW() WHERE id=$2`,[tokenHash,booking.id]);
+        // Reuse the currently valid private token when available. Rotating it here
+        // invalidates an already-open browser page and makes refresh show Booking not found.
+        const stateTokenQ=await pool.query(`SELECT payload->>'manage_token' AS manage_token FROM booking_whatsapp_states WHERE mobile=$1 AND booking_ref=$2 LIMIT 1`,[canonical,booking.booking_ref]);
+        let token=String(stateTokenQ.rows[0]?.manage_token||'');
+        const currentHash=String(booking.token_hash||'');
+        if(!/^[a-f0-9]{64}$/i.test(token) || createHash('sha256').update(token).digest('hex')!==currentHash){
+          token=randomBytes(32).toString('hex');
+          const tokenHash=createHash('sha256').update(token).digest('hex');
+          await pool.query(`UPDATE student_bookings SET token_hash=$1,updated_at=NOW() WHERE id=$2`,[tokenHash,booking.id]);
+          await pool.query(`UPDATE booking_whatsapp_states SET payload=jsonb_set(COALESCE(payload,'{}'::jsonb),'{manage_token}',to_jsonb($1::text),true),updated_at=NOW() WHERE mobile=$2 AND booking_ref=$3`,[token,canonical,booking.booking_ref]);
+        }
         const rescheduleUrl=bookingManageUrl(booking,token)+'&action=reschedule';
         reply=`📅 *Reschedule Appointment*\n\nOpen the secure link below to choose a new date and available time slot:\n\n${rescheduleUrl}`;
       } else if(bookingActionType==='manage') {
-        // Rotate the private token each time the customer requests the manage link.
-        const token=randomBytes(32).toString('hex');
-        const tokenHash=createHash('sha256').update(token).digest('hex');
-        await pool.query(`UPDATE student_bookings SET token_hash=$1,updated_at=NOW() WHERE id=$2`,[tokenHash,booking.id]);
+        // Keep the same valid token so an open booking page remains refreshable.
+        const stateTokenQ=await pool.query(`SELECT payload->>'manage_token' AS manage_token FROM booking_whatsapp_states WHERE mobile=$1 AND booking_ref=$2 LIMIT 1`,[canonical,booking.booking_ref]);
+        let token=String(stateTokenQ.rows[0]?.manage_token||'');
+        const currentHash=String(booking.token_hash||'');
+        if(!/^[a-f0-9]{64}$/i.test(token) || createHash('sha256').update(token).digest('hex')!==currentHash){
+          token=randomBytes(32).toString('hex');
+          const tokenHash=createHash('sha256').update(token).digest('hex');
+          await pool.query(`UPDATE student_bookings SET token_hash=$1,updated_at=NOW() WHERE id=$2`,[tokenHash,booking.id]);
+          await pool.query(`UPDATE booking_whatsapp_states SET payload=jsonb_set(COALESCE(payload,'{}'::jsonb),'{manage_token}',to_jsonb($1::text),true),updated_at=NOW() WHERE mobile=$2 AND booking_ref=$3`,[token,canonical,booking.booking_ref]);
+        }
         reply=`🔗 *Manage Appointment*\n${bookingManageUrl(booking,token)}\n\nUse this secure link to reschedule or cancel your appointment.`;
       } else if(bookingActionType==='maps') {
         reply=booking.mode==='offline'
@@ -3910,9 +3922,9 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
     if(manageResult.success){
       const canonical=botSailorPhone(b.student_mobile);
       await pool.query(`INSERT INTO booking_whatsapp_states(mobile,booking_id,booking_ref,state,payload,updated_at)
-        VALUES($1,$2,$3,'change_options','{}'::jsonb,NOW())
-        ON CONFLICT(mobile) DO UPDATE SET booking_id=EXCLUDED.booking_id,booking_ref=EXCLUDED.booking_ref,state='change_options',payload='{}'::jsonb,updated_at=NOW()`,
-        [canonical,b.id,b.booking_ref]);
+        VALUES($1,$2,$3,'change_options',$4::jsonb,NOW())
+        ON CONFLICT(mobile) DO UPDATE SET booking_id=EXCLUDED.booking_id,booking_ref=EXCLUDED.booking_ref,state='change_options',payload=EXCLUDED.payload,updated_at=NOW()`,
+        [canonical,b.id,b.booking_ref,JSON.stringify({manage_token:String(token||'')})]);
     }
   }
 
