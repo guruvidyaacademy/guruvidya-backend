@@ -3671,7 +3671,7 @@ function svgWrap(text, x, y, maxChars=38, line=34, attrs='') {
   return out.map(v=>`<text x="${x}" y="${yy+=line}" ${attrs}>${xmlEsc(v)}</text>`).join('');
 }
 async function bookingCardPng(b) {
-  // SERVER 47: approved header crop; stray left vertical blue artefact removed. Send/buttons untouched.
+  // SERVER 48: remove vertical blue artefact at its renderer source (document icon compound path). Send/buttons untouched.
   const {date,time}=bookingIstParts(b.starts_at);
   const place=b.mode==='offline'?(b.offline_location_name||'Head Office - Tagore Garden'):'Online Counselling';
   const address=b.mode==='offline'?(b.offline_address||'GuruVidya Academy, New Delhi'):'Online counselling appointment';
@@ -3692,7 +3692,9 @@ async function bookingCardPng(b) {
     if(type==='calendar') return `<rect x="${cx-24}" y="${cy-21}" width="48" height="45" rx="5" fill="none" stroke="${s}" stroke-width="6"/><path d="M${cx-24} ${cy-7}h48M${cx-13} ${cy-27}v12M${cx+13} ${cy-27}v12" stroke="${s}" stroke-width="6" stroke-linecap="round"/><rect x="${cx-12}" y="${cy+2}" width="8" height="8" fill="${s}"/><rect x="${cx+5}" y="${cy+2}" width="8" height="8" fill="${s}"/>`;
     if(type==='screen') return `<rect x="${cx-27}" y="${cy-20}" width="54" height="38" rx="4" fill="none" stroke="${s}" stroke-width="6"/><path d="M${cx} ${cy+18}v13M${cx-15} ${cy+31}h30" stroke="${s}" stroke-width="6" stroke-linecap="round"/>`;
     if(type==='pin') return `<path d="M${cx} ${cy+28}s-24-27-24-45a24 24 0 1148 0c0 18-24 45-24 45z" fill="${s}"/><circle cx="${cx}" cy="${cy-17}" r="8" fill="white"/>`;
-    return `<path d="M${cx-20} ${cy-26}h29l13 13v39h-42z" fill="none" stroke="${s}" stroke-width="6" stroke-linejoin="round"/><path d="M${cx+9} ${cy-26}v13h13M${cx-11} ${cy}h24M${cx-11} ${cy+11}h24" stroke="${s}" stroke-width="5"/>`;
+    // Document icon: use only simple SVG primitives. This avoids the long
+    // vertical artefact produced by the previous compound path in Sharp/libvips.
+    return `<rect x="${cx-20}" y="${cy-25}" width="40" height="50" rx="3" fill="none" stroke="${s}" stroke-width="6"/><line x1="${cx-11}" y1="${cy-8}" x2="${cx+11}" y2="${cy-8}" stroke="${s}" stroke-width="5"/><line x1="${cx-11}" y1="${cy+4}" x2="${cx+11}" y2="${cy+4}" stroke="${s}" stroke-width="5"/><line x1="${cx-11}" y1="${cy+16}" x2="${cx+6}" y2="${cy+16}" stroke="${s}" stroke-width="5"/>`;
   };
   let rowSvg='', y=625;
   for(const [ic,k,v] of rows){
