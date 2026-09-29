@@ -3100,13 +3100,31 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     if (bookingActionType) {
       const canonical=botSailorPhone(mobile);
       const national=canonical.startsWith('91')&&canonical.length===12?canonical.slice(2):canonical;
-      const br=await pool.query(`SELECT b.booking_ref FROM student_bookings b
-        WHERE regexp_replace(COALESCE(b.student_mobile,''),'[^0-9]','','g') IN ($1,$2)
-          AND b.status IN ('requested','approved','confirmed','rescheduled')
-        ORDER BY b.created_at DESC LIMIT 1`,[canonical,national]);
-      if(!br.rows[0]) return res.status(200).json({status:'ignored',message:'No active booking found for this mobile'});
-      const booking=await loadBookingWhatsAppContext(br.rows[0].booking_ref);
+      // Cancel/Reschedule buttons must stay tied to the booking that created them.
+      // Never fall through to another active booking on the same mobile number.
+      let bookingRef='';
+      if(['cancel','cancel_yes','reschedule'].includes(bookingActionType)){
+        const stateQ=await pool.query(`SELECT booking_ref FROM booking_whatsapp_states WHERE mobile=$1 LIMIT 1`,[canonical]);
+        bookingRef=String(stateQ.rows[0]?.booking_ref||'').trim();
+      }
+      if(!bookingRef){
+        const br=await pool.query(`SELECT b.booking_ref FROM student_bookings b
+          WHERE regexp_replace(COALESCE(b.student_mobile,''),'[^0-9]','','g') IN ($1,$2)
+            AND b.status IN ('requested','approved','confirmed','rescheduled')
+          ORDER BY b.created_at DESC LIMIT 1`,[canonical,national]);
+        bookingRef=String(br.rows[0]?.booking_ref||'').trim();
+      }
+      if(!bookingRef) return res.status(200).json({status:'ignored',message:'No booking found for this action'});
+      const booking=await loadBookingWhatsAppContext(bookingRef);
       if(!booking) return res.status(200).json({status:'ignored',message:'Booking not found'});
+      if(bookingActionType==='reschedule' && String(booking.status||'').toLowerCase()==='cancelled'){
+        const closed=await sendBotSailorText(
+          {mobile:booking.student_mobile,name:booking.student_name,course:booking.course},
+          `ℹ️ *This appointment is already cancelled.*\n\nBooking: *${booking.booking_ref}*\n\nPlease book a new appointment if you would like to schedule counselling again.`,
+          'booking_cancelled_reschedule_blocked'
+        );
+        return res.status(closed.success?200:400).json({status:closed.success?'ok':'error',action:'booking_cancelled_reschedule_blocked'});
+      }
       let reply='';
       if(bookingActionType==='cancel') {
         const confirmResult=await sendBotSailorReplyButtons(
@@ -3121,8 +3139,13 @@ app.post("/api/webhook/botsailor", async (req, res) => {
         return res.status(confirmResult.success?200:400).json({status:confirmResult.success?'ok':'error',action:'booking_cancel_confirm'});
       } else if(bookingActionType==='cancel_yes') {
         await pool.query(`UPDATE student_bookings SET status='cancelled',customer_response='cancelled',response_at=NOW(),updated_at=NOW() WHERE id=$1`,[booking.id]);
-        await pool.query(`DELETE FROM booking_whatsapp_states WHERE mobile=$1`,[canonical]);
-        reply=`✅ *Appointment Cancelled*\n\nYour appointment *${booking.booking_ref}* has been cancelled successfully.\n\nIf you need counselling later, you can book a new appointment anytime.`;
+        // Keep the cancelled booking bound to this WhatsApp action set so an old
+        // Reschedule button can never jump to a different booking on the same mobile.
+        await pool.query(`INSERT INTO booking_whatsapp_states(mobile,booking_id,booking_ref,state,payload,updated_at)
+          VALUES($1,$2,$3,'cancelled','{}'::jsonb,NOW())
+          ON CONFLICT(mobile) DO UPDATE SET booking_id=EXCLUDED.booking_id,booking_ref=EXCLUDED.booking_ref,state='cancelled',payload='{}'::jsonb,updated_at=NOW()`,
+          [canonical,booking.id,booking.booking_ref]);
+        reply=`✅ *Appointment Cancelled*\n\nYour appointment *${booking.booking_ref}* has been cancelled successfully.\n\nIf you need counselling later, please book a new appointment.`;
       } else if(bookingActionType==='reschedule') {
         await pool.query(`INSERT INTO booking_whatsapp_states(mobile,booking_id,booking_ref,state,payload,updated_at)
           VALUES($1,$2,$3,'awaiting_reschedule_preference','{}'::jsonb,NOW())
@@ -3863,6 +3886,10 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   // logging error must never block a customer-facing WhatsApp action message.
   let manageResult=null;
   if(result.success){
+    // Media cards can take a moment to render on WhatsApp even after Meta accepts
+    // the send. A short pause keeps the change-options card visually after the
+    // booking graphic instead of racing ahead of it.
+    await new Promise(resolve=>setTimeout(resolve,3500));
     manageResult=await sendBotSailorReplyButtons(
       {mobile:b.student_mobile,name:b.student_name,course:b.course},
       `🗓️ *Need to make a change to your appointment?*\nUse the options below to cancel or reschedule.`,
@@ -3878,6 +3905,13 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
       message:manageResult.message,
       buttons:['Cancel','Reschedule']
     });
+    if(manageResult.success){
+      const canonical=botSailorPhone(b.student_mobile);
+      await pool.query(`INSERT INTO booking_whatsapp_states(mobile,booking_id,booking_ref,state,payload,updated_at)
+        VALUES($1,$2,$3,'change_options','{}'::jsonb,NOW())
+        ON CONFLICT(mobile) DO UPDATE SET booking_id=EXCLUDED.booking_id,booking_ref=EXCLUDED.booking_ref,state='change_options',payload='{}'::jsonb,updated_at=NOW()`,
+        [canonical,b.id,b.booking_ref]);
+    }
   }
 
   // Delivery logging is non-critical. Never let a schema/ON CONFLICT mismatch stop
