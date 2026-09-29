@@ -451,6 +451,15 @@ async function initDatabase() {
     );
     CREATE INDEX IF NOT EXISTS idx_cta_sent_buttons_lookup
       ON cta_sent_buttons (mobile, normalized_title, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS booking_whatsapp_states (
+      mobile TEXT PRIMARY KEY,
+      booking_id INTEGER,
+      booking_ref TEXT,
+      state TEXT NOT NULL,
+      payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   await pool.query(`
@@ -3084,6 +3093,10 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       : bookingAction.includes('booking_join') || bookingAction.includes('join online meeting') ? 'join'
       : bookingAction.includes('booking_maps') || bookingAction.includes('view on google maps') ? 'maps'
       : bookingAction.includes('booking_help') || bookingAction.includes('call / whatsapp us') || bookingAction.includes('call whatsapp us') ? 'help'
+      : bookingAction.includes('booking_cancel_yes') || bookingAction.includes('yes, cancel') ? 'cancel_yes'
+      : bookingAction.includes('booking_cancel_no') || bookingAction.includes('keep appointment') ? 'cancel_no'
+      : bookingAction.includes('booking_cancel') || bookingAction.includes('cancel') ? 'cancel'
+      : bookingAction.includes('booking_reschedule') || bookingAction.includes('reschedule') ? 'reschedule'
       : '';
     if (bookingActionType) {
       const canonical=botSailorPhone(mobile);
@@ -3096,7 +3109,31 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       const booking=await loadBookingWhatsAppContext(br.rows[0].booking_ref);
       if(!booking) return res.status(200).json({status:'ignored',message:'Booking not found'});
       let reply='';
-      if(bookingActionType==='manage') {
+      if(bookingActionType==='cancel') {
+        const confirmResult=await sendBotSailorReplyButtons(
+          {mobile:booking.student_mobile,name:booking.student_name,course:booking.course},
+          `⚠️ *Cancel this appointment?*\n\nBooking: *${booking.booking_ref}*\n\nPlease confirm your choice below.`,
+          [
+            {id:'booking_cancel_yes',title:'Yes, Cancel'},
+            {id:'booking_cancel_no',title:'Keep Appointment'}
+          ],
+          'booking_cancel_confirm'
+        );
+        return res.status(confirmResult.success?200:400).json({status:confirmResult.success?'ok':'error',action:'booking_cancel_confirm'});
+      } else if(bookingActionType==='cancel_yes') {
+        await pool.query(`UPDATE student_bookings SET status='cancelled',customer_response='cancelled',response_at=NOW(),updated_at=NOW() WHERE id=$1`,[booking.id]);
+        await pool.query(`DELETE FROM booking_whatsapp_states WHERE mobile=$1`,[canonical]);
+        reply=`✅ *Appointment Cancelled*\n\nYour appointment *${booking.booking_ref}* has been cancelled successfully.\n\nIf you need counselling later, you can book a new appointment anytime.`;
+      } else if(bookingActionType==='cancel_no') {
+        await pool.query(`DELETE FROM booking_whatsapp_states WHERE mobile=$1`,[canonical]);
+        reply=`✅ *Appointment Kept*\n\nNo changes were made. Your appointment *${booking.booking_ref}* remains confirmed.`;
+      } else if(bookingActionType==='reschedule') {
+        await pool.query(`INSERT INTO booking_whatsapp_states(mobile,booking_id,booking_ref,state,payload,updated_at)
+          VALUES($1,$2,$3,'awaiting_reschedule_preference','{}'::jsonb,NOW())
+          ON CONFLICT(mobile) DO UPDATE SET booking_id=EXCLUDED.booking_id,booking_ref=EXCLUDED.booking_ref,state=EXCLUDED.state,payload='{}'::jsonb,updated_at=NOW()`,
+          [canonical,booking.id,booking.booking_ref]);
+        reply=`📅 *Reschedule Appointment*\n\nPlease reply with your preferred new *date and time*.\n\nExample: *05 October 2026, 4:30 PM*\n\nYour request will stay linked to booking *${booking.booking_ref}*.`;
+      } else if(bookingActionType==='manage') {
         // Rotate the private token each time the customer requests the manage link.
         const token=randomBytes(32).toString('hex');
         const tokenHash=createHash('sha256').update(token).digest('hex');
@@ -3113,6 +3150,28 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       }
       const actionResult=await sendBotSailorText({mobile:booking.student_mobile,name:booking.student_name,course:booking.course},reply,`booking_action_${bookingActionType}`);
       return res.status(actionResult.success?200:400).json({status:actionResult.success?'ok':'error',action:`booking_action_${bookingActionType}`});
+    }
+
+    // WhatsApp-only reschedule continuation. Keep the current booking unchanged until
+    // the requested date/time is validated/confirmed by the booking team.
+    if (isCustomerEvent && webhookUserMessageRaw && !buttonReplyId && !buttonReplyTitle) {
+      const canonical=botSailorPhone(mobile);
+      const stateQ=await pool.query(`SELECT * FROM booking_whatsapp_states WHERE mobile=$1 AND state='awaiting_reschedule_preference' LIMIT 1`,[canonical]);
+      const state=stateQ.rows[0];
+      if(state){
+        const preference=String(webhookUserMessageRaw||'').trim();
+        if(preference){
+          await pool.query(`UPDATE booking_whatsapp_states SET state='reschedule_requested',payload=jsonb_build_object('preference',$2),updated_at=NOW() WHERE mobile=$1`,[canonical,preference]);
+          const br=await pool.query(`SELECT student_mobile,student_name,course,booking_ref FROM student_bookings WHERE id=$1 LIMIT 1`,[state.booking_id]);
+          const b=br.rows[0];
+          if(b){
+            const rr=await sendBotSailorText({mobile:b.student_mobile,name:b.student_name,course:b.course},
+              `📅 *Reschedule Request Received*\n\nPreferred date/time: *${preference}*\n\nBooking: *${b.booking_ref}*\n\nOur team will confirm the available slot here on WhatsApp.`,
+              'booking_reschedule_preference_received');
+            return res.status(rr.success?200:400).json({status:rr.success?'ok':'error',action:'booking_reschedule_preference_received'});
+          }
+        }
+      }
     }
 
     // Booking gate template: once the student taps Confirm Appointment, the inbound
@@ -3804,6 +3863,21 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail)
     VALUES($1,$2,'student','whatsapp',$3,$4) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status=EXCLUDED.status,detail=EXCLUDED.detail,created_at=NOW()`,
     [b.id,action,result.success?'sent':'failed',result.message||result.status||'']);
+
+  // Keep the proven three-button confirmation untouched. Send Cancel/Reschedule as
+  // a separate native WhatsApp interactive message so the existing actions stay safe.
+  if(result.success){
+    const manageResult=await sendBotSailorReplyButtons(
+      {mobile:b.student_mobile,name:b.student_name,course:b.course},
+      `🗓️ *Need to make a change to your appointment?*\nUse the options below to cancel or reschedule.`,
+      [
+        {id:'booking_cancel',title:'Cancel'},
+        {id:'booking_reschedule',title:'Reschedule'}
+      ],
+      `${action}_change_options`
+    );
+    return { ...result, changeOptions:manageResult, mode:'interactive_final_design_plus_change_options' };
+  }
   return { ...result, mode:'interactive_final_design' };
 }
 
