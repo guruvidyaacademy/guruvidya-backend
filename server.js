@@ -3147,11 +3147,13 @@ app.post("/api/webhook/botsailor", async (req, res) => {
           [canonical,booking.id,booking.booking_ref]);
         reply=`✅ *Appointment Cancelled*\n\nYour appointment *${booking.booking_ref}* has been cancelled successfully.\n\nIf you need counselling later, please book a new appointment.`;
       } else if(bookingActionType==='reschedule') {
-        await pool.query(`INSERT INTO booking_whatsapp_states(mobile,booking_id,booking_ref,state,payload,updated_at)
-          VALUES($1,$2,$3,'awaiting_reschedule_preference','{}'::jsonb,NOW())
-          ON CONFLICT(mobile) DO UPDATE SET booking_id=EXCLUDED.booking_id,booking_ref=EXCLUDED.booking_ref,state=EXCLUDED.state,payload='{}'::jsonb,updated_at=NOW()`,
-          [canonical,booking.id,booking.booking_ref]);
-        reply=`📅 *Reschedule Appointment*\n\nPlease reply with your preferred new *date and time*.\n\nExample: *05 October 2026, 4:30 PM*\n\nYour request will stay linked to booking *${booking.booking_ref}*.`;
+        // Open the existing secure browser reschedule calendar. Normal browser booking
+        // management remains unchanged; this action only deep-links to rescheduling.
+        const token=randomBytes(32).toString('hex');
+        const tokenHash=createHash('sha256').update(token).digest('hex');
+        await pool.query(`UPDATE student_bookings SET token_hash=$1,updated_at=NOW() WHERE id=$2`,[tokenHash,booking.id]);
+        const rescheduleUrl=bookingManageUrl(booking,token)+'&action=reschedule';
+        reply=`📅 *Reschedule Appointment*\n\nOpen the secure link below to choose a new date and available time slot:\n\n${rescheduleUrl}`;
       } else if(bookingActionType==='manage') {
         // Rotate the private token each time the customer requests the manage link.
         const token=randomBytes(32).toString('hex');
@@ -3859,7 +3861,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   const address=b.mode==='offline'?(b.offline_address||'GuruVidya Academy, New Delhi'):'Meeting link is available in your booking.';
   // Preserve the exact Server51 working BotSailor message body.
   // Do not replace this with blank/invisible/emoji-only content: delivery regressed in testing.
-  const msg=options.rescheduled===true?'Appointment Reschedule Confirmed.':'Appointment confirmed.';
+  const msg=options.rescheduled===true?`Appointment Reschedule Confirmed.\nNew Date: ${date}\nNew Time: ${time}`:'Appointment confirmed.';
   const result=await sendBotSailorReplyButtons(
     {mobile:b.student_mobile,name:b.student_name,course:b.course},
     msg,
@@ -3975,10 +3977,10 @@ async function onBookingCreatedWhatsApp(created) {
   return sendBookingGateTemplate(b);
 }
 
-async function onBookingRescheduledWhatsApp(updated) {
-  const b=await loadBookingWhatsAppContext(updated.booking_ref);
+async function onBookingRescheduledWhatsApp(created) {
+  const b=await loadBookingWhatsAppContext(created.booking_ref);
   if(!b||!b.student_mobile) return {success:false,status:'no_student_mobile'};
-  return sendBookingSessionConfirmation(b,updated.manage_token,'booking_reschedule_confirmation_24h',{rescheduled:true});
+  return sendBookingSessionConfirmation(b,created.manage_token,'booking_reschedule_confirmation_24h',{rescheduled:true});
 }
 
 // Kept for compatibility with any older code paths.
