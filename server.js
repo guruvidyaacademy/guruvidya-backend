@@ -3094,7 +3094,6 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       : bookingAction.includes('booking_maps') || bookingAction.includes('view on google maps') ? 'maps'
       : bookingAction.includes('booking_help') || bookingAction.includes('call / whatsapp us') || bookingAction.includes('call whatsapp us') ? 'help'
       : bookingAction.includes('booking_cancel_yes') || bookingAction.includes('yes, cancel') ? 'cancel_yes'
-      : bookingAction.includes('booking_cancel_no') || bookingAction.includes('keep appointment') ? 'cancel_no'
       : bookingAction.includes('booking_cancel') || bookingAction.includes('cancel') ? 'cancel'
       : bookingAction.includes('booking_reschedule') || bookingAction.includes('reschedule') ? 'reschedule'
       : '';
@@ -3115,7 +3114,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
           `⚠️ *Cancel this appointment?*\n\nBooking: *${booking.booking_ref}*\n\nPlease confirm your choice below.`,
           [
             {id:'booking_cancel_yes',title:'Yes, Cancel'},
-            {id:'booking_cancel_no',title:'Keep Appointment'}
+            {id:'booking_reschedule',title:'Reschedule'}
           ],
           'booking_cancel_confirm'
         );
@@ -3124,9 +3123,6 @@ app.post("/api/webhook/botsailor", async (req, res) => {
         await pool.query(`UPDATE student_bookings SET status='cancelled',customer_response='cancelled',response_at=NOW(),updated_at=NOW() WHERE id=$1`,[booking.id]);
         await pool.query(`DELETE FROM booking_whatsapp_states WHERE mobile=$1`,[canonical]);
         reply=`✅ *Appointment Cancelled*\n\nYour appointment *${booking.booking_ref}* has been cancelled successfully.\n\nIf you need counselling later, you can book a new appointment anytime.`;
-      } else if(bookingActionType==='cancel_no') {
-        await pool.query(`DELETE FROM booking_whatsapp_states WHERE mobile=$1`,[canonical]);
-        reply=`✅ *Appointment Kept*\n\nNo changes were made. Your appointment *${booking.booking_ref}* remains confirmed.`;
       } else if(bookingActionType==='reschedule') {
         await pool.query(`INSERT INTO booking_whatsapp_states(mobile,booking_id,booking_ref,state,payload,updated_at)
           VALUES($1,$2,$3,'awaiting_reschedule_preference','{}'::jsonb,NOW())
