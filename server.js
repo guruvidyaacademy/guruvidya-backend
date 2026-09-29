@@ -3723,17 +3723,20 @@ async function bookingCardPng(b) {
   <!-- details panel -->
   <rect x="62" y="550" width="956" height="770" rx="40" fill="#f5faff" stroke="#dbeaf5" stroke-width="2"/>
   ${rowSvg}
-  <!-- Green status banner: visual only; WhatsApp delivery body remains unchanged. -->
+  <!-- Premium green status banner: visual only; WhatsApp delivery body remains unchanged. -->
   <defs>
     <linearGradient id="confirmGreen" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#07883f"/><stop offset="1" stop-color="#006b34"/>
+      <stop offset="0" stop-color="#0abf55"/><stop offset="0.55" stop-color="#08a948"/><stop offset="1" stop-color="#07883f"/>
     </linearGradient>
   </defs>
-  <rect x="62" y="1340" width="956" height="100" rx="24" fill="url(#confirmGreen)"/>
-  <circle cx="125" cy="1390" r="32" fill="#fff"/>
-  <path d="M109 1390l11 11 22-25" fill="none" stroke="#07883f" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
-  <line x1="180" y1="1362" x2="180" y2="1418" stroke="#9be2ba" stroke-width="3"/>
-  <text x="599" y="1405" text-anchor="middle" font-family="Arial, sans-serif" font-size="44" font-weight="700" fill="#fff">Booking Slot Reserved</text>
+  <rect x="62" y="1340" width="956" height="100" rx="26" fill="url(#confirmGreen)"/>
+  <path d="M62 1410 Q300 1368 535 1410 T1018 1392 V1440 H62 Z" fill="#057a38" opacity=".22"/>
+  <circle cx="125" cy="1390" r="34" fill="#fff"/>
+  <path d="M108 1390l12 12 24-27" fill="none" stroke="#07883f" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="180" y1="1358" x2="180" y2="1422" stroke="#d8f6e4" stroke-width="3"/>
+  <path d="M82 1362l-16-12M78 1390H60M84 1416l-16 11" stroke="#b8ed4a" stroke-width="6" stroke-linecap="round" opacity=".9"/>
+  <path d="M982 1360l16-13M988 1390h18M982 1418l16 12" stroke="#59e96e" stroke-width="6" stroke-linecap="round" opacity=".9"/>
+  <text x="599" y="1406" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">Booking Slot Reserved</text>
   </svg>`;
   return sharp(Buffer.from(svg)).png({quality:95}).toBuffer();
 }
