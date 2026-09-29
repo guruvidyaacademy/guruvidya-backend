@@ -3887,9 +3887,9 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   let manageResult=null;
   if(result.success){
     // Media cards can take a moment to render on WhatsApp even after Meta accepts
-    // the send. A short pause keeps the change-options card visually after the
-    // booking graphic instead of racing ahead of it.
-    await new Promise(resolve=>setTimeout(resolve,3500));
+    // the send. An 8-second delivery gap gives the media card enough time to reach/render on
+    // WhatsApp before the change-options card, preventing it from appearing first.
+    await new Promise(resolve=>setTimeout(resolve,8000));
     manageResult=await sendBotSailorReplyButtons(
       {mobile:b.student_mobile,name:b.student_name,course:b.course},
       `🗓️ *Need to make a change to your appointment?*\nUse the options below to cancel or reschedule.`,
