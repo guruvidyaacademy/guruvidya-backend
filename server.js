@@ -3728,7 +3728,7 @@ async function bookingCardPng(b) {
   <circle cx="125" cy="1390" r="32" fill="#fff"/>
   <path d="M109 1390l11 11 22-25" fill="none" stroke="#07883f" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
   <line x1="180" y1="1362" x2="180" y2="1418" stroke="#9be2ba" stroke-width="3"/>
-  <text x="215" y="1402" font-family="Arial, sans-serif" font-size="32" font-weight="700" fill="#fff">Appointment confirmed.</text>
+  <text x="215" y="1404" font-family="Arial, sans-serif" font-size="38" font-weight="700" fill="#fff">• Appointment confirmed.</text>
   </svg>`;
   return sharp(Buffer.from(svg)).png({quality:95}).toBuffer();
 }
