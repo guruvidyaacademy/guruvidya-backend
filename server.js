@@ -3704,20 +3704,31 @@ async function bookingCardPng(b) {
     rowSvg+=`${icon(ic,155,y-5)}<text x="215" y="${y}" class="key">${xmlEsc(k)}</text><text x="465" y="${y}" class="key">:</text>${svgWrap(v,515,y-36,34,30,'class="val"')}<line x1="115" y1="${y+39}" x2="955" y2="${y+39}" class="sep"/>`;
     y += ic==='pin'?118:82;
   }
-  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1420" viewBox="0 0 1080 1420">
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1530" viewBox="0 0 1080 1530">
   <defs>
     <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#072a79"/><stop offset=".55" stop-color="#0758c9"/><stop offset="1" stop-color="#08a7ed"/></linearGradient>
     <linearGradient id="cyan" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#0878e8"/><stop offset="1" stop-color="#09b9ed"/></linearGradient>
     <style>.key{font:700 27px Arial;fill:#092f83}.val{font:500 26px Arial;fill:#102f78}.sep{stroke:#d4e4ef;stroke-width:1.5}</style>
   </defs>
-  <rect width="1080" height="1420" fill="#f8f3eb"/>
+  <rect width="1080" height="1530" fill="#f8f3eb"/>
   <g opacity=".10" stroke="#cdbfae" fill="none"><circle cx="65" cy="110" r="18"/><circle cx="1015" cy="180" r="23"/><path d="M30 1320q40-35 80 0t80 0M900 70q35-30 70 0t70 0"/></g>
-  <rect x="28" y="35" width="1024" height="1330" rx="42" fill="#fff"/>
+  <rect x="28" y="35" width="1024" height="1440" rx="42" fill="#fff"/>
   <!-- Exact approved final reference header, rasterized small to avoid the old SVG artefacts. -->
   <image href="data:image/jpeg;base64,${finalHeaderJpeg}" x="60" y="55" width="960" height="473" preserveAspectRatio="xMidYMid meet"/>
   <!-- details panel -->
   <rect x="62" y="550" width="956" height="770" rx="40" fill="#f5faff" stroke="#dbeaf5" stroke-width="2"/>
   ${rowSvg}
+  <!-- Dark-green premium confirmation banner (approved Option 2). -->
+  <defs>
+    <linearGradient id="confirmGreen" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#07883f"/><stop offset="1" stop-color="#006b34"/>
+    </linearGradient>
+  </defs>
+  <rect x="62" y="1340" width="956" height="100" rx="24" fill="url(#confirmGreen)"/>
+  <circle cx="125" cy="1390" r="32" fill="#fff"/>
+  <path d="M109 1390l11 11 22-25" fill="none" stroke="#07883f" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="180" y1="1362" x2="180" y2="1418" stroke="#9be2ba" stroke-width="3"/>
+  <text x="215" y="1402" font-family="Arial, sans-serif" font-size="32" font-weight="700" fill="#fff">Appointment confirmed.</text>
   </svg>`;
   return sharp(Buffer.from(svg)).png({quality:95}).toBuffer();
 }
@@ -3741,7 +3752,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   const address=b.mode==='offline'?(b.offline_address||'GuruVidya Academy, New Delhi'):'Meeting link is available in your booking.';
   // Keep the interactive message body visually empty: all booking content is in the image.
   // U+2063 is an invisible separator, used so BotSailor still receives a non-empty body.
-  const msg='Appointment confirmed.';
+  const msg='\u2063';
   const result=await sendBotSailorReplyButtons(
     {mobile:b.student_mobile,name:b.student_name,course:b.course},
     msg,
