@@ -3860,14 +3860,14 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
       mediaType:'image',
     }
   );
-  await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail)
-    VALUES($1,$2,'student','whatsapp',$3,$4) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status=EXCLUDED.status,detail=EXCLUDED.detail,created_at=NOW()`,
-    [b.id,action,result.success?'sent':'failed',result.message||result.status||'']);
-
   // Keep the proven three-button confirmation untouched. Send Cancel/Reschedule as
-  // a separate native WhatsApp interactive message so the existing actions stay safe.
+  // a separate native WhatsApp interactive message immediately after the first send.
+  // IMPORTANT: do this BEFORE delivery-log persistence. Some older databases do not
+  // yet have the unique constraint required by the legacy ON CONFLICT statement; that
+  // logging error must never block a customer-facing WhatsApp action message.
+  let manageResult=null;
   if(result.success){
-    const manageResult=await sendBotSailorReplyButtons(
+    manageResult=await sendBotSailorReplyButtons(
       {mobile:b.student_mobile,name:b.student_name,course:b.course},
       `🗓️ *Need to make a change to your appointment?*\nUse the options below to cancel or reschedule.`,
       [
@@ -3876,6 +3876,25 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
       ],
       `${action}_change_options`
     );
+    console.log('BOOKING CHANGE ACTION BUTTONS:', {
+      success:manageResult.success,
+      status:manageResult.status,
+      message:manageResult.message,
+      buttons:['Cancel','Reschedule']
+    });
+  }
+
+  // Delivery logging is non-critical. Never let a schema/ON CONFLICT mismatch stop
+  // either WhatsApp message or make a successful booking confirmation look failed.
+  try{
+    await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail)
+      VALUES($1,$2,'student','whatsapp',$3,$4) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status=EXCLUDED.status,detail=EXCLUDED.detail,created_at=NOW()`,
+      [b.id,action,result.success?'sent':'failed',result.message||result.status||'']);
+  }catch(logErr){
+    console.warn('BOOKING DELIVERY LOG SKIPPED:',logErr.message);
+  }
+
+  if(result.success){
     return { ...result, changeOptions:manageResult, mode:'interactive_final_design_plus_change_options' };
   }
   return { ...result, mode:'interactive_final_design' };
