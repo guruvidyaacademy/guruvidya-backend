@@ -3073,7 +3073,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     const bookingAction = [buttonReplyId, buttonReplyTitle, webhookUserMessage]
       .map(v => normalizeLooseText(v));
     const bookingActionType = bookingAction.includes('booking_manage') || bookingAction.includes('manage appointment') ? 'manage'
-      : bookingAction.includes('booking_maps') || bookingAction.includes('view on google maps') ? 'maps'
+      : bookingAction.includes('booking_maps') || bookingAction.includes('view on google maps') || bookingAction.includes('booking_join') || bookingAction.includes('join online meeting') ? 'maps'
       : bookingAction.includes('booking_help') || bookingAction.includes('call / whatsapp us') || bookingAction.includes('call whatsapp us') ? 'help'
       : '';
     if (bookingActionType) {
@@ -3755,6 +3755,7 @@ app.get('/api/public/booking/whatsapp-card/:ref.png', async (req,res)=>{
 });
 
 async function sendBookingSessionConfirmation(b, token, action='booking_confirmation_24h') {
+  // SERVER 65: Online confirmations use Join Online Meeting; offline keeps View on Google Maps.
   // FINAL APPROVED 28-Sep within-24h WhatsApp design.
   // Use one native WhatsApp interactive card with three clean action buttons.
   // WhatsApp itself controls the exact button radius/colour; CRM controls the
@@ -3770,7 +3771,9 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
     msg,
     [
       {id:'booking_manage',title:'Manage Appointment'},
-      {id:'booking_maps',title:'View on Google Maps'},
+      b.mode==='offline'
+        ? {id:'booking_maps',title:'View on Google Maps'}
+        : {id:'booking_join',title:'Join Online Meeting'},
       {id:'booking_help',title:'Call / WhatsApp Us'}
     ],
     action,
