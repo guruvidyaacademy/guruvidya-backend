@@ -282,13 +282,15 @@ export function installBookingRoutes(app,pool,hooks={}) {
       else await db.query(`UPDATE student_bookings SET customer_response='confirmed',response_at=NOW(),status='confirmed',updated_at=NOW() WHERE id=$1`,[b.id]);
       await log(db,b.id,'customer',req.body.action,{old_starts_at:b.starts_at,new_starts_at:req.body.starts_at||null});
       if(req.body.action!=='cancel') await enqueueLifecycleBlockedIntents(db,{bookingId:Number(b.id),event:req.body.action==='confirm'?'confirmed':'rescheduled',eventKey:req.body.action+':'+randomUUID()});
-      await db.query('COMMIT');res.json({success:true});
-      // WhatsApp-origin reschedules get an updated confirmation after the HTTP response,
-      // so the browser button can complete immediately instead of waiting for media delivery.
+      await db.query('COMMIT');
+      // After a successful customer reschedule, send the refreshed booking confirmation.
+      // This runs after COMMIT so WhatsApp reads the new date/time, and a delivery failure
+      // does not roll back the booking change.
       if(req.body.action==='reschedule' && req.body.notify_whatsapp===true && typeof hooks.onBookingRescheduled==='function'){
-        Promise.resolve(hooks.onBookingRescheduled({booking_ref:b.booking_ref,manage_token:String(req.body.token||'')}))
-          .catch(err=>console.error('BOOKING WHATSAPP RESCHEDULE HOOK',err?.message||err));
+        try{await hooks.onBookingRescheduled({booking_ref:req.params.ref,manage_token:String(req.body.token||''),rescheduled:true});}
+        catch(e){console.error('Booking reschedule WhatsApp confirmation failed:',e?.message||e);}
       }
+      res.json({success:true});
     }catch(e){await db.query('ROLLBACK');fail(res,500,'Unable to update booking');}finally{db.release();}
   });
   // Database-wide aggregate; unlike the 300-row notification list this is not a sample.
