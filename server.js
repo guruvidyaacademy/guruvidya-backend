@@ -3750,9 +3750,9 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   const {date,time}=bookingIstParts(b.starts_at);
   const place=b.mode==='offline'?(b.offline_location_name||'Head Office - Tagore Garden'):'Online Counselling';
   const address=b.mode==='offline'?(b.offline_address||'GuruVidya Academy, New Delhi'):'Meeting link is available in your booking.';
-  // BotSailor requires a real, visible non-empty message body for interactive buttons.
-  // Keep it minimal because the approved confirmation text is already styled inside the image.
-  const msg='✅';
+  // Preserve the exact Server51 working BotSailor message body.
+  // Do not replace this with blank/invisible/emoji-only content: delivery regressed in testing.
+  const msg='Appointment confirmed.';
   const result=await sendBotSailorReplyButtons(
     {mobile:b.student_mobile,name:b.student_name,course:b.course},
     msg,
