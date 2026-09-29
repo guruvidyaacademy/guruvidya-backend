@@ -3982,7 +3982,7 @@ async function sendWhatsAppMessage(phone, message) {
   return sendBotSailorText({ mobile: phone, name: "Student", course: "" }, message, "legacy_send");
 }
 
-installBookingRoutes(app, pool, { onBookingCreated: onBookingCreatedWhatsApp });
+installBookingRoutes(app, pool, { onBookingCreated: onBookingCreatedWhatsApp, onBookingRescheduled: onBookingCreatedWhatsApp });
 
 async function bootstrap() {
   try {
