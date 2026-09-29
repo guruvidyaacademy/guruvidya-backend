@@ -3147,11 +3147,20 @@ app.post("/api/webhook/botsailor", async (req, res) => {
           [canonical,booking.id,booking.booking_ref]);
         reply=`✅ *Appointment Cancelled*\n\nYour appointment *${booking.booking_ref}* has been cancelled successfully.\n\nIf you need counselling later, please book a new appointment.`;
       } else if(bookingActionType==='reschedule') {
+        // Open the existing secure browser reschedule calendar. The booking page
+        // already enforces past dates, weekly offs, holidays and live slot rules.
+        const token=randomBytes(32).toString('hex');
+        const tokenHash=createHash('sha256').update(token).digest('hex');
+        await pool.query(`UPDATE student_bookings SET token_hash=$1,updated_at=NOW() WHERE id=$2`,[tokenHash,booking.id]);
         await pool.query(`INSERT INTO booking_whatsapp_states(mobile,booking_id,booking_ref,state,payload,updated_at)
-          VALUES($1,$2,$3,'awaiting_reschedule_preference','{}'::jsonb,NOW())
+          VALUES($1,$2,$3,'reschedule_browser_opened','{}'::jsonb,NOW())
           ON CONFLICT(mobile) DO UPDATE SET booking_id=EXCLUDED.booking_id,booking_ref=EXCLUDED.booking_ref,state=EXCLUDED.state,payload='{}'::jsonb,updated_at=NOW()`,
           [canonical,booking.id,booking.booking_ref]);
-        reply=`📅 *Reschedule Appointment*\n\nPlease reply with your preferred new *date and time*.\n\nExample: *05 October 2026, 4:30 PM*\n\nYour request will stay linked to booking *${booking.booking_ref}*.`;
+        reply=`📅 *Reschedule Appointment*
+
+Open the secure link below to choose a new date and available time slot:
+
+${bookingManageUrl(booking,token)}&action=reschedule`;
       } else if(bookingActionType==='manage') {
         // Rotate the private token each time the customer requests the manage link.
         const token=randomBytes(32).toString('hex');
