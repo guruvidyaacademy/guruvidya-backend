@@ -3703,7 +3703,9 @@ async function bookingCardPng(b) {
   for(const [ic,k,v] of rows){
     const valueSvg = (ic==='screen' && b.mode==='offline')
       ? `<rect x="505" y="${y-35}" width="430" height="52" rx="18" fill="#f97316"/><path d="M535 ${y+7}s-13-15-13-25a13 13 0 1126 0c0 10-13 25-13 25z" fill="#fff"/><circle cx="535" cy="${y-18}" r="4" fill="#f97316"/><text x="558" y="${y}" font-family="Arial, sans-serif" font-size="20" font-weight="700" fill="#fff">Offline (Head Office Tagore Garden)</text>`
-      : svgWrap(v,515,y-36,34,30,'class="val"');
+      : (ic==='pin' && b.mode==='offline')
+        ? `<text x="515" y="${y-14}" font-family="Arial, sans-serif" font-size="27" font-weight="700" fill="#102f78">Guruvidya Academy Pvt. Ltd.</text>${svgWrap(v,515,y-12,38,28,'class="val"')}`
+        : svgWrap(v,515,y-36,34,30,'class="val"');
     rowSvg+=`${icon(ic,155,y-5)}<text x="215" y="${y}" class="key">${xmlEsc(k)}</text><text x="465" y="${y}" class="key">:</text>${valueSvg}<line x1="115" y1="${y+39}" x2="955" y2="${y+39}" class="sep"/>`;
     y += ic==='pin'?118:82;
   }
