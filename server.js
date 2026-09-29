@@ -11,6 +11,14 @@ import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import sharp from "sharp";
 
+// Render free instance has a 512 MB RAM ceiling. Sharp/libvips keeps a
+// process-wide cache and may use multiple worker threads by default; repeated
+// WhatsApp card fetches can therefore push the service over that limit. Keep
+// the approved card design/output unchanged, but use a small predictable
+// memory footprint for image rendering.
+sharp.cache(false);
+sharp.concurrency(1);
+
 const { Pool } = pg;
 
 const pool = new Pool({
@@ -3745,7 +3753,11 @@ async function bookingCardPng(b) {
   <path d="M982 1360l16-13M988 1390h18M982 1418l16 12" stroke="#59e96e" stroke-width="6" stroke-linecap="round" opacity=".9"/>
   <text x="599" y="1406" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">Booking Slot Reserved</text>
   </svg>`;
-  return sharp(Buffer.from(svg)).png({quality:95}).toBuffer();
+  // sequentialRead + disabled libvips cache/concurrency above prevents repeated
+  // BotSailor/Meta media fetches from building up large native-memory spikes.
+  return sharp(Buffer.from(svg), { sequentialRead: true })
+    .png({ compressionLevel: 9, adaptiveFiltering: false })
+    .toBuffer();
 }
 
 app.get('/api/public/booking/whatsapp-card/:ref.png', async (req,res)=>{
