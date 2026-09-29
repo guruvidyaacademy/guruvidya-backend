@@ -3774,7 +3774,10 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
       {id:'booking_manage',title:'Manage Appointment'},
       String(b.mode || '').trim().toLowerCase() === 'offline'
         ? {id:'booking_maps',title:'View on Google Maps'}
-        : {id:'booking_join',title:'Join Online Meeting'},
+        // Keep the proven booking_maps postback id for BotSailor/Meta delivery compatibility.
+        // The visible online title changes, and the webhook already routes booking_maps
+        // to the meeting link whenever the latest booking mode is online.
+        : {id:'booking_maps',title:'Join Online Meeting'},
       {id:'booking_help',title:'Call / WhatsApp Us'}
     ],
     action,
