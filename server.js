@@ -3719,10 +3719,11 @@ async function bookingCardPng(b) {
       : (ic==='pin' && b.mode==='offline')
         ? `<text x="515" y="${y-14}" font-family="Arial, sans-serif" font-size="27" font-weight="700" fill="#102f78">Guruvidya Academy Pvt. Ltd.</text>${svgWrap(v,515,y-12,38,28,'class="val"')}`
       : (ic==='pin' && b.mode!=='offline')
-        ? `<rect x="505" y="${y-39}" width="430" height="58" rx="18" fill="#0878e8"/><rect x="529" y="${y-23}" width="27" height="20" rx="3" fill="#fff"/><path d="M556 ${y-19}l15-8v28l-15-8z" fill="#fff"/><text x="586" y="${y-1}" font-family="Arial, sans-serif" font-size="23" font-weight="700" fill="#fff">Join Online Meeting</text><text x="515" y="${y+50}" font-family="Arial, sans-serif" font-size="22" font-weight="700" fill="#102f78">Your appointment is at ${xmlEsc(time)} (IST)</text><text x="515" y="${y+82}" font-family="Arial, sans-serif" font-size="20" font-weight="500" fill="#4b6488">Please join 5 minutes early and wait for your counsellor.</text>`
+        ? `<rect x="505" y="${y-39}" width="430" height="58" rx="18" fill="#0878e8"/><rect x="529" y="${y-23}" width="27" height="20" rx="3" fill="#fff"/><path d="M556 ${y-19}l15-8v28l-15-8z" fill="#fff"/><text x="586" y="${y-1}" font-family="Arial, sans-serif" font-size="23" font-weight="700" fill="#fff">Join Online Meeting</text><rect x="505" y="${y+30}" width="430" height="100" rx="18" fill="#e9f7ff" stroke="#9bdcff" stroke-width="2"/><circle cx="535" cy="${y+59}" r="15" fill="none" stroke="#0878e8" stroke-width="4"/><path d="M535 ${y+49}v11l9 5" fill="none" stroke="#0878e8" stroke-width="4" stroke-linecap="round"/><text x="565" y="${y+66}" font-family="Arial, sans-serif" font-size="20" font-weight="600" fill="#102f78">Your appointment is at <tspan font-weight="700">${xmlEsc(time)} (IST)</tspan></text><circle cx="535" cy="${y+101}" r="15" fill="#0878e8"/><text x="535" y="${y+108}" text-anchor="middle" font-family="Arial, sans-serif" font-size="20" font-weight="700" fill="#fff">i</text><text x="565" y="${y+98}" font-family="Arial, sans-serif" font-size="18" font-weight="500" fill="#4b6488">Please join 5 minutes early and wait</text><text x="565" y="${y+120}" font-family="Arial, sans-serif" font-size="18" font-weight="500" fill="#4b6488">for your counsellor.</text>`
         : svgWrap(v,515,y-36,34,30,'class="val"');
-    rowSvg+=`${icon((ic==='pin' && b.mode!=='offline')?'screen':ic,155,y-5)}<text x="215" y="${y}" class="key">${xmlEsc(k)}</text><text x="465" y="${y}" class="key">:</text>${valueSvg}<line x1="115" y1="${y+39}" x2="955" y2="${y+39}" class="sep"/>`;
-    y += ic==='pin'?118:82;
+    const isLastRow = ic==='pin';
+    rowSvg+=`${icon((ic==='pin' && b.mode!=='offline')?'screen':ic,155,y-5)}<text x="215" y="${y}" class="key">${xmlEsc(k)}</text><text x="465" y="${y}" class="key">:</text>${valueSvg}${isLastRow?'':`<line x1="115" y1="${y+39}" x2="955" y2="${y+39}" class="sep"/>`}`;
+    y += ic==='pin'?150:82;
   }
   const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1530" viewBox="0 0 1080 1530">
   <defs>
@@ -3736,22 +3737,22 @@ async function bookingCardPng(b) {
   <!-- Exact approved final reference header, rasterized small to avoid the old SVG artefacts. -->
   <image href="data:image/jpeg;base64,${finalHeaderJpeg}" x="60" y="55" width="960" height="473" preserveAspectRatio="xMidYMid meet"/>
   <!-- details panel -->
-  <rect x="62" y="550" width="956" height="770" rx="40" fill="#f5faff" stroke="#dbeaf5" stroke-width="2"/>
+  <rect x="62" y="550" width="956" height="785" rx="40" fill="#f5faff" stroke="#dbeaf5" stroke-width="2"/>
   ${rowSvg}
   <!-- Premium green status banner: visual only; WhatsApp delivery body remains unchanged. -->
   <defs>
-    <linearGradient id="confirmGreen" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#0abf55"/><stop offset="0.55" stop-color="#08a948"/><stop offset="1" stop-color="#07883f"/>
+    <linearGradient id="confirmGreen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#08b84f"/><stop offset="0.48" stop-color="#068f3f"/><stop offset="1" stop-color="#045f32"/>
     </linearGradient>
   </defs>
-  <rect x="62" y="1340" width="956" height="100" rx="26" fill="url(#confirmGreen)"/>
-  <path d="M62 1410 Q300 1368 535 1410 T1018 1392 V1440 H62 Z" fill="#057a38" opacity=".22"/>
-  <circle cx="125" cy="1390" r="34" fill="#fff"/>
-  <path d="M108 1390l12 12 24-27" fill="none" stroke="#07883f" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
-  <line x1="180" y1="1358" x2="180" y2="1422" stroke="#d8f6e4" stroke-width="3"/>
-  <path d="M82 1362l-16-12M78 1390H60M84 1416l-16 11" stroke="#b8ed4a" stroke-width="6" stroke-linecap="round" opacity=".9"/>
-  <path d="M982 1360l16-13M988 1390h18M982 1418l16 12" stroke="#59e96e" stroke-width="6" stroke-linecap="round" opacity=".9"/>
-  <text x="599" y="1406" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">Booking Slot Reserved</text>
+  <rect x="62" y="1350" width="956" height="110" rx="28" fill="url(#confirmGreen)"/>
+  <path d="M62 1418 Q290 1368 520 1416 T1018 1392 V1460 H62 Z" fill="#034f2b" opacity=".38"/><path d="M62 1442 Q300 1400 560 1436 T1018 1410 V1460 H62 Z" fill="#0bb45a" opacity=".22"/>
+  <circle cx="132" cy="1405" r="40" fill="#fff"/>
+  <path d="M112 1405l14 14 28-31" fill="none" stroke="#07883f" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="195" y1="1368" x2="195" y2="1442" stroke="#e8fff1" stroke-width="4"/>
+  <path d="M88 1375l-17-13M82 1405H62M90 1435l-17 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round" opacity=".95"/>
+  <path d="M982 1375l16-13M988 1405h18M982 1435l16 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round" opacity=".95"/>
+  <text x="610" y="1422" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">Booking Slot Reserved</text>
   </svg>`;
   // sequentialRead + disabled libvips cache/concurrency above prevents repeated
   // BotSailor/Meta media fetches from building up large native-memory spikes.
