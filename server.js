@@ -3779,7 +3779,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   const address=b.mode==='offline'?(b.offline_address||'GuruVidya Academy, New Delhi'):'Meeting link is available in your booking.';
   // Preserve the exact Server51 working BotSailor message body.
   // Do not replace this with blank/invisible/emoji-only content: delivery regressed in testing.
-  const msg='Your booking details are ready.';
+  const msg='Booking Confirmed';
   const result=await sendBotSailorReplyButtons(
     {mobile:b.student_mobile,name:b.student_name,course:b.course},
     msg,
