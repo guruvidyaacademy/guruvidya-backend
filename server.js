@@ -3073,6 +3073,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     const bookingAction = [buttonReplyId, buttonReplyTitle, webhookUserMessage]
       .map(v => normalizeLooseText(v));
     const bookingActionType = bookingAction.includes('booking_manage') || bookingAction.includes('manage appointment') ? 'manage'
+      : bookingAction.includes('booking_join') || bookingAction.includes('join online meeting') ? 'join'
       : bookingAction.includes('booking_maps') || bookingAction.includes('view on google maps') ? 'maps'
       : bookingAction.includes('booking_help') || bookingAction.includes('call / whatsapp us') || bookingAction.includes('call whatsapp us') ? 'help'
       : '';
