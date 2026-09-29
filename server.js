@@ -3683,7 +3683,7 @@ async function bookingCardPng(b) {
     ['calendar','Date',date],
     ['clock','Time (IST)',time],
     ['person','Counsellor',b.counsellor_name||'GuruVidya Admission Counsellor'],
-    ['screen','Mode',b.mode==='offline'?`Offline (Head Office Tagore Garden)`:'Online'],
+    ['screen','Mode',b.mode==='offline'?`Offline - ${place}`:'Online'],
     ['pin','Location',address]
   ];
   const icon=(type,cx,cy)=>{
@@ -3701,10 +3701,15 @@ async function bookingCardPng(b) {
   };
   let rowSvg='', y=625;
   for(const [ic,k,v] of rows){
-    const valueSvg = ic==='screen' && b.mode==='offline'
-      ? `<rect x="505" y="${y-34}" width="440" height="52" rx="16" fill="#ef6c00"/><path d="M535 ${y+8}s-14-16-14-27a14 14 0 1128 0c0 11-14 27-14 27z" fill="#fff"/><circle cx="535" cy="${y-19}" r="5" fill="#ef6c00"/><text x="558" y="${y}" font-family="Arial, sans-serif" font-size="22" font-weight="700" fill="#fff">Offline (Head Office Tagore Garden)</text>`
-      : svgWrap(v,515,y-36,34,30,'class="val"');
-    rowSvg+=`${icon(ic,155,y-5)}<text x="215" y="${y}" class="key">${xmlEsc(k)}</text><text x="465" y="${y}" class="key">:</text>${valueSvg}<line x1="115" y1="${y+39}" x2="955" y2="${y+39}" class="sep"/>`;
+    if(k==='Mode' && b.mode==='offline'){
+      rowSvg+=`${icon(ic,155,y-5)}<text x="215" y="${y}" class="key">${xmlEsc(k)}</text><text x="465" y="${y}" class="key">:</text>`+
+        `<rect x="505" y="${y-36}" width="445" height="50" rx="16" fill="#f47a2a"/>`+
+        `<path d="M535 ${y+5}s-12-14-12-24a12 12 0 1124 0c0 10-12 24-12 24z" fill="#fff"/><circle cx="535" cy="${y-19}" r="4" fill="#f47a2a"/>`+
+        `<text x="558" y="${y-4}" font-family="Arial, sans-serif" font-size="20" font-weight="700" fill="#fff">Offline (Head Office Tagore Garden)</text>`+
+        `<line x1="115" y1="${y+39}" x2="955" y2="${y+39}" class="sep"/>`;
+    } else {
+      rowSvg+=`${icon(ic,155,y-5)}<text x="215" y="${y}" class="key">${xmlEsc(k)}</text><text x="465" y="${y}" class="key">:</text>${svgWrap(v,515,y-36,34,30,'class="val"')}<line x1="115" y1="${y+39}" x2="955" y2="${y+39}" class="sep"/>`;
+    }
     y += ic==='pin'?118:82;
   }
   const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1530" viewBox="0 0 1080 1530">
@@ -3731,7 +3736,7 @@ async function bookingCardPng(b) {
   <circle cx="125" cy="1390" r="32" fill="#fff"/>
   <path d="M109 1390l11 11 22-25" fill="none" stroke="#07883f" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
   <line x1="180" y1="1362" x2="180" y2="1418" stroke="#9be2ba" stroke-width="3"/>
-  <text x="599" y="1404" text-anchor="middle" font-family="Arial, sans-serif" font-size="38" font-weight="700" fill="#fff">• Appointment Confirmed.</text>
+  <text x="600" y="1404" text-anchor="middle" font-family="Arial, sans-serif" font-size="40" font-weight="700" fill="#fff">• Appointment Confirmed.</text>
   </svg>`;
   return sharp(Buffer.from(svg)).png({quality:95}).toBuffer();
 }
@@ -3753,8 +3758,8 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   const {date,time}=bookingIstParts(b.starts_at);
   const place=b.mode==='offline'?(b.offline_location_name||'Head Office - Tagore Garden'):'Online Counselling';
   const address=b.mode==='offline'?(b.offline_address||'GuruVidya Academy, New Delhi'):'Meeting link is available in your booking.';
-  // Keep a clear non-empty BotSailor message body so interactive delivery remains valid.
-  // This text intentionally guides the student to the three native WhatsApp action buttons.
+  // Preserve the exact Server51 working BotSailor message body.
+  // Do not replace this with blank/invisible/emoji-only content: delivery regressed in testing.
   const msg='↓ Quick actions for your appointment';
   const result=await sendBotSailorReplyButtons(
     {mobile:b.student_mobile,name:b.student_name,course:b.course},
