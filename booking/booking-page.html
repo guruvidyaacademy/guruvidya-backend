@@ -265,4 +265,31 @@ $('cancel').onclick=()=>action('cancel');$('reschedule').onclick=()=>action('res
 })();
 </script>
 
-</body></html>
+</body></html><style>
+/* 01 Oct: Required WhatsApp popup viewport-fit fix — design/functionality unchanged */
+.gv-wa-card.gv-wa-required{height:auto!important;min-height:0!important;max-height:calc(100vh - 24px)!important;overflow:hidden!important}
+.gv-wa-required .gv-wa-blue{padding:34px 28px 22px!important;min-height:0!important}
+.gv-wa-required .gv-wa-blue h3{font-size:30px!important;margin-bottom:12px!important}
+.gv-wa-required .gv-wa-blue p{line-height:1.42!important}
+.gv-wa-required .gv-wa-bigicon{width:128px!important;height:128px!important;border-radius:30px!important}
+.gv-wa-required .gv-wa-bigicon svg{width:88px!important;height:88px!important}
+.gv-wa-required .gv-wa-main{padding:24px 30px 18px!important;min-height:0!important}
+.gv-wa-required .gv-wa-main h2{font-size:26px!important;margin:8px 0 5px!important}
+.gv-wa-required .gv-wa-main>p{line-height:1.35!important;margin-bottom:10px!important}
+.gv-wa-required .gv-wa-number{padding:11px 15px!important;margin:9px 0!important}
+.gv-wa-required .gv-wa-number .person{width:31px!important;height:31px!important}
+.gv-wa-required .gv-wa-number strong{font-size:20px!important}
+.gv-wa-required .gv-wa-verify{height:50px!important}
+.gv-wa-required .gv-wa-benefits{margin-top:9px!important;padding:4px 14px!important}
+.gv-wa-required .gv-wa-benefit{padding:7px 0!important}
+.gv-wa-required .gv-wa-lock{margin-top:9px!important;padding:9px 12px!important}
+.gv-wa-required .gv-wa-modal-status{margin-top:5px!important;min-height:12px!important}
+@media(max-height:700px) and (min-width:651px){
+ .gv-wa-required .gv-wa-blue{padding-top:24px!important;padding-bottom:16px!important}
+ .gv-wa-required .gv-wa-bigicon{width:105px!important;height:105px!important}
+ .gv-wa-required .gv-wa-bigicon svg{width:72px!important;height:72px!important}
+ .gv-wa-required .gv-wa-main{padding-top:16px!important;padding-bottom:12px!important}
+ .gv-wa-required .gv-wa-benefit{padding:5px 0!important}
+}
+@media(max-width:650px){.gv-wa-card.gv-wa-required{overflow:auto!important;max-height:calc(100vh - 16px)!important}}
+</style>
