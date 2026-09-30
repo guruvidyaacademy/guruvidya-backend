@@ -2943,9 +2943,22 @@ app.post('/api/public/booking/whatsapp-verification/start', async (req, res) => 
     if (mobile.length < 8 || mobile.length > 15) return res.status(400).json({success:false,message:'Invalid WhatsApp number'});
 
     // An inbound customer message within 24h already proves this number can receive the booking flow.
+    // Check BOTH CRM leads and the canonical inbound WhatsApp event log. A booking visitor
+    // may have an open WhatsApp window even when that number has not yet become a CRM lead.
     const ten = mobile.slice(-10);
-    const open = await pool.query(`SELECT 1 FROM leads WHERE RIGHT(REGEXP_REPLACE(COALESCE(mobile,''),'\\D','','g'),10)=$1 AND last_customer_message_at >= NOW() - INTERVAL '24 hours' LIMIT 1`, [ten]);
-    if (open.rowCount) return res.json({success:true,verified:true,window_open:true,mobile});
+    const open = await pool.query(`
+      SELECT 1
+      WHERE EXISTS (
+        SELECT 1 FROM leads
+        WHERE RIGHT(REGEXP_REPLACE(COALESCE(mobile,''),'\\D','','g'),10)=$1
+          AND last_customer_message_at >= NOW() - INTERVAL '24 hours'
+      ) OR EXISTS (
+        SELECT 1 FROM whatsapp_window_events
+        WHERE RIGHT(REGEXP_REPLACE(COALESCE(mobile,''),'\\D','','g'),10)=$1
+          AND received_at >= NOW() - INTERVAL '24 hours'
+      )
+      LIMIT 1`, [ten]);
+    if (open.rowCount) return res.set('Cache-Control','no-store').json({success:true,verified:true,window_open:true,mobile});
 
     const id = randomUUID();
     const token = randomUUID().replace(/-/g,'') + randomUUID().replace(/-/g,'');
@@ -2967,10 +2980,30 @@ app.get('/api/public/booking/whatsapp-verification/status', async (req, res) => 
     const id = String(req.query.id || '');
     const token = String(req.query.token || '');
     if (!id || !token) return res.status(400).json({success:false,message:'Invalid verification session'});
-    const r = await pool.query(`SELECT verified_at, expires_at FROM booking_whatsapp_verifications WHERE id=$1 AND token_hash=$2 LIMIT 1`, [id, bookingVerifyHash(token)]);
+    const r = await pool.query(`SELECT verified_at, expires_at, mobile FROM booking_whatsapp_verifications WHERE id=$1 AND token_hash=$2 LIMIT 1`, [id, bookingVerifyHash(token)]);
     if (!r.rowCount) return res.status(404).json({success:false,message:'Verification session not found'});
     const row = r.rows[0];
-    res.set('Cache-Control','no-store').json({success:true,verified:Boolean(row.verified_at),expired:!row.verified_at && new Date(row.expires_at).getTime() <= Date.now()});
+    let windowOpen = Boolean(row.verified_at);
+    if (!windowOpen) {
+      const ten = bookingVerifyPhone(row.mobile).slice(-10);
+      const open = await pool.query(`
+        SELECT 1
+        WHERE EXISTS (
+          SELECT 1 FROM leads
+          WHERE RIGHT(REGEXP_REPLACE(COALESCE(mobile,''),'\\D','','g'),10)=$1
+            AND last_customer_message_at >= NOW() - INTERVAL '24 hours'
+        ) OR EXISTS (
+          SELECT 1 FROM whatsapp_window_events
+          WHERE RIGHT(REGEXP_REPLACE(COALESCE(mobile,''),'\\D','','g'),10)=$1
+            AND received_at >= NOW() - INTERVAL '24 hours'
+        )
+        LIMIT 1`, [ten]);
+      windowOpen = Boolean(open.rowCount);
+      if (windowOpen) {
+        await pool.query(`UPDATE booking_whatsapp_verifications SET verified_at=COALESCE(verified_at,NOW()) WHERE id=$1`, [id]);
+      }
+    }
+    res.set('Cache-Control','no-store').json({success:true,verified:windowOpen,window_open:windowOpen,expired:!windowOpen && new Date(row.expires_at).getTime() <= Date.now()});
   } catch (e) {
     res.status(500).json({success:false,message:'Could not check WhatsApp verification'});
   }
