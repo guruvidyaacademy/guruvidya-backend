@@ -13,6 +13,8 @@ import { readFile } from 'node:fs/promises';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 
 const phone = v => String(v || '').replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '').replace(/^0(?=\d{10}$)/, '');
+const bookingPhone = v => { const d=String(v||'').replace(/\D/g,''); return d.length===12&&d.startsWith('91')?d.slice(2):d; };
+const validBookingPhone = v => /^\d{10}$/.test(v) || /^\d{8,15}$/.test(v);
 const hash = token => createHash('sha256').update(token).digest('hex');
 const active = ['requested','approved','confirmed','rescheduled'];
 const validTime = v => typeof v === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{3})?Z$/.test(v) && !Number.isNaN(Date.parse(v));
@@ -191,12 +193,12 @@ export function installBookingRoutes(app,pool,hooks={}) {
   });
   app.post('/api/public/booking/whatsapp-verification/start',async(req,res)=>{
     try{
-      const mobile=phone(req.body?.mobile),kind=String(req.body?.kind||'');
-      if(!/^\d{10}$/.test(mobile)||!['student','parent'].includes(kind))return fail(res,400,'Enter a valid 10-digit WhatsApp number');
+      const mobile=bookingPhone(req.body?.mobile),kind=String(req.body?.kind||'');
+      if(!validBookingPhone(mobile)||!['student','parent'].includes(kind))return fail(res,400,'Enter a valid WhatsApp number');
       const id=randomUUID(),token=randomBytes(24).toString('hex'),code='GV-WA-'+randomBytes(3).toString('hex').toUpperCase();
       // First check the real customer-service window. Any genuine incoming message in
       // the last 24 hours means this number is already verified for booking purposes.
-      const canonical='91'+mobile;
+      const canonical=/^\d{10}$/.test(mobile)?'91'+mobile:mobile;
       const open=await pool.query(`SELECT EXISTS(
         SELECT 1 FROM whatsapp_window_events WHERE mobile IN ($1,$2) AND received_at > NOW()-INTERVAL '24 hours'
         UNION ALL
@@ -229,15 +231,15 @@ export function installBookingRoutes(app,pool,hooks={}) {
   app.get('/api/public/booking/slots',async(req,res)=>{try{res.json({success:true,data:await slots(pool,req.query.date,req.query.mode,req.query.counsellor_id||null,{includeBooked:true})});}catch(e){fail(res,400,e.message);}});
   app.post('/api/public/booking',async(req,res)=>{
     const {student_name,student_mobile,parent_name,parent_mobile,course,mode,starts_at,counsellor_id,recipient='both',booked_by,primary_verification_id,primary_verification_token,secondary_verification_id,secondary_verification_token}=req.body;
-    const sm=phone(student_mobile),pm=phone(parent_mobile);
-    if(!student_name?.trim()||!parent_name?.trim()||!/^\d{10}$/.test(sm)||!/^\d{10}$/.test(pm)||!['student','parent'].includes(booked_by)||!course?.trim()||!['online','offline'].includes(mode)||!validTime(starts_at)||!Number.isSafeInteger(Number(counsellor_id))||recipient!=='both')return fail(res,400,'Invalid booking details');
+    const sm=bookingPhone(student_mobile),pm=bookingPhone(parent_mobile);
+    if(!student_name?.trim()||!parent_name?.trim()||!validBookingPhone(sm)||!validBookingPhone(pm)||!['student','parent'].includes(booked_by)||!course?.trim()||!['online','offline'].includes(mode)||!validTime(starts_at)||!Number.isSafeInteger(Number(counsellor_id))||recipient!=='both')return fail(res,400,'Invalid booking details');
     // Never accept a notification preference that points to a missing or malformed recipient.
     // A valid parent-only booking may still await manual student-lead linking.
-    if ((student_mobile && !/^\d{10}$/.test(sm)) || (parent_mobile && !/^\d{10}$/.test(pm)) ||
-        (recipient==='student' && !/^\d{10}$/.test(sm)) ||
-        (recipient==='parent' && !/^\d{10}$/.test(pm)) ||
-        (recipient==='both' && (!/^\d{10}$/.test(sm) || !/^\d{10}$/.test(pm))))
-      return fail(res,400,'Provide a valid 10-digit mobile for every selected notification recipient');
+    if ((student_mobile && !validBookingPhone(sm)) || (parent_mobile && !validBookingPhone(pm)) ||
+        (recipient==='student' && !validBookingPhone(sm)) ||
+        (recipient==='parent' && !validBookingPhone(pm)) ||
+        (recipient==='both' && (!validBookingPhone(sm) || !validBookingPhone(pm))))
+      return fail(res,400,'Provide a valid mobile for every selected notification recipient');
     const db=await pool.connect();
     try{
       await db.query('BEGIN');
