@@ -2958,7 +2958,7 @@ app.post('/api/public/booking/whatsapp-verification/start', async (req, res) => 
           AND received_at >= NOW() - INTERVAL '24 hours'
       )
       LIMIT 1`, [ten]);
-    if (open.rowCount) return res.set('Cache-Control','no-store').json({success:true,verified:true,window_open:true,mobile});
+    if (open.rowCount) return res.set('Cache-Control','no-store').json({success:true,data:{verified:true,window_open:true,mobile}});
 
     const id = randomUUID();
     const token = randomUUID().replace(/-/g,'') + randomUUID().replace(/-/g,'');
@@ -2967,7 +2967,7 @@ app.post('/api/public/booking/whatsapp-verification/start', async (req, res) => 
       [id,mobile,kind,code,bookingVerifyHash(token),String(BOOKING_VERIFY_TTL_MINUTES)]);
     const text = `Verify my WhatsApp number for GuruVidya appointment • ${code}`;
     const whatsapp_url = `https://wa.me/${BOOKING_VERIFY_TO}?text=${encodeURIComponent(text)}`;
-    res.set('Cache-Control','no-store').json({success:true,id,token,verified:false,window_open:false,whatsapp_url,code});
+    res.set('Cache-Control','no-store').json({success:true,data:{id,token,verified:false,window_open:false,whatsapp_url,code}});
   } catch (e) {
     console.error('Booking WhatsApp verification start error:', e.message);
     res.status(500).json({success:false,message:'Could not start WhatsApp verification'});
@@ -3003,7 +3003,7 @@ app.get('/api/public/booking/whatsapp-verification/status', async (req, res) => 
         await pool.query(`UPDATE booking_whatsapp_verifications SET verified_at=COALESCE(verified_at,NOW()) WHERE id=$1`, [id]);
       }
     }
-    res.set('Cache-Control','no-store').json({success:true,verified:windowOpen,window_open:windowOpen,expired:!windowOpen && new Date(row.expires_at).getTime() <= Date.now()});
+    res.set('Cache-Control','no-store').json({success:true,data:{verified:windowOpen,window_open:windowOpen,expired:!windowOpen && new Date(row.expires_at).getTime() <= Date.now()}});
   } catch (e) {
     res.status(500).json({success:false,message:'Could not check WhatsApp verification'});
   }
