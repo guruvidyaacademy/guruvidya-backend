@@ -194,9 +194,18 @@ export function installBookingRoutes(app,pool,hooks={}) {
       const mobile=phone(req.body?.mobile),kind=String(req.body?.kind||'');
       if(!/^\d{10}$/.test(mobile)||!['student','parent'].includes(kind))return fail(res,400,'Enter a valid 10-digit WhatsApp number');
       const id=randomUUID(),token=randomBytes(24).toString('hex'),code='GV-WA-'+randomBytes(3).toString('hex').toUpperCase();
-      await pool.query(`INSERT INTO booking_whatsapp_verifications(id,request_token_hash,mobile,kind,verification_code,expires_at) VALUES($1,$2,$3,$4,$5,NOW()+INTERVAL '10 minutes')`,[id,hash(token),mobile,kind,code]);
+      // First check the real customer-service window. Any genuine incoming message in
+      // the last 24 hours means this number is already verified for booking purposes.
+      const canonical='91'+mobile;
+      const open=await pool.query(`SELECT EXISTS(
+        SELECT 1 FROM whatsapp_window_events WHERE mobile IN ($1,$2) AND received_at > NOW()-INTERVAL '24 hours'
+        UNION ALL
+        SELECT 1 FROM leads WHERE regexp_replace(COALESCE(mobile,''),'[^0-9]','','g') IN ($1,$2) AND last_customer_message_at > NOW()-INTERVAL '24 hours'
+      ) AS ok`,[canonical,mobile]);
+      const alreadyOpen=Boolean(open.rows[0]?.ok);
+      await pool.query(`INSERT INTO booking_whatsapp_verifications(id,request_token_hash,mobile,kind,verification_code,verified_at,expires_at) VALUES($1,$2,$3,$4,$5,CASE WHEN $6 THEN NOW() ELSE NULL END,NOW()+INTERVAL '10 minutes')`,[id,hash(token),mobile,kind,code,alreadyOpen]);
       const message=`Verify my WhatsApp number for GuruVidya appointment • ${code}`;
-      res.set('Cache-Control','no-store').json({success:true,data:{id,token,expires_in_seconds:600,whatsapp_url:'https://wa.me/919821627725?text='+encodeURIComponent(message)}});
+      res.set('Cache-Control','no-store').json({success:true,data:{id,token,verified:alreadyOpen,window_open:alreadyOpen,expires_in_seconds:600,whatsapp_url:alreadyOpen?'':'https://wa.me/919821627725?text='+encodeURIComponent(message)}});
     }catch(e){console.error('BOOKING WHATSAPP VERIFICATION START',e?.message||e);fail(res,500,'Unable to start WhatsApp verification');}
   });
   app.get('/api/public/booking/whatsapp-verification/status',async(req,res)=>{
