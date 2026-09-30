@@ -79,6 +79,13 @@ export async function initBooking(pool) {
   CREATE UNIQUE INDEX IF NOT EXISTS booking_locations_single_default_idx ON booking_locations ((is_default)) WHERE is_default=TRUE;`);
   await pool.query('ALTER TABLE booking_counsellors ADD COLUMN IF NOT EXISTS location_id BIGINT REFERENCES booking_locations(id) ON DELETE SET NULL');
   await pool.query('ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS trashed_at TIMESTAMPTZ');
+  await pool.query("ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS booked_by TEXT; ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS student_whatsapp_verified BOOLEAN NOT NULL DEFAULT FALSE; ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS parent_whatsapp_verified BOOLEAN NOT NULL DEFAULT FALSE;");
+  await pool.query(`CREATE TABLE IF NOT EXISTS booking_whatsapp_verifications (
+    id UUID PRIMARY KEY, request_token_hash TEXT NOT NULL, mobile TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('student','parent')),
+    verification_code TEXT UNIQUE NOT NULL, verified_at TIMESTAMPTZ, expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+  CREATE INDEX IF NOT EXISTS booking_whatsapp_verifications_mobile_idx ON booking_whatsapp_verifications(mobile,expires_at);`);
+
 }
 
 export async function hasBookingSuppression(pool, leadId) {
@@ -182,6 +189,26 @@ export function installBookingRoutes(app,pool,hooks={}) {
       res.set('Cache-Control','no-store').json({success:true,data:result});
     }catch(e){fail(res,500,'Calendar availability unavailable');}
   });
+  app.post('/api/public/booking/whatsapp-verification/start',async(req,res)=>{
+    try{
+      const mobile=phone(req.body?.mobile),kind=String(req.body?.kind||'');
+      if(!/^\d{10}$/.test(mobile)||!['student','parent'].includes(kind))return fail(res,400,'Enter a valid 10-digit WhatsApp number');
+      const id=randomUUID(),token=randomBytes(24).toString('hex'),code='GV-WA-'+randomBytes(3).toString('hex').toUpperCase();
+      await pool.query(`INSERT INTO booking_whatsapp_verifications(id,request_token_hash,mobile,kind,verification_code,expires_at) VALUES($1,$2,$3,$4,$5,NOW()+INTERVAL '10 minutes')`,[id,hash(token),mobile,kind,code]);
+      const message=`Verify my WhatsApp number for GuruVidya appointment • ${code}`;
+      res.set('Cache-Control','no-store').json({success:true,data:{id,token,expires_in_seconds:600,whatsapp_url:'https://wa.me/919821627725?text='+encodeURIComponent(message)}});
+    }catch(e){console.error('BOOKING WHATSAPP VERIFICATION START',e?.message||e);fail(res,500,'Unable to start WhatsApp verification');}
+  });
+  app.get('/api/public/booking/whatsapp-verification/status',async(req,res)=>{
+    try{
+      const id=String(req.query.id||''),token=String(req.query.token||'');
+      if(!id||!token)return fail(res,400,'Invalid verification request');
+      const r=await pool.query(`SELECT verified_at,expires_at FROM booking_whatsapp_verifications WHERE id=$1 AND request_token_hash=$2`,[id,hash(token)]);
+      if(!r.rowCount)return fail(res,404,'Verification request not found');
+      const row=r.rows[0],expired=!row.verified_at&&new Date(row.expires_at).getTime()<=Date.now();
+      res.set('Cache-Control','no-store').json({success:true,data:{verified:Boolean(row.verified_at),expired}});
+    }catch(e){fail(res,500,'Unable to check WhatsApp verification');}
+  });
   app.get('/api/public/booking/modes',async(req,res)=>{
     try {
       const r=await pool.query(`SELECT
@@ -192,9 +219,9 @@ export function installBookingRoutes(app,pool,hooks={}) {
   });
   app.get('/api/public/booking/slots',async(req,res)=>{try{res.json({success:true,data:await slots(pool,req.query.date,req.query.mode,req.query.counsellor_id||null,{includeBooked:true})});}catch(e){fail(res,400,e.message);}});
   app.post('/api/public/booking',async(req,res)=>{
-    const {student_name,student_mobile,parent_name,parent_mobile,course,mode,starts_at,counsellor_id,recipient='both'}=req.body;
+    const {student_name,student_mobile,parent_name,parent_mobile,course,mode,starts_at,counsellor_id,recipient='both',booked_by,primary_verification_id,primary_verification_token,secondary_verification_id,secondary_verification_token}=req.body;
     const sm=phone(student_mobile),pm=phone(parent_mobile);
-    if(!student_name?.trim()||!course?.trim()||!['online','offline'].includes(mode)||!validTime(starts_at)||!Number.isSafeInteger(Number(counsellor_id))||!['student','parent','both'].includes(recipient)||(!/^\d{10}$/.test(sm)&&!/^\d{10}$/.test(pm)))return fail(res,400,'Invalid booking details');
+    if(!student_name?.trim()||!parent_name?.trim()||!/^\d{10}$/.test(sm)||!/^\d{10}$/.test(pm)||!['student','parent'].includes(booked_by)||!course?.trim()||!['online','offline'].includes(mode)||!validTime(starts_at)||!Number.isSafeInteger(Number(counsellor_id))||recipient!=='both')return fail(res,400,'Invalid booking details');
     // Never accept a notification preference that points to a missing or malformed recipient.
     // A valid parent-only booking may still await manual student-lead linking.
     if ((student_mobile && !/^\d{10}$/.test(sm)) || (parent_mobile && !/^\d{10}$/.test(pm)) ||
@@ -205,6 +232,16 @@ export function installBookingRoutes(app,pool,hooks={}) {
     const db=await pool.connect();
     try{
       await db.query('BEGIN');
+      const primaryMobile=booked_by==='student'?sm:pm;
+      const verification=await db.query(`SELECT id FROM booking_whatsapp_verifications WHERE id=$1 AND request_token_hash=$2 AND mobile=$3 AND kind=$4 AND verified_at IS NOT NULL AND expires_at>NOW() FOR UPDATE`,[String(primary_verification_id||''),hash(String(primary_verification_token||'')),primaryMobile,booked_by]);
+      if(!verification.rowCount){await db.query('ROLLBACK');return fail(res,409,'Please verify the WhatsApp number being used to make this booking');}
+      const secondaryKind=booked_by==='student'?'parent':'student',secondaryMobile=secondaryKind==='student'?sm:pm;
+      let secondaryVerified=false;
+      if(secondary_verification_id&&secondary_verification_token){
+        const secondary=await db.query(`SELECT id FROM booking_whatsapp_verifications WHERE id=$1 AND request_token_hash=$2 AND mobile=$3 AND kind=$4 AND verified_at IS NOT NULL AND expires_at>NOW()`,[String(secondary_verification_id),hash(String(secondary_verification_token)),secondaryMobile,secondaryKind]);
+        secondaryVerified=secondary.rowCount>0;
+      }
+      const studentVerified=booked_by==='student'||(secondaryKind==='student'&&secondaryVerified),parentVerified=booked_by==='parent'||(secondaryKind==='parent'&&secondaryVerified);
       await db.query('SELECT pg_advisory_xact_lock($1)',[Number(counsellor_id)]);
       const date=new Date(new Date(starts_at).getTime()+330*60000).toISOString().slice(0,10);
       const available=await slots(db,date,mode,Number(counsellor_id));
@@ -220,13 +257,13 @@ export function installBookingRoutes(app,pool,hooks={}) {
       const cfg=cfgRow.rows[0]?.settings||{};
       const approvalRequired=cfg.approval_required===true || cfg.approval_required==='true';
       const token=randomBytes(32).toString('hex'), ref='GV-'+randomBytes(6).toString('hex').toUpperCase();
-      const result=await db.query(`INSERT INTO student_bookings(booking_ref,token_hash,lead_id,linking_status,student_name,student_mobile,parent_name,parent_mobile,recipient,course,mode,counsellor_id,starts_at,ends_at,status)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id,booking_ref,starts_at,ends_at,status,linking_status`,[ref,hash(token),leadId,leadId?'linked':'pending',student_name.trim(),sm,parent_name||'',pm,recipient,course.trim(),mode,Number(counsellor_id),slot.starts_at,slot.ends_at,approvalRequired?'requested':'confirmed']);
+      const result=await db.query(`INSERT INTO student_bookings(booking_ref,token_hash,lead_id,linking_status,student_name,student_mobile,parent_name,parent_mobile,recipient,course,mode,counsellor_id,starts_at,ends_at,status,booked_by,student_whatsapp_verified,parent_whatsapp_verified)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id,booking_ref,starts_at,ends_at,status,linking_status`,[ref,hash(token),leadId,leadId?'linked':'pending',student_name.trim(),sm,parent_name.trim(),pm,recipient,course.trim(),mode,Number(counsellor_id),slot.starts_at,slot.ends_at,approvalRequired?'requested':'confirmed',booked_by,studentVerified,parentVerified]);
       if(!approvalRequired) await db.query("UPDATE student_bookings SET customer_response='confirmed',response_at=NOW() WHERE id=$1",[result.rows[0].id]);
       await log(db,result.rows[0].id,'customer','booked',{lead_id:leadId,mode});
       await enqueueLifecycleBlockedIntents(db,{bookingId:Number(result.rows[0].id),event:'created',eventKey:'created:'+randomUUID()});
       await db.query('COMMIT');
-      const created={...result.rows[0],manage_token:token,student_name:student_name.trim(),student_mobile:sm,parent_name:parent_name||'',parent_mobile:pm,recipient,course:course.trim(),mode,counsellor_id:Number(counsellor_id)};
+      const created={...result.rows[0],manage_token:token,student_name:student_name.trim(),student_mobile:sm,parent_name:parent_name.trim(),parent_mobile:pm,recipient,booked_by,student_whatsapp_verified:studentVerified,parent_whatsapp_verified:parentVerified,course:course.trim(),mode,counsellor_id:Number(counsellor_id)};
       // Booking WhatsApp confirmation is deliberately post-commit: a messaging failure must never roll back a valid booking.
       if(typeof hooks.onBookingCreated==='function'){
         try{created.whatsapp=await hooks.onBookingCreated(created);}catch(err){console.error('BOOKING WHATSAPP CREATE HOOK',err?.message||err);created.whatsapp={success:false,status:'hook_error'};}
@@ -402,7 +439,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
     }catch(e){await db.query('ROLLBACK');fail(res,500,'Unable to acknowledge alert');}
     finally{db.release();}
   });
-  app.get('/api/admin/booking',admin,async(req,res)=>{const r=await pool.query(`SELECT b.id,b.booking_ref,b.lead_id,b.linking_status,b.student_name,b.student_mobile,b.parent_name,b.parent_mobile,b.recipient,b.course,b.mode,b.counsellor_id,b.starts_at,b.ends_at,b.status,b.customer_response,b.response_at,b.admin_alert_sent_at,b.created_at,b.updated_at,c.name AS counsellor_name,c.meeting_link,c.location_id,l.name AS location_name FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id LEFT JOIN booking_locations l ON l.id=c.location_id WHERE b.trashed_at IS NULL ORDER BY b.starts_at DESC LIMIT 500`);res.json({success:true,data:r.rows});});
+  app.get('/api/admin/booking',admin,async(req,res)=>{const r=await pool.query(`SELECT b.id,b.booking_ref,b.lead_id,b.linking_status,b.student_name,b.student_mobile,b.parent_name,b.parent_mobile,b.recipient,b.booked_by,b.student_whatsapp_verified,b.parent_whatsapp_verified,b.course,b.mode,b.counsellor_id,b.starts_at,b.ends_at,b.status,b.customer_response,b.response_at,b.admin_alert_sent_at,b.created_at,b.updated_at,c.name AS counsellor_name,c.meeting_link,c.location_id,l.name AS location_name FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id LEFT JOIN booking_locations l ON l.id=c.location_id WHERE b.trashed_at IS NULL ORDER BY b.starts_at DESC LIMIT 500`);res.json({success:true,data:r.rows});});
   // Booking trash: reversible soft-delete; active appointments must be cancelled first.
   app.get('/api/admin/booking/trash',admin,async(req,res)=>{
     try {const r=await pool.query(`SELECT id,booking_ref,student_name,course,mode,starts_at,status,trashed_at FROM student_bookings WHERE trashed_at IS NOT NULL ORDER BY trashed_at DESC LIMIT 500`);res.json({success:true,data:r.rows});}
