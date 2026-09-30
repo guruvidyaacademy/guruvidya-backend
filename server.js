@@ -2921,18 +2921,31 @@ const bookingVerifyHash = (value = "") => createHash("sha256").update(String(val
 const bookingVerifyPhone = (value = "") => String(value || "").replace(/\D/g, "").replace(/^0+/, "");
 const bookingVerifyCode = () => "GV-WA-" + randomUUID().replace(/-/g, "").slice(0, 6).toUpperCase();
 
+let bookingWhatsAppVerificationSchemaPromise = null;
 async function ensureBookingWhatsAppVerificationTable() {
-  await pool.query(`CREATE TABLE IF NOT EXISTS booking_whatsapp_verifications (
-    id UUID PRIMARY KEY,
-    mobile VARCHAR(24) NOT NULL,
-    kind VARCHAR(16) NOT NULL,
-    verify_code VARCHAR(32) NOT NULL UNIQUE,
-    token_hash VARCHAR(64) NOT NULL,
-    verified_at TIMESTAMPTZ,
-    expires_at TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-  )`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_booking_wa_verify_mobile ON booking_whatsapp_verifications(mobile)`);
+  // Stage 2 checks Student + Parent in parallel. Do not run PostgreSQL DDL twice
+  // at the same time: concurrent CREATE TABLE/INDEX IF NOT EXISTS can still race
+  // in PostgreSQL system catalogs and make one verification request return HTTP 500.
+  if (!bookingWhatsAppVerificationSchemaPromise) {
+    bookingWhatsAppVerificationSchemaPromise = (async () => {
+      await pool.query(`CREATE TABLE IF NOT EXISTS booking_whatsapp_verifications (
+        id UUID PRIMARY KEY,
+        mobile VARCHAR(24) NOT NULL,
+        kind VARCHAR(16) NOT NULL,
+        verify_code VARCHAR(32) NOT NULL UNIQUE,
+        token_hash VARCHAR(64) NOT NULL,
+        verified_at TIMESTAMPTZ,
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_booking_wa_verify_mobile ON booking_whatsapp_verifications(mobile)`);
+      return true;
+    })().catch((err) => {
+      bookingWhatsAppVerificationSchemaPromise = null;
+      throw err;
+    });
+  }
+  return bookingWhatsAppVerificationSchemaPromise;
 }
 
 app.post('/api/public/booking/whatsapp-verification/start', async (req, res) => {
@@ -2958,7 +2971,7 @@ app.post('/api/public/booking/whatsapp-verification/start', async (req, res) => 
           AND received_at >= NOW() - INTERVAL '24 hours'
       )
       LIMIT 1`, [ten]);
-    if (open.rowCount) return res.set('Cache-Control','no-store').json({success:true,data:{verified:true,window_open:true,mobile}});
+    if (open.rowCount) return res.set('Cache-Control','no-store').json({success:true,verified:true,window_open:true,mobile});
 
     const id = randomUUID();
     const token = randomUUID().replace(/-/g,'') + randomUUID().replace(/-/g,'');
@@ -2967,7 +2980,7 @@ app.post('/api/public/booking/whatsapp-verification/start', async (req, res) => 
       [id,mobile,kind,code,bookingVerifyHash(token),String(BOOKING_VERIFY_TTL_MINUTES)]);
     const text = `Verify my WhatsApp number for GuruVidya appointment • ${code}`;
     const whatsapp_url = `https://wa.me/${BOOKING_VERIFY_TO}?text=${encodeURIComponent(text)}`;
-    res.set('Cache-Control','no-store').json({success:true,data:{id,token,verified:false,window_open:false,whatsapp_url,code}});
+    res.set('Cache-Control','no-store').json({success:true,id,token,verified:false,window_open:false,whatsapp_url,code});
   } catch (e) {
     console.error('Booking WhatsApp verification start error:', e.message);
     res.status(500).json({success:false,message:'Could not start WhatsApp verification'});
@@ -3003,7 +3016,7 @@ app.get('/api/public/booking/whatsapp-verification/status', async (req, res) => 
         await pool.query(`UPDATE booking_whatsapp_verifications SET verified_at=COALESCE(verified_at,NOW()) WHERE id=$1`, [id]);
       }
     }
-    res.set('Cache-Control','no-store').json({success:true,data:{verified:windowOpen,window_open:windowOpen,expired:!windowOpen && new Date(row.expires_at).getTime() <= Date.now()}});
+    res.set('Cache-Control','no-store').json({success:true,verified:windowOpen,window_open:windowOpen,expired:!windowOpen && new Date(row.expires_at).getTime() <= Date.now()});
   } catch (e) {
     res.status(500).json({success:false,message:'Could not check WhatsApp verification'});
   }
@@ -3016,7 +3029,7 @@ async function consumeBookingWhatsAppVerification(payload, mobile) {
   if (!match || !mobile) return false;
   const code = match[1].toUpperCase();
   const sender = bookingVerifyPhone(mobile);
-  const r = await pool.query(`UPDATE booking_whatsapp_verifications SET verified_at=NOW() WHERE verify_code=$1 AND mobile=$2 AND verified_at IS NULL AND expires_at>NOW() RETURNING id`, [code, sender]);
+  const r = await pool.query(`UPDATE booking_whatsapp_verifications SET verified_at=NOW() WHERE verify_code=$1 AND RIGHT(REGEXP_REPLACE(COALESCE(mobile,''),'\\D','','g'),10)=$2 AND verified_at IS NULL AND expires_at>NOW() RETURNING id`, [code, sender.slice(-10)]);
   if (!r.rowCount) return false;
   // Also refresh the CRM 24-hour customer-message timestamp when this number already exists as a lead.
   await pool.query(`UPDATE leads SET last_customer_message_at=NOW(), updated_at=NOW() WHERE RIGHT(REGEXP_REPLACE(COALESCE(mobile,''),'\\D','','g'),10)=$1`, [sender.slice(-10)]).catch(()=>{});
