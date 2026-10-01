@@ -204,17 +204,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
         UNION ALL
         SELECT 1 FROM leads WHERE regexp_replace(COALESCE(mobile,''),'[^0-9]','','g') IN ($1,$2) AND last_customer_message_at > NOW()-INTERVAL '24 hours'
       ) AS ok`,[canonical,mobile]);
-      // DEVELOPMENT TEST MODE (disabled unless explicitly configured in the server environment).
-      // Put one or more test WhatsApp numbers in BOOKING_WA_TEST_FORCE_CLOSED_NUMBERS
-      // (comma-separated; 10-digit or country-code form). Those numbers are treated as
-      // window CLOSED only at verification start, so the real verification flow can be
-      // exercised repeatedly without waiting 24 hours. A successful incoming GV-WA code
-      // still verifies the request normally. Production numbers are unaffected.
-      const forcedClosedNumbers=String(process.env.BOOKING_WA_TEST_FORCE_CLOSED_NUMBERS||'')
-        .split(',').map(v=>bookingPhone(v.trim())).filter(Boolean);
-      const forceClosedForTest=forcedClosedNumbers.includes(mobile);
-      const alreadyOpen=forceClosedForTest ? false : Boolean(open.rows[0]?.ok);
-      if(forceClosedForTest) console.log(`🧪 Booking WhatsApp TEST MODE: forcing 24h CLOSED for ${mobile.slice(-4).padStart(mobile.length,'*')}`);
+      const alreadyOpen=Boolean(open.rows[0]?.ok);
       await pool.query(`INSERT INTO booking_whatsapp_verifications(id,request_token_hash,mobile,kind,verification_code,verified_at,expires_at) VALUES($1,$2,$3,$4,$5,CASE WHEN $6 THEN NOW() ELSE NULL END,NOW()+INTERVAL '10 minutes')`,[id,hash(token),mobile,kind,code,alreadyOpen]);
       const message=`Verify my WhatsApp number for GuruVidya appointment • ${code}`;
       res.set('Cache-Control','no-store').json({success:true,data:{id,token,verified:alreadyOpen,window_open:alreadyOpen,expires_in_seconds:600,whatsapp_url:alreadyOpen?'':'https://wa.me/919821627725?text='+encodeURIComponent(message)}});
