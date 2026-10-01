@@ -3067,6 +3067,13 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     if (isCustomerEvent) {
       const canonical = botSailorPhone(mobile);
       const national = canonical.startsWith("91") && canonical.length === 12 ? canonical.slice(2) : canonical;
+
+      // A genuine inbound WhatsApp message always re-opens the real 24-hour window.
+      // Admin OPEN/CLOSED is only a temporary test state, so never let an old CLOSED
+      // override hide a later real customer message. This also makes Admin Check Status
+      // immediately reflect OPEN after the customer replies.
+      await pool.query('DELETE FROM booking_whatsapp_window_test_overrides WHERE mobile=$1',[national]);
+
       // A real message ID prevents repeated webhook deliveries extending the window.
       const messageId = String(payload.wa_message_id || payload.message_id || "").trim() || `unidentified_${randomUUID()}`;
       const refreshed = await pool.query(
@@ -3093,9 +3100,20 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     // Stage 2 booking WhatsApp verification. A verification is accepted only
     // after a real incoming customer message arrives from the exact number.
     if (isCustomerEvent) {
-      const verificationText = String(webhookUserMessageRaw || '').trim();
-      const verificationMatch = verificationText.match(/\bGV-WA-[A-F0-9]{6}\b/i);
-      if (verificationMatch || /^VERIFY$/i.test(verificationText)) {
+      // BotSailor payload shapes differ between keyword/webhook configurations.
+      // Keep the normal message field as the primary source, but also inspect string
+      // leaves so GV-WA codes / VERIFY are not missed when BotSailor nests the text.
+      const verificationCandidates = [String(webhookUserMessageRaw || '').trim()];
+      const collectVerificationStrings = (value, depth = 0) => {
+        if (depth > 5 || value == null) return;
+        if (typeof value === 'string') { verificationCandidates.push(value.trim()); return; }
+        if (Array.isArray(value)) { for (const item of value) collectVerificationStrings(item, depth + 1); return; }
+        if (typeof value === 'object') { for (const item of Object.values(value)) collectVerificationStrings(item, depth + 1); }
+      };
+      collectVerificationStrings(payload);
+      const verificationMatch = verificationCandidates.map(v => v.match(/\bGV-WA-[A-F0-9]{6}\b/i)).find(Boolean);
+      const plainVerify = verificationCandidates.some(v => /^VERIFY$/i.test(v));
+      if (verificationMatch || plainVerify) {
         const canonical = botSailorPhone(mobile);
         const national = canonical.startsWith('91') && canonical.length === 12 ? canonical.slice(2) : canonical;
         const verified = verificationMatch ? await pool.query(
