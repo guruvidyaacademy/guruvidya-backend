@@ -2968,6 +2968,10 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     const buttonReplyTitle = normalizeLooseText(extractButtonReplyTitle(payload));
 
     // BotSailor can deliver a button tap as a normal user_message.
+    // Prefer BotSailor's top-level user_message, but also accept the nested
+    // WhatsApp payload shapes used by webhook relays. This is important for
+    // booking verification because the browser must become verified from the
+    // FIRST incoming WhatsApp message, without asking the student to click again.
     const webhookUserMessageRaw = normalizeLooseText(
       payload.user_message ||
       payload.userMessage ||
@@ -2975,6 +2979,11 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       payload.messageText ||
       payload.reply_text ||
       payload.replyText ||
+      payload.text?.body ||
+      payload.message?.text?.body ||
+      payload.messages?.[0]?.text?.body ||
+      payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.text?.body ||
+      extractButtonReplyTitle(payload) ||
       ""
     );
 
@@ -3095,37 +3104,28 @@ app.post("/api/webhook/botsailor", async (req, res) => {
         const national = canonical.startsWith('91') && canonical.length === 12 ? canonical.slice(2) : canonical;
         const verified = await pool.query(
           `UPDATE booking_whatsapp_verifications
-             SET verified_at=COALESCE(verified_at,NOW())
+             SET verified_at=NOW()
            WHERE UPPER(verification_code)=UPPER($1)
              AND mobile=$2
              AND expires_at>NOW()
+             AND verified_at IS NULL
            RETURNING id,kind`,
           [verificationMatch[0], national]
         );
         if (verified.rowCount) {
-          const verification = verified.rows[0];
-          console.log('BOOKING WHATSAPP VERIFIED', { id: verification.id, kind: verification.kind, mobile: canonical });
-
-          // Verification messages are system events, not normal enquiries. Handle them
-          // here and stop the normal CRM/AI routing path from processing the same text.
-          // Send one deterministic acknowledgement from the backend (not AI-generated).
-          const continueUrl = `${req.protocol}://${req.get('host')}/booking`;
-          const acknowledgement = `✅ WhatsApp Verified Successfully\n\nYour number has been verified for your GuruVidya Academy appointment.\n\nContinue Booking: ${continueUrl}`;
+          console.log('BOOKING WHATSAPP VERIFIED', { id: verified.rows[0].id, kind: verified.rows[0].kind, mobile: canonical });
+          // Deterministic system acknowledgement. This is intentionally not AI-generated.
+          // The UPDATE ... verified_at IS NULL guard prevents duplicate webhook deliveries
+          // from sending this confirmation more than once.
           try {
             await sendBotSailorText(
-              { mobile: canonical, name: 'Student', course: '' },
-              acknowledgement,
+              { mobile: national, name: '', course: '' },
+              '✅ WhatsApp number verified successfully for your GuruVidya appointment.',
               'booking_whatsapp_verification_success'
             );
-          } catch (sendErr) {
-            console.error('BOOKING WHATSAPP VERIFICATION ACK', sendErr?.message || sendErr);
+          } catch (verificationReplyError) {
+            console.error('BOOKING WHATSAPP VERIFICATION CONFIRMATION', verificationReplyError?.message || verificationReplyError);
           }
-          return res.status(200).json({
-            status: 'ok',
-            booking_whatsapp_verification: true,
-            verified: true,
-            verification_id: verification.id,
-          });
         }
       }
     }
