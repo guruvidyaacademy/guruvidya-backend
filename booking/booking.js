@@ -87,6 +87,9 @@ export async function initBooking(pool) {
     verification_code TEXT UNIQUE NOT NULL, verified_at TIMESTAMPTZ, expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
   CREATE INDEX IF NOT EXISTS booking_whatsapp_verifications_mobile_idx ON booking_whatsapp_verifications(mobile,expires_at);`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS booking_whatsapp_window_test_overrides (
+    mobile TEXT PRIMARY KEY, forced_open BOOLEAN NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );`);
 
 }
 
@@ -204,7 +207,8 @@ export function installBookingRoutes(app,pool,hooks={}) {
         UNION ALL
         SELECT 1 FROM leads WHERE regexp_replace(COALESCE(mobile,''),'[^0-9]','','g') IN ($1,$2) AND last_customer_message_at > NOW()-INTERVAL '24 hours'
       ) AS ok`,[canonical,mobile]);
-      const alreadyOpen=Boolean(open.rows[0]?.ok);
+      const override=await pool.query(`SELECT forced_open FROM booking_whatsapp_window_test_overrides WHERE mobile=$1 LIMIT 1`,[mobile]);
+      const alreadyOpen=override.rowCount?Boolean(override.rows[0].forced_open):Boolean(open.rows[0]?.ok);
       await pool.query(`INSERT INTO booking_whatsapp_verifications(id,request_token_hash,mobile,kind,verification_code,verified_at,expires_at) VALUES($1,$2,$3,$4,$5,CASE WHEN $6 THEN NOW() ELSE NULL END,NOW()+INTERVAL '10 minutes')`,[id,hash(token),mobile,kind,code,alreadyOpen]);
       const message=`Verify my WhatsApp number for GuruVidya appointment • ${code}`;
       res.set('Cache-Control','no-store').json({success:true,data:{id,token,verified:alreadyOpen,window_open:alreadyOpen,expires_in_seconds:600,whatsapp_url:alreadyOpen?'':'https://wa.me/919821627725?text='+encodeURIComponent(message)}});
@@ -341,6 +345,48 @@ export function installBookingRoutes(app,pool,hooks={}) {
       res.json({success:true});
     }catch(e){await db.query('ROLLBACK');fail(res,500,'Unable to update booking');}finally{db.release();}
   });
+  // Admin-only test override for the booking WhatsApp 24-hour gate. This does not alter
+  // Meta/BotSailor history or CRM timestamps; it only controls booking verification testing.
+  app.get('/api/admin/booking/whatsapp-window-test/:mobile',admin,async(req,res)=>{
+    try{
+      const mobile=bookingPhone(req.params.mobile);
+      if(!/^\d{10}$/.test(mobile))return fail(res,400,'Enter a valid 10-digit mobile number');
+      const canonical='91'+mobile;
+      const [override,real]=await Promise.all([
+        pool.query(`SELECT forced_open,updated_at FROM booking_whatsapp_window_test_overrides WHERE mobile=$1 LIMIT 1`,[mobile]),
+        pool.query(`SELECT EXISTS(
+          SELECT 1 FROM whatsapp_window_events WHERE mobile IN ($1,$2) AND received_at > NOW()-INTERVAL '24 hours'
+          UNION ALL
+          SELECT 1 FROM leads WHERE regexp_replace(COALESCE(mobile,''),'[^0-9]','','g') IN ($1,$2) AND last_customer_message_at > NOW()-INTERVAL '24 hours'
+        ) AS ok`,[canonical,mobile])
+      ]);
+      const forced=override.rowCount?Boolean(override.rows[0].forced_open):null;
+      res.set('Cache-Control','no-store').json({success:true,data:{mobile,real_open:Boolean(real.rows[0]?.ok),forced_open:forced,effective_open:forced===null?Boolean(real.rows[0]?.ok):forced,updated_at:override.rows[0]?.updated_at||null}});
+    }catch(e){fail(res,500,'Unable to read WhatsApp window test status');}
+  });
+  app.post('/api/admin/booking/whatsapp-window-test',admin,async(req,res)=>{
+    try{
+      const mobile=bookingPhone(req.body?.mobile),action=String(req.body?.action||'');
+      if(!/^\d{10}$/.test(mobile))return fail(res,400,'Enter a valid 10-digit mobile number');
+      if(action==='reset'){
+        await pool.query(`DELETE FROM booking_whatsapp_window_test_overrides WHERE mobile=$1`,[mobile]);
+      }else if(action==='open'||action==='close'){
+        await pool.query(`INSERT INTO booking_whatsapp_window_test_overrides(mobile,forced_open,updated_at) VALUES($1,$2,NOW()) ON CONFLICT(mobile) DO UPDATE SET forced_open=EXCLUDED.forced_open,updated_at=NOW()`,[mobile,action==='open']);
+      }else return fail(res,400,'Invalid test action');
+      const canonical='91'+mobile;
+      const [override,real]=await Promise.all([
+        pool.query(`SELECT forced_open,updated_at FROM booking_whatsapp_window_test_overrides WHERE mobile=$1 LIMIT 1`,[mobile]),
+        pool.query(`SELECT EXISTS(
+          SELECT 1 FROM whatsapp_window_events WHERE mobile IN ($1,$2) AND received_at > NOW()-INTERVAL '24 hours'
+          UNION ALL
+          SELECT 1 FROM leads WHERE regexp_replace(COALESCE(mobile,''),'[^0-9]','','g') IN ($1,$2) AND last_customer_message_at > NOW()-INTERVAL '24 hours'
+        ) AS ok`,[canonical,mobile])
+      ]);
+      const forced=override.rowCount?Boolean(override.rows[0].forced_open):null, realOpen=Boolean(real.rows[0]?.ok);
+      res.set('Cache-Control','no-store').json({success:true,data:{mobile,real_open:realOpen,forced_open:forced,effective_open:forced===null?realOpen:forced,updated_at:override.rows[0]?.updated_at||null}});
+    }catch(e){fail(res,500,'Unable to update WhatsApp window test status');}
+  });
+
   // Database-wide aggregate; unlike the 300-row notification list this is not a sample.
   app.get('/api/admin/booking/monitoring-summary',admin,async(req,res)=>{
     try { const data=await getBookingMonitoringSummary(pool);res.set('Cache-Control','no-store').json({success:true,data}); }
