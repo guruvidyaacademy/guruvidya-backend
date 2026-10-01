@@ -3095,38 +3095,33 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     }
 
 
-    // Stage 2 booking WhatsApp verification. A verification is accepted only
-    // after a real incoming customer message arrives from the exact number.
-    if (isCustomerEvent) {
-      const verificationMatch = String(webhookUserMessageRaw || '').match(/\bGV-WA-[A-F0-9]{6}\b/i);
-      if (verificationMatch) {
-        const canonical = botSailorPhone(mobile);
-        const national = canonical.startsWith('91') && canonical.length === 12 ? canonical.slice(2) : canonical;
-        const verified = await pool.query(
-          `UPDATE booking_whatsapp_verifications
-             SET verified_at=NOW()
-           WHERE UPPER(verification_code)=UPPER($1)
-             AND mobile=$2
-             AND expires_at>NOW()
-             AND verified_at IS NULL
-           RETURNING id,kind`,
-          [verificationMatch[0], national]
-        );
-        if (verified.rowCount) {
-          console.log('BOOKING WHATSAPP VERIFIED', { id: verified.rows[0].id, kind: verified.rows[0].kind, mobile: canonical });
-          // Deterministic system acknowledgement. This is intentionally not AI-generated.
-          // The UPDATE ... verified_at IS NULL guard prevents duplicate webhook deliveries
-          // from sending this confirmation more than once.
-          try {
-            await sendBotSailorText(
-              { mobile: national, name: '', course: '' },
-              '✅ WhatsApp number verified successfully for your GuruVidya appointment.',
-              'booking_whatsapp_verification_success'
-            );
-          } catch (verificationReplyError) {
-            console.error('BOOKING WHATSAPP VERIFICATION CONFIRMATION', verificationReplyError?.message || verificationReplyError);
-          }
-        }
+    // Stage 2 booking WhatsApp verification.
+    // BotSailor's Flow Builder "Forward Data to Webhook" can place the triggering
+    // text/code in different/nested fields than the normal global webhook. Search
+    // the complete payload so the FIRST GV-WA-* message can verify the browser
+    // session while its 2-second status polling is already running.
+    const verificationPayloadText = (() => {
+      try { return JSON.stringify(payload); } catch { return ''; }
+    })();
+    const verificationMatch = `${webhookUserMessageRaw || ''} ${verificationPayloadText}`.match(/\bGV-WA-[A-F0-9]{6}\b/i);
+    if (verificationMatch) {
+      const canonical = botSailorPhone(mobile);
+      const national = canonical.startsWith('91') && canonical.length === 12 ? canonical.slice(2) : canonical;
+      const verified = await pool.query(
+        `UPDATE booking_whatsapp_verifications
+           SET verified_at=NOW()
+         WHERE UPPER(verification_code)=UPPER($1)
+           AND mobile=$2
+           AND expires_at>NOW()
+           AND verified_at IS NULL
+         RETURNING id,kind`,
+        [verificationMatch[0], national]
+      );
+      if (verified.rowCount) {
+        console.log('BOOKING WHATSAPP VERIFIED', { id: verified.rows[0].id, kind: verified.rows[0].kind, mobile: canonical });
+        // The dedicated BotSailor GV-WA- flow sends the fixed success message.
+        // Do not send another API acknowledgement here, otherwise the customer
+        // can receive the same verification confirmation twice.
       }
     }
 
