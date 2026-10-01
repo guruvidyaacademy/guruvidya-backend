@@ -3102,7 +3102,31 @@ app.post("/api/webhook/botsailor", async (req, res) => {
            RETURNING id,kind`,
           [verificationMatch[0], national]
         );
-        if (verified.rowCount) console.log('BOOKING WHATSAPP VERIFIED', { id: verified.rows[0].id, kind: verified.rows[0].kind, mobile: canonical });
+        if (verified.rowCount) {
+          const verification = verified.rows[0];
+          console.log('BOOKING WHATSAPP VERIFIED', { id: verification.id, kind: verification.kind, mobile: canonical });
+
+          // Verification messages are system events, not normal enquiries. Handle them
+          // here and stop the normal CRM/AI routing path from processing the same text.
+          // Send one deterministic acknowledgement from the backend (not AI-generated).
+          const continueUrl = `${req.protocol}://${req.get('host')}/booking`;
+          const acknowledgement = `✅ WhatsApp Verified Successfully\n\nYour number has been verified for your GuruVidya Academy appointment.\n\nContinue Booking: ${continueUrl}`;
+          try {
+            await sendBotSailorText(
+              { mobile: canonical, name: 'Student', course: '' },
+              acknowledgement,
+              'booking_whatsapp_verification_success'
+            );
+          } catch (sendErr) {
+            console.error('BOOKING WHATSAPP VERIFICATION ACK', sendErr?.message || sendErr);
+          }
+          return res.status(200).json({
+            status: 'ok',
+            booking_whatsapp_verification: true,
+            verified: true,
+            verification_id: verification.id,
+          });
+        }
       }
     }
 
