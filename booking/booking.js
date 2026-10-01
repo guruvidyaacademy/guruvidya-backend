@@ -249,10 +249,12 @@ export function installBookingRoutes(app,pool,hooks={}) {
       // the direct session UPDATE was missed, bind that genuine message to this session.
       if(!row.verified_at && new Date(row.expires_at).getTime()>Date.now()){
         const canonical=/^\d{10}$/.test(row.mobile)?'91'+row.mobile:row.mobile;
+        // BotSailor verification webhook already records a genuine inbound event.
+        // Match it to this verification request by mobile + session start time. This also
+        // works when the webhook event does not contain message_text.
         const evidence=await pool.query(`SELECT received_at FROM whatsapp_window_events
           WHERE mobile IN ($1,$2) AND received_at >= $3
-            AND (UPPER(COALESCE(message_text,'')) LIKE '%'||UPPER($4)||'%' OR UPPER(BTRIM(COALESCE(message_text,'')))='VERIFY')
-          ORDER BY received_at DESC LIMIT 1`,[canonical,row.mobile,row.created_at,row.verification_code]);
+          ORDER BY received_at DESC LIMIT 1`,[canonical,row.mobile,row.created_at]);
         if(evidence.rowCount){
           const marked=await pool.query(`UPDATE booking_whatsapp_verifications SET verified_at=COALESCE(verified_at,$2) WHERE id=$1 RETURNING verified_at`,[row.id,evidence.rows[0].received_at]);
           row.verified_at=marked.rows[0]?.verified_at||evidence.rows[0].received_at;
