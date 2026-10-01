@@ -3049,23 +3049,95 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       const national = canonical.startsWith("91") && canonical.length === 12 ? canonical.slice(2) : canonical;
       // A real message ID prevents repeated webhook deliveries extending the window.
       const messageId = String(payload.wa_message_id || payload.message_id || "").trim() || `unidentified_${randomUUID()}`;
-      const refreshed = await pool.query(
-        `WITH accepted AS (
-           INSERT INTO whatsapp_window_events(mobile,message_id) VALUES($1,$3)
-           ON CONFLICT DO NOTHING RETURNING received_at
-         )
-         UPDATE leads SET last_customer_message_at = GREATEST(last_customer_message_at, accepted.received_at),
-           window_closing_sent_at = NULL, updated_at = CURRENT_TIMESTAMP
-         FROM accepted
-         WHERE regexp_replace(COALESCE(leads.mobile,''), '[^0-9]', '', 'g') IN ($1,$2)
-         RETURNING leads.*`, [canonical, national, messageId]
+      const incomingText = String(webhookUserMessageRaw || buttonReplyTitle || buttonReplyId || "").trim();
+
+      // Record the incoming event first. Keep the message text as evidence for the
+      // booking verification session; duplicate provider webhooks do not create a
+      // second event because (mobile,message_id) is unique.
+      const accepted = await pool.query(
+        `INSERT INTO whatsapp_window_events(mobile,message_id,message_text)
+         VALUES($1,$2,$3)
+         ON CONFLICT DO NOTHING
+         RETURNING received_at`,
+        [canonical, messageId, incomingText || null]
       );
-      refreshedLeadIds = refreshed.rows.map((lead) => lead.id);
-      for (const lead of refreshed.rows) {
-        const index = db.leads.findIndex((item) => Number(item.id) === Number(lead.id));
-        if (index !== -1) db.leads[index] = { ...db.leads[index], ...lead };
+
+      if (accepted.rowCount) {
+        const receivedAt = accepted.rows[0].received_at;
+
+        const refreshed = await pool.query(
+          `UPDATE leads
+           SET last_customer_message_at = GREATEST(last_customer_message_at, $3),
+               window_closing_sent_at = NULL,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE regexp_replace(COALESCE(mobile,''), '[^0-9]', '', 'g') IN ($1,$2)
+           RETURNING *`,
+          [canonical, national, receivedAt]
+        );
+        refreshedLeadIds = refreshed.rows.map((lead) => lead.id);
+        for (const lead of refreshed.rows) {
+          const index = db.leads.findIndex((item) => Number(item.id) === Number(lead.id));
+          if (index !== -1) db.leads[index] = { ...db.leads[index], ...lead };
+        }
+
+        // Complete the active booking WhatsApp verification at webhook time.
+        // A GV-WA code must match the same mobile and active session. The plain
+        // VERIFY trigger is allowed only for the newest active session for that
+        // same mobile (used by the optional verification popup).
+        const codeMatch = incomingText.match(/\bGV-WA-[A-F0-9]{6}\b/i);
+        let verifiedSession = null;
+        if (codeMatch) {
+          const vr = await pool.query(
+            `UPDATE booking_whatsapp_verifications
+             SET verified_at = COALESCE(verified_at,$3)
+             WHERE mobile=$1
+               AND UPPER(verification_code)=UPPER($2)
+               AND expires_at > $3
+               AND created_at <= $3
+             RETURNING id`,
+            [national, codeMatch[0], receivedAt]
+          );
+          verifiedSession = vr.rows[0] || null;
+        } else if (/^VERIFY$/i.test(incomingText)) {
+          const vr = await pool.query(
+            `UPDATE booking_whatsapp_verifications
+             SET verified_at = COALESCE(verified_at,$2)
+             WHERE id = (
+               SELECT id FROM booking_whatsapp_verifications
+               WHERE mobile=$1 AND verified_at IS NULL
+                 AND expires_at > $2 AND created_at <= $2
+               ORDER BY created_at DESC LIMIT 1
+             )
+             RETURNING id`,
+            [national, receivedAt]
+          );
+          verifiedSession = vr.rows[0] || null;
+        }
+
+        // Only a successfully matched verification clears a manually forced CLOSED
+        // test override. The admin test then immediately falls back to the real
+        // 24-hour window, which is OPEN because this inbound event was just accepted.
+        if (verifiedSession) {
+          await pool.query(
+            `DELETE FROM booking_whatsapp_window_test_overrides WHERE mobile=$1`,
+            [national]
+          );
+          console.log("BOOKING WHATSAPP VERIFIED", {
+            mobile: national,
+            verificationId: verifiedSession.id,
+            messageId
+          });
+        }
+
+        console.log("WHATSAPP WINDOW REFRESH", {
+          mobile: canonical,
+          leadIds: refreshedLeadIds,
+          messageId,
+          bookingVerificationMatched: Boolean(verifiedSession)
+        });
+      } else {
+        console.log("WHATSAPP WINDOW DUPLICATE", { mobile: canonical, messageId });
       }
-      console.log("WHATSAPP WINDOW REFRESH", { mobile: canonical, leadIds: refreshedLeadIds, messageId });
     }
 
 
