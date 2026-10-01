@@ -87,6 +87,7 @@ export async function initBooking(pool) {
     verification_code TEXT UNIQUE NOT NULL, verified_at TIMESTAMPTZ, expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
   CREATE INDEX IF NOT EXISTS booking_whatsapp_verifications_mobile_idx ON booking_whatsapp_verifications(mobile,expires_at);
+  ALTER TABLE whatsapp_window_events ADD COLUMN IF NOT EXISTS message_text TEXT;
   CREATE TABLE IF NOT EXISTS booking_whatsapp_window_test_overrides (
     mobile TEXT PRIMARY KEY, forced_open BOOLEAN NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );`);
@@ -241,9 +242,26 @@ export function installBookingRoutes(app,pool,hooks={}) {
     try{
       const id=String(req.query.id||''),token=String(req.query.token||'');
       if(!id||!token)return fail(res,400,'Invalid verification request');
-      const r=await pool.query(`SELECT verified_at,expires_at FROM booking_whatsapp_verifications WHERE id=$1 AND request_token_hash=$2`,[id,hash(token)]);
+      const r=await pool.query(`SELECT id,mobile,verification_code,verified_at,expires_at,created_at FROM booking_whatsapp_verifications WHERE id=$1 AND request_token_hash=$2`,[id,hash(token)]);
       if(!r.rowCount)return fail(res,404,'Verification request not found');
-      const row=r.rows[0],expired=!row.verified_at&&new Date(row.expires_at).getTime()<=Date.now();
+      let row=r.rows[0];
+      // Recovery path: if the incoming webhook recorded the exact verification text but
+      // the direct session UPDATE was missed, bind that genuine message to this session.
+      if(!row.verified_at && new Date(row.expires_at).getTime()>Date.now()){
+        const canonical=/^\d{10}$/.test(row.mobile)?'91'+row.mobile:row.mobile;
+        const evidence=await pool.query(`SELECT received_at FROM whatsapp_window_events
+          WHERE mobile IN ($1,$2) AND received_at >= $3
+            AND (UPPER(COALESCE(message_text,'')) LIKE '%'||UPPER($4)||'%' OR UPPER(BTRIM(COALESCE(message_text,'')))='VERIFY')
+          ORDER BY received_at DESC LIMIT 1`,[canonical,row.mobile,row.created_at,row.verification_code]);
+        if(evidence.rowCount){
+          const marked=await pool.query(`UPDATE booking_whatsapp_verifications SET verified_at=COALESCE(verified_at,$2) WHERE id=$1 RETURNING verified_at`,[row.id,evidence.rows[0].received_at]);
+          row.verified_at=marked.rows[0]?.verified_at||evidence.rows[0].received_at;
+          // A successful booking verification represents a fresh genuine inbound message.
+          // Clear any forced CLOSED test state so the next form/admin check is OPEN.
+          await pool.query('DELETE FROM booking_whatsapp_window_test_overrides WHERE mobile=$1',[row.mobile]);
+        }
+      }
+      const expired=!row.verified_at&&new Date(row.expires_at).getTime()<=Date.now();
       res.set('Cache-Control','no-store').json({success:true,data:{verified:Boolean(row.verified_at),expired}});
     }catch(e){fail(res,500,'Unable to check WhatsApp verification');}
   });
