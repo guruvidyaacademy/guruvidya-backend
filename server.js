@@ -392,9 +392,12 @@ async function initDatabase() {
     CREATE TABLE IF NOT EXISTS whatsapp_window_events (
       mobile TEXT NOT NULL,
       message_id TEXT NOT NULL,
+      message_text TEXT,
       received_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (mobile, message_id)
     );
+
+    ALTER TABLE whatsapp_window_events ADD COLUMN IF NOT EXISTS message_text TEXT;
 
     CREATE TABLE IF NOT EXISTS manual_whatsapp_requests (
       request_id TEXT PRIMARY KEY,
@@ -3068,14 +3071,15 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       const messageId = String(payload.wa_message_id || payload.message_id || "").trim() || `unidentified_${randomUUID()}`;
       const refreshed = await pool.query(
         `WITH accepted AS (
-           INSERT INTO whatsapp_window_events(mobile,message_id) VALUES($1,$3)
-           ON CONFLICT DO NOTHING RETURNING received_at
+           INSERT INTO whatsapp_window_events(mobile,message_id,message_text) VALUES($1,$3,$4)
+           ON CONFLICT (mobile,message_id) DO UPDATE SET message_text=COALESCE(NULLIF(EXCLUDED.message_text,''),whatsapp_window_events.message_text)
+           RETURNING received_at
          )
          UPDATE leads SET last_customer_message_at = GREATEST(last_customer_message_at, accepted.received_at),
            window_closing_sent_at = NULL, updated_at = CURRENT_TIMESTAMP
          FROM accepted
          WHERE regexp_replace(COALESCE(leads.mobile,''), '[^0-9]', '', 'g') IN ($1,$2)
-         RETURNING leads.*`, [canonical, national, messageId]
+         RETURNING leads.*`, [canonical, national, messageId, webhookUserMessageRaw]
       );
       refreshedLeadIds = refreshed.rows.map((lead) => lead.id);
       for (const lead of refreshed.rows) {
@@ -3105,7 +3109,11 @@ app.post("/api/webhook/botsailor", async (req, res) => {
            WHERE id=(SELECT id FROM booking_whatsapp_verifications WHERE mobile=$1 AND verified_at IS NULL AND expires_at>NOW() ORDER BY created_at DESC LIMIT 1)
            RETURNING id,kind`, [national]
         );
-        if (verified.rowCount) console.log('BOOKING WHATSAPP VERIFIED', { id: verified.rows[0].id, kind: verified.rows[0].kind, mobile: canonical });
+        if (verified.rowCount) {
+          // Genuine verification wins over a temporary Admin CLOSED test override.
+          await pool.query('DELETE FROM booking_whatsapp_window_test_overrides WHERE mobile=$1',[national]);
+          console.log('BOOKING WHATSAPP VERIFIED', { id: verified.rows[0].id, kind: verified.rows[0].kind, mobile: canonical });
+        }
       }
     }
 
