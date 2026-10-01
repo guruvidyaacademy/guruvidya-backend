@@ -86,7 +86,10 @@ export async function initBooking(pool) {
     id UUID PRIMARY KEY, request_token_hash TEXT NOT NULL, mobile TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('student','parent')),
     verification_code TEXT UNIQUE NOT NULL, verified_at TIMESTAMPTZ, expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
-  CREATE INDEX IF NOT EXISTS booking_whatsapp_verifications_mobile_idx ON booking_whatsapp_verifications(mobile,expires_at);`);
+  CREATE INDEX IF NOT EXISTS booking_whatsapp_verifications_mobile_idx ON booking_whatsapp_verifications(mobile,expires_at);
+  CREATE TABLE IF NOT EXISTS booking_whatsapp_window_test_overrides (
+    mobile TEXT PRIMARY KEY, forced_open BOOLEAN NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );`);
 
 }
 
@@ -102,6 +105,21 @@ export function installBookingRoutes(app,pool,hooks={}) {
   const attempts = new Map();
   const equal = (a,b) => { const x=createHash('sha256').update(String(a)).digest(); const y=createHash('sha256').update(String(b)).digest(); return timingSafeEqual(x,y); };
   const sessionFor = req => {const raw=(req.get('authorization')||'').match(/^Bearer ([a-f0-9]{64})$/i)?.[1];if(!raw)return false;const key=hash(raw), expiry=sessions.get(key);if(!expiry)return false;if(expiry<Date.now()){sessions.delete(key);return false;}return true;};
+  const whatsappWindowState = async mobileRaw => {
+    const mobile=bookingPhone(mobileRaw);
+    if(!/^\d{10}$/.test(mobile)) throw new Error('Enter a valid 10-digit mobile number');
+    const canonical='91'+mobile;
+    const real=await pool.query(`SELECT GREATEST(
+      COALESCE((SELECT MAX(received_at) FROM whatsapp_window_events WHERE mobile IN ($1,$2)),'epoch'::timestamptz),
+      COALESCE((SELECT MAX(last_customer_message_at) FROM leads WHERE regexp_replace(COALESCE(mobile,''),'[^0-9]','','g') IN ($1,$2)),'epoch'::timestamptz)
+    ) AS last_incoming`,[canonical,mobile]);
+    const last=real.rows[0]?.last_incoming;
+    const realOpen=Boolean(last && new Date(last).getTime()>Date.now()-86400000);
+    const override=await pool.query('SELECT forced_open,updated_at FROM booking_whatsapp_window_test_overrides WHERE mobile=$1',[mobile]);
+    const forced=override.rowCount?Boolean(override.rows[0].forced_open):null;
+    return {mobile,real_open:realOpen,last_incoming_at:last&&new Date(last).getTime()>0?last:null,test_override:forced===null?'real':forced?'open':'closed',effective_open:forced===null?realOpen:forced,override_updated_at:override.rows[0]?.updated_at||null};
+  };
+
   app.post('/api/admin/booking/session',(req,res)=>{
     const ip=req.ip||'unknown', now=Date.now(), prior=attempts.get(ip)||{count:0,until:0};
     if(prior.until>now)return fail(res,429,'Too many attempts; try again later');
@@ -191,6 +209,19 @@ export function installBookingRoutes(app,pool,hooks={}) {
       res.set('Cache-Control','no-store').json({success:true,data:result});
     }catch(e){fail(res,500,'Calendar availability unavailable');}
   });
+  app.get('/api/admin/booking/whatsapp-window-test',admin,async(req,res)=>{
+    try{res.set('Cache-Control','no-store').json({success:true,data:await whatsappWindowState(req.query.mobile)});}catch(e){fail(res,400,e.message||'Unable to check WhatsApp window');}
+  });
+  app.post('/api/admin/booking/whatsapp-window-test',admin,async(req,res)=>{
+    try{
+      const mobile=bookingPhone(req.body?.mobile),mode=String(req.body?.mode||'');
+      if(!/^\d{10}$/.test(mobile)||!['open','closed','real'].includes(mode))return fail(res,400,'Enter a valid 10-digit mobile number and test mode');
+      if(mode==='real')await pool.query('DELETE FROM booking_whatsapp_window_test_overrides WHERE mobile=$1',[mobile]);
+      else await pool.query(`INSERT INTO booking_whatsapp_window_test_overrides(mobile,forced_open,updated_at) VALUES($1,$2,NOW()) ON CONFLICT(mobile) DO UPDATE SET forced_open=EXCLUDED.forced_open,updated_at=NOW()`,[mobile,mode==='open']);
+      res.set('Cache-Control','no-store').json({success:true,data:await whatsappWindowState(mobile)});
+    }catch(e){fail(res,500,e.message||'Unable to update WhatsApp window test');}
+  });
+
   app.post('/api/public/booking/whatsapp-verification/start',async(req,res)=>{
     try{
       const mobile=bookingPhone(req.body?.mobile),kind=String(req.body?.kind||'');
@@ -199,12 +230,8 @@ export function installBookingRoutes(app,pool,hooks={}) {
       // First check the real customer-service window. Any genuine incoming message in
       // the last 24 hours means this number is already verified for booking purposes.
       const canonical=/^\d{10}$/.test(mobile)?'91'+mobile:mobile;
-      const open=await pool.query(`SELECT EXISTS(
-        SELECT 1 FROM whatsapp_window_events WHERE mobile IN ($1,$2) AND received_at > NOW()-INTERVAL '24 hours'
-        UNION ALL
-        SELECT 1 FROM leads WHERE regexp_replace(COALESCE(mobile,''),'[^0-9]','','g') IN ($1,$2) AND last_customer_message_at > NOW()-INTERVAL '24 hours'
-      ) AS ok`,[canonical,mobile]);
-      const alreadyOpen=Boolean(open.rows[0]?.ok);
+      const windowState=await whatsappWindowState(mobile);
+      const alreadyOpen=Boolean(windowState.effective_open);
       await pool.query(`INSERT INTO booking_whatsapp_verifications(id,request_token_hash,mobile,kind,verification_code,verified_at,expires_at) VALUES($1,$2,$3,$4,$5,CASE WHEN $6 THEN NOW() ELSE NULL END,NOW()+INTERVAL '10 minutes')`,[id,hash(token),mobile,kind,code,alreadyOpen]);
       const message=`Verify my WhatsApp number for GuruVidya appointment • ${code}`;
       res.set('Cache-Control','no-store').json({success:true,data:{id,token,verified:alreadyOpen,window_open:alreadyOpen,expires_in_seconds:600,whatsapp_url:alreadyOpen?'':'https://wa.me/919821627725?text='+encodeURIComponent(message)}});
