@@ -2968,10 +2968,6 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     const buttonReplyTitle = normalizeLooseText(extractButtonReplyTitle(payload));
 
     // BotSailor can deliver a button tap as a normal user_message.
-    // Prefer BotSailor's top-level user_message, but also accept the nested
-    // WhatsApp payload shapes used by webhook relays. This is important for
-    // booking verification because the browser must become verified from the
-    // FIRST incoming WhatsApp message, without asking the student to click again.
     const webhookUserMessageRaw = normalizeLooseText(
       payload.user_message ||
       payload.userMessage ||
@@ -2979,11 +2975,6 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       payload.messageText ||
       payload.reply_text ||
       payload.replyText ||
-      payload.text?.body ||
-      payload.message?.text?.body ||
-      payload.messages?.[0]?.text?.body ||
-      payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.text?.body ||
-      extractButtonReplyTitle(payload) ||
       ""
     );
 
@@ -3095,34 +3086,41 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     }
 
 
-    // Stage 2 booking WhatsApp verification.
-    // BotSailor's Flow Builder "Forward Data to Webhook" can place the triggering
-    // text/code in different/nested fields than the normal global webhook. Search
-    // the complete payload so the FIRST GV-WA-* message can verify the browser
-    // session while its 2-second status polling is already running.
-    const verificationPayloadText = (() => {
-      try { return JSON.stringify(payload); } catch { return ''; }
-    })();
-    const verificationMatch = `${webhookUserMessageRaw || ''} ${verificationPayloadText}`.match(/\bGV-WA-[A-F0-9]{6}\b/i);
-    if (verificationMatch) {
+    // Stage 2 booking WhatsApp verification. A verification is accepted only
+    // after a real incoming customer message arrives from the exact number.
+    if (isCustomerEvent) {
+      const verificationText = String(webhookUserMessageRaw || '').trim();
+      const verificationMatch = verificationText.match(/\bGV-WA-[A-F0-9]{6}\b/i);
       const canonical = botSailorPhone(mobile);
       const national = canonical.startsWith('91') && canonical.length === 12 ? canonical.slice(2) : canonical;
-      const verified = await pool.query(
-        `UPDATE booking_whatsapp_verifications
-           SET verified_at=NOW()
-         WHERE UPPER(verification_code)=UPPER($1)
-           AND mobile=$2
-           AND expires_at>NOW()
-           AND verified_at IS NULL
-         RETURNING id,kind`,
-        [verificationMatch[0], national]
-      );
-      if (verified.rowCount) {
-        console.log('BOOKING WHATSAPP VERIFIED', { id: verified.rows[0].id, kind: verified.rows[0].kind, mobile: canonical });
-        // The dedicated BotSailor GV-WA- flow sends the fixed success message.
-        // Do not send another API acknowledgement here, otherwise the customer
-        // can receive the same verification confirmation twice.
+      let verified;
+      if (verificationMatch) {
+        // Required verification: unique code + exact sender number.
+        verified = await pool.query(
+          `UPDATE booking_whatsapp_verifications
+             SET verified_at=COALESCE(verified_at,NOW())
+           WHERE UPPER(verification_code)=UPPER($1)
+             AND mobile=$2
+             AND expires_at>NOW()
+           RETURNING id,kind`,
+          [verificationMatch[0], national]
+        );
+      } else if (/^VERIFY$/i.test(verificationText)) {
+        // Optional Parent/Guardian flow: VERIFY must come from the exact number.
+        // Only the newest live verification session for that number is accepted.
+        verified = await pool.query(
+          `UPDATE booking_whatsapp_verifications
+             SET verified_at=COALESCE(verified_at,NOW())
+           WHERE id=(
+             SELECT id FROM booking_whatsapp_verifications
+              WHERE mobile=$1 AND expires_at>NOW() AND verified_at IS NULL
+              ORDER BY created_at DESC LIMIT 1
+           )
+           RETURNING id,kind`,
+          [national]
+        );
       }
+      if (verified?.rowCount) console.log('BOOKING WHATSAPP VERIFIED', { id: verified.rows[0].id, kind: verified.rows[0].kind, mobile: canonical });
     }
 
 
