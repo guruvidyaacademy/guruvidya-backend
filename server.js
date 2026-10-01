@@ -3037,6 +3037,75 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       });
     }
 
+    // Booking WhatsApp verification must not depend on BotSailor putting the
+    // incoming text in one particular payload field. The Verification automation
+    // can forward the matched text/code in nested/custom fields, so scan the full
+    // payload for the exact GV-WA code (or the explicit VERIFY trigger).
+    // Persist the matched signal first; this gives the browser poller durable
+    // evidence, marks the exact active session verified and clears a forced CLOSED
+    // test override immediately.
+    const bookingCanonical = botSailorPhone(mobile);
+    const bookingNational = bookingCanonical.startsWith("91") && bookingCanonical.length === 12
+      ? bookingCanonical.slice(2)
+      : bookingCanonical;
+    const bookingPayloadStrings = collectWebhookStrings(payload).map(v => String(v || "").trim()).filter(Boolean);
+    const bookingCodeSignal = bookingPayloadStrings
+      .map(v => v.match(/\bGV-WA-[A-F0-9]{6}\b/i)?.[0] || "")
+      .find(Boolean) || "";
+    const bookingVerifySignal = bookingPayloadStrings.some(v => /^VERIFY$/i.test(v));
+
+    if (bookingCodeSignal || bookingVerifySignal) {
+      const bookingSignalText = bookingCodeSignal || "VERIFY";
+      const bookingMessageId = String(payload.wa_message_id || payload.message_id || payload.id || "").trim()
+        || `booking_verify_${randomUUID()}`;
+      const bookingEvent = await pool.query(
+        `INSERT INTO whatsapp_window_events(mobile,message_id,message_text)
+         VALUES($1,$2,$3)
+         ON CONFLICT DO NOTHING
+         RETURNING received_at`,
+        [bookingCanonical, bookingMessageId, bookingSignalText]
+      );
+      const bookingReceivedAt = bookingEvent.rows[0]?.received_at || new Date();
+
+      let bookingVerifiedSession = null;
+      if (bookingCodeSignal) {
+        const vr = await pool.query(
+          `UPDATE booking_whatsapp_verifications
+           SET verified_at=COALESCE(verified_at,$3)
+           WHERE mobile=$1
+             AND UPPER(verification_code)=UPPER($2)
+             AND expires_at>$3 AND created_at<=$3
+           RETURNING id`,
+          [bookingNational, bookingCodeSignal, bookingReceivedAt]
+        );
+        bookingVerifiedSession = vr.rows[0] || null;
+      } else {
+        const vr = await pool.query(
+          `UPDATE booking_whatsapp_verifications
+           SET verified_at=COALESCE(verified_at,$2)
+           WHERE id=(
+             SELECT id FROM booking_whatsapp_verifications
+             WHERE mobile=$1 AND verified_at IS NULL
+               AND expires_at>$2 AND created_at<=$2
+             ORDER BY created_at DESC LIMIT 1
+           )
+           RETURNING id`,
+          [bookingNational, bookingReceivedAt]
+        );
+        bookingVerifiedSession = vr.rows[0] || null;
+      }
+
+      if (bookingVerifiedSession) {
+        await pool.query('DELETE FROM booking_whatsapp_window_test_overrides WHERE mobile=$1',[bookingNational]);
+        console.log("BOOKING WHATSAPP VERIFIED SIGNAL", {
+          mobile: bookingNational,
+          verificationId: bookingVerifiedSession.id,
+          signal: bookingSignalText,
+          messageId: bookingMessageId
+        });
+      }
+    }
+
     // Global incoming webhook is a chat event, separate from the course HTTP API.
     // Update every existing record for this phone, regardless of lead age.
     // Never create a lead or increment enquiry_count just because someone chats.
