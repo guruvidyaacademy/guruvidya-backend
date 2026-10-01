@@ -460,6 +460,19 @@ async function initDatabase() {
       payload JSONB NOT NULL DEFAULT '{}'::jsonb,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS booking_whatsapp_verifications (
+      id UUID PRIMARY KEY,
+      token_hash TEXT NOT NULL,
+      mobile TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('student','parent')),
+      verification_code TEXT NOT NULL UNIQUE,
+      verified_at TIMESTAMPTZ,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_booking_wa_verify_mobile
+      ON booking_whatsapp_verifications (mobile, created_at DESC);
   `);
 
   await pool.query(`
@@ -3751,7 +3764,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     res.status(500).json({ status: "error", message: err.message });
   }
 });
-
+\n\n// ---------- PUBLIC BOOKING WHATSAPP VERIFICATION ----------\n// Required flow uses a one-time GV-WA code. Optional Parent/Guardian may send\n// the literal word VERIFY from the exact number. The browser polls /status and\n// changes to Verified as soon as the BotSailor incoming webhook marks the row.\napp.post('/api/public/booking/whatsapp-verification/start', async (req, res) => {\n  try {\n    const kind = String(req.body?.kind || '').toLowerCase();\n    const raw = cleanMobile(req.body?.mobile || '');\n    const mobile = raw.length === 12 && raw.startsWith('91') ? raw.slice(2) : raw.slice(-10);\n    if (!['student','parent'].includes(kind) || !/^\\d{10}$/.test(mobile)) {\n      return res.status(400).json({ error: 'Valid WhatsApp number is required.' });\n    }\n\n    // Keep the already-approved 24-hour-window shortcut unchanged.\n    const openQ = await pool.query(\n      `SELECT last_customer_message_at FROM leads\n       WHERE RIGHT(REGEXP_REPLACE(COALESCE(mobile,''),'[^0-9]','','g'),10)=$1\n         AND last_customer_message_at IS NOT NULL\n       ORDER BY last_customer_message_at DESC LIMIT 1`, [mobile]\n    );\n    if (openQ.rows[0] && hasOpenWhatsappWindow(openQ.rows[0])) {\n      return res.json({ verified:true, window_open:true, mobile });\n    }\n\n    const id = randomUUID();\n    const token = randomBytes(24).toString('hex');\n    const tokenHash = createHash('sha256').update(token).digest('hex');\n    const code = 'GV-WA-' + randomBytes(3).toString('hex').toUpperCase();\n    await pool.query(\n      `INSERT INTO booking_whatsapp_verifications\n       (id,token_hash,mobile,kind,verification_code,expires_at)\n       VALUES($1,$2,$3,$4,$5,NOW()+INTERVAL '15 minutes')`,\n      [id, tokenHash, mobile, kind, code]\n    );\n    const text = `Verify my WhatsApp number for GuruVidya appointment • ${code}`;\n    return res.json({\n      id, token, mobile, kind, verification_code:code, verified:false, window_open:false,\n      whatsapp_url:`https://wa.me/919821627725?text=${encodeURIComponent(text)}`\n    });\n  } catch (err) {\n    console.error('BOOKING WA VERIFY START ERROR', err);\n    return res.status(500).json({ error:'Could not start WhatsApp verification.' });\n  }\n});\n\napp.get('/api/public/booking/whatsapp-verification/status', async (req, res) => {\n  try {\n    const id = String(req.query.id || '');\n    const token = String(req.query.token || '');\n    if (!id || !token) return res.status(400).json({ error:'Verification session is required.' });\n    const tokenHash = createHash('sha256').update(token).digest('hex');\n    const q = await pool.query(\n      `SELECT id,mobile,kind,verified_at,expires_at FROM booking_whatsapp_verifications\n       WHERE id=$1 AND token_hash=$2 LIMIT 1`, [id, tokenHash]\n    );\n    if (!q.rowCount) return res.status(404).json({ error:'Verification session not found.' });\n    const row=q.rows[0];\n    return res.json({\n      verified:Boolean(row.verified_at),\n      expired:!row.verified_at && new Date(row.expires_at).getTime() <= Date.now(),\n      kind:row.kind, mobile:row.mobile\n    });\n  } catch (err) {\n    console.error('BOOKING WA VERIFY STATUS ERROR', err);\n    return res.status(500).json({ error:'Could not check WhatsApp verification.' });\n  }\n});\n
 
 async function loadBookingWhatsAppContext(bookingRef) {
   // Booking may not have lead_id populated even though the same student's WhatsApp
