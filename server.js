@@ -3901,7 +3901,7 @@ app.get('/api/public/booking/whatsapp-card/:ref.png', async (req,res)=>{
   }catch(e){console.error('WhatsApp booking card error:',e.message);res.status(500).end();}
 });
 
-async function sendBookingSessionConfirmation(b, token, action='booking_confirmation_24h') {
+async function sendBookingSessionConfirmation(b, token, action='booking_confirmation_24h', options={}) {
   // FINAL APPROVED 28-Sep within-24h WhatsApp design.
   // Use one native WhatsApp interactive card with three clean action buttons.
   // WhatsApp itself controls the exact button radius/colour; CRM controls the
@@ -3909,15 +3909,20 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   const {date,time}=bookingIstParts(b.starts_at);
   const place=b.mode==='offline'?(b.offline_location_name||'Head Office - Tagore Garden'):'Online Counselling';
   const address=b.mode==='offline'?(b.offline_address||'GuruVidya Academy, New Delhi'):'Meeting link is available in your booking.';
-  // BotSailor requires a real non-empty message body for interactive buttons.
-  // Keep the approved card/image/buttons unchanged and restore the short confirmation text.
-  const msg='Appointment confirmed.';
+  // Preserve the exact Server51 working BotSailor message body.
+  // Do not replace this with blank/invisible/emoji-only content: delivery regressed in testing.
+  const msg=options.rescheduled===true?`Appointment Reschedule Confirmed.\nNew Date: ${date}\nNew Time: ${time}`:'Appointment confirmed.';
   const result=await sendBotSailorReplyButtons(
     {mobile:b.student_mobile,name:b.student_name,course:b.course},
     msg,
     [
       {id:'booking_manage',title:'Manage Appointment'},
-      {id:'booking_maps',title:'View on Google Maps'},
+      String(b.mode || '').trim().toLowerCase() === 'offline'
+        ? {id:'booking_maps',title:'View on Google Maps'}
+        // Keep the proven booking_maps postback id for BotSailor/Meta delivery compatibility.
+        // The visible online title changes, and the webhook already routes booking_maps
+        // to the meeting link whenever the latest booking mode is online.
+        : {id:'booking_maps',title:'Join Online Meeting'},
       {id:'booking_help',title:'Call / WhatsApp Us'}
     ],
     action,
@@ -3926,16 +3931,60 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
       mediaType:'image',
     }
   );
-  const deliveryStatus=result.success?'sent':'failed';
-  const deliveryDetail=result.message||result.status||'';
-  const updatedDelivery=await pool.query(`UPDATE booking_delivery_logs
-    SET status=$3,detail=$4,created_at=NOW()
-    WHERE booking_id=$1 AND event=$2 AND recipient='student' AND channel='whatsapp'`,
-    [b.id,action,deliveryStatus,deliveryDetail]);
-  if(!updatedDelivery.rowCount){
-    await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail)
-      VALUES($1,$2,'student','whatsapp',$3,$4)`,
+  // Keep the proven three-button confirmation untouched. Send Cancel/Reschedule as
+  // a separate native WhatsApp interactive message immediately after the first send.
+  // IMPORTANT: do this BEFORE delivery-log persistence. Some older databases do not
+  // yet have the unique constraint required by the legacy ON CONFLICT statement; that
+  // logging error must never block a customer-facing WhatsApp action message.
+  let manageResult=null;
+  if(result.success){
+    // Media cards can take a moment to render on WhatsApp even after Meta accepts
+    // the send. An 8-second delivery gap gives the media card enough time to reach/render on
+    // WhatsApp before the change-options card, preventing it from appearing first.
+    await new Promise(resolve=>setTimeout(resolve,8000));
+    manageResult=await sendBotSailorReplyButtons(
+      {mobile:b.student_mobile,name:b.student_name,course:b.course},
+      `🗓️ *Need to make a change to your appointment?*\nUse the options below to cancel or reschedule.`,
+      [
+        {id:'booking_cancel',title:'Cancel'},
+        {id:'booking_reschedule',title:'Reschedule'}
+      ],
+      `${action}_change_options`
+    );
+    console.log('BOOKING CHANGE ACTION BUTTONS:', {
+      success:manageResult.success,
+      status:manageResult.status,
+      message:manageResult.message,
+      buttons:['Cancel','Reschedule']
+    });
+    if(manageResult.success){
+      const canonical=botSailorPhone(b.student_mobile);
+      await pool.query(`INSERT INTO booking_whatsapp_states(mobile,booking_id,booking_ref,state,payload,updated_at)
+        VALUES($1,$2,$3,'change_options',$4::jsonb,NOW())
+        ON CONFLICT(mobile) DO UPDATE SET booking_id=EXCLUDED.booking_id,booking_ref=EXCLUDED.booking_ref,state='change_options',payload=EXCLUDED.payload,updated_at=NOW()`,
+        [canonical,b.id,b.booking_ref,JSON.stringify({manage_token:String(token||'')})]);
+    }
+  }
+
+  // Delivery logging is non-critical and must not break customer-facing WhatsApp.
+  try{
+    const deliveryStatus=result.success?'sent':'failed';
+    const deliveryDetail=result.message||result.status||'';
+    const updatedDelivery=await pool.query(`UPDATE booking_delivery_logs
+      SET status=$3,detail=$4,created_at=NOW()
+      WHERE booking_id=$1 AND event=$2 AND recipient='student' AND channel='whatsapp'`,
       [b.id,action,deliveryStatus,deliveryDetail]);
+    if(!updatedDelivery.rowCount){
+      await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail)
+        VALUES($1,$2,'student','whatsapp',$3,$4)`,
+        [b.id,action,deliveryStatus,deliveryDetail]);
+    }
+  }catch(logErr){
+    console.warn('BOOKING DELIVERY LOG SKIPPED:',logErr.message);
+  }
+
+  if(result.success){
+    return { ...result, changeOptions:manageResult, mode:'interactive_final_design_plus_change_options' };
   }
   return { ...result, mode:'interactive_final_design' };
 }
