@@ -3214,35 +3214,121 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     const bookingAction = [buttonReplyId, buttonReplyTitle, webhookUserMessage]
       .map(v => normalizeLooseText(v));
     const bookingActionType = bookingAction.includes('booking_manage') || bookingAction.includes('manage appointment') ? 'manage'
+      : bookingAction.includes('booking_join') || bookingAction.includes('join online meeting') ? 'join'
       : bookingAction.includes('booking_maps') || bookingAction.includes('view on google maps') ? 'maps'
       : bookingAction.includes('booking_help') || bookingAction.includes('call / whatsapp us') || bookingAction.includes('call whatsapp us') ? 'help'
+      : bookingAction.includes('booking_cancel_yes') || bookingAction.includes('yes, cancel') ? 'cancel_yes'
+      : bookingAction.includes('booking_cancel') || bookingAction.includes('cancel') ? 'cancel'
+      : bookingAction.includes('booking_reschedule') || bookingAction.includes('reschedule') ? 'reschedule'
       : '';
     if (bookingActionType) {
       const canonical=botSailorPhone(mobile);
       const national=canonical.startsWith('91')&&canonical.length===12?canonical.slice(2):canonical;
-      const br=await pool.query(`SELECT b.booking_ref FROM student_bookings b
-        WHERE regexp_replace(COALESCE(b.student_mobile,''),'[^0-9]','','g') IN ($1,$2)
-          AND b.status IN ('requested','approved','confirmed','rescheduled')
-        ORDER BY b.created_at DESC LIMIT 1`,[canonical,national]);
-      if(!br.rows[0]) return res.status(200).json({status:'ignored',message:'No active booking found for this mobile'});
-      const booking=await loadBookingWhatsAppContext(br.rows[0].booking_ref);
+      // Cancel/Reschedule buttons must stay tied to the booking that created them.
+      // Never fall through to another active booking on the same mobile number.
+      let bookingRef='';
+      if(['cancel','cancel_yes','reschedule'].includes(bookingActionType)){
+        const stateQ=await pool.query(`SELECT booking_ref,payload FROM booking_whatsapp_states WHERE mobile=$1 LIMIT 1`,[canonical]);
+        bookingRef=String(stateQ.rows[0]?.booking_ref||'').trim();
+      }
+      if(!bookingRef){
+        const br=await pool.query(`SELECT b.booking_ref FROM student_bookings b
+          WHERE regexp_replace(COALESCE(b.student_mobile,''),'[^0-9]','','g') IN ($1,$2)
+            AND b.status IN ('requested','approved','confirmed','rescheduled')
+          ORDER BY b.created_at DESC LIMIT 1`,[canonical,national]);
+        bookingRef=String(br.rows[0]?.booking_ref||'').trim();
+      }
+      if(!bookingRef) return res.status(200).json({status:'ignored',message:'No booking found for this action'});
+      const booking=await loadBookingWhatsAppContext(bookingRef);
       if(!booking) return res.status(200).json({status:'ignored',message:'Booking not found'});
+      if(bookingActionType==='reschedule' && String(booking.status||'').toLowerCase()==='cancelled'){
+        const closed=await sendBotSailorText(
+          {mobile:booking.student_mobile,name:booking.student_name,course:booking.course},
+          `ℹ️ *This appointment is already cancelled.*\n\nBooking: *${booking.booking_ref}*\n\nPlease book a new appointment if you would like to schedule counselling again.`,
+          'booking_cancelled_reschedule_blocked'
+        );
+        return res.status(closed.success?200:400).json({status:closed.success?'ok':'error',action:'booking_cancelled_reschedule_blocked'});
+      }
       let reply='';
-      if(bookingActionType==='manage') {
-        // Rotate the private token each time the customer requests the manage link.
-        const token=randomBytes(32).toString('hex');
-        const tokenHash=createHash('sha256').update(token).digest('hex');
-        await pool.query(`UPDATE student_bookings SET token_hash=$1,updated_at=NOW() WHERE id=$2`,[tokenHash,booking.id]);
+      if(bookingActionType==='cancel') {
+        const confirmResult=await sendBotSailorReplyButtons(
+          {mobile:booking.student_mobile,name:booking.student_name,course:booking.course},
+          `⚠️ *Cancel this appointment?*\n\nBooking: *${booking.booking_ref}*\n\nPlease confirm your choice below.`,
+          [
+            {id:'booking_cancel_yes',title:'Yes, Cancel'},
+            {id:'booking_reschedule',title:'Reschedule'}
+          ],
+          'booking_cancel_confirm'
+        );
+        return res.status(confirmResult.success?200:400).json({status:confirmResult.success?'ok':'error',action:'booking_cancel_confirm'});
+      } else if(bookingActionType==='cancel_yes') {
+        await pool.query(`UPDATE student_bookings SET status='cancelled',customer_response='cancelled',response_at=NOW(),updated_at=NOW() WHERE id=$1`,[booking.id]);
+        // Keep the cancelled booking bound to this WhatsApp action set so an old
+        // Reschedule button can never jump to a different booking on the same mobile.
+        await pool.query(`INSERT INTO booking_whatsapp_states(mobile,booking_id,booking_ref,state,payload,updated_at)
+          VALUES($1,$2,$3,'cancelled','{}'::jsonb,NOW())
+          ON CONFLICT(mobile) DO UPDATE SET booking_id=EXCLUDED.booking_id,booking_ref=EXCLUDED.booking_ref,state='cancelled',payload='{}'::jsonb,updated_at=NOW()`,
+          [canonical,booking.id,booking.booking_ref]);
+        reply=`✅ *Appointment Cancelled*\n\nYour appointment *${booking.booking_ref}* has been cancelled successfully.\n\nIf you need counselling later, please book a new appointment.`;
+      } else if(bookingActionType==='reschedule') {
+        // Reuse the currently valid private token when available. Rotating it here
+        // invalidates an already-open browser page and makes refresh show Booking not found.
+        const stateTokenQ=await pool.query(`SELECT payload->>'manage_token' AS manage_token FROM booking_whatsapp_states WHERE mobile=$1 AND booking_ref=$2 LIMIT 1`,[canonical,booking.booking_ref]);
+        let token=String(stateTokenQ.rows[0]?.manage_token||'');
+        const currentHash=String(booking.token_hash||'');
+        if(!/^[a-f0-9]{64}$/i.test(token) || createHash('sha256').update(token).digest('hex')!==currentHash){
+          token=randomBytes(32).toString('hex');
+          const tokenHash=createHash('sha256').update(token).digest('hex');
+          await pool.query(`UPDATE student_bookings SET token_hash=$1,updated_at=NOW() WHERE id=$2`,[tokenHash,booking.id]);
+          await pool.query(`UPDATE booking_whatsapp_states SET payload=jsonb_set(COALESCE(payload,'{}'::jsonb),'{manage_token}',to_jsonb($1::text),true),updated_at=NOW() WHERE mobile=$2 AND booking_ref=$3`,[token,canonical,booking.booking_ref]);
+        }
+        const rescheduleUrl=bookingManageUrl(booking,token)+'&action=reschedule';
+        reply=`📅 *Reschedule Appointment*\n\nOpen the secure link below to choose a new date and available time slot:\n\n${rescheduleUrl}`;
+      } else if(bookingActionType==='manage') {
+        // Keep the same valid token so an open booking page remains refreshable.
+        const stateTokenQ=await pool.query(`SELECT payload->>'manage_token' AS manage_token FROM booking_whatsapp_states WHERE mobile=$1 AND booking_ref=$2 LIMIT 1`,[canonical,booking.booking_ref]);
+        let token=String(stateTokenQ.rows[0]?.manage_token||'');
+        const currentHash=String(booking.token_hash||'');
+        if(!/^[a-f0-9]{64}$/i.test(token) || createHash('sha256').update(token).digest('hex')!==currentHash){
+          token=randomBytes(32).toString('hex');
+          const tokenHash=createHash('sha256').update(token).digest('hex');
+          await pool.query(`UPDATE student_bookings SET token_hash=$1,updated_at=NOW() WHERE id=$2`,[tokenHash,booking.id]);
+          await pool.query(`UPDATE booking_whatsapp_states SET payload=jsonb_set(COALESCE(payload,'{}'::jsonb),'{manage_token}',to_jsonb($1::text),true),updated_at=NOW() WHERE mobile=$2 AND booking_ref=$3`,[token,canonical,booking.booking_ref]);
+        }
         reply=`🔗 *Manage Appointment*\n${bookingManageUrl(booking,token)}\n\nUse this secure link to reschedule or cancel your appointment.`;
       } else if(bookingActionType==='maps') {
         reply=booking.mode==='offline'
           ? `📍 *Head Office Location*\n${booking.offline_location_name||'Head Office - Tagore Garden'}\n${booking.offline_address||''}\n\n${booking.offline_map_url||'Google Maps link is not configured yet.'}`
           : `🎥 *Online Counselling*\n${booking.meeting_link||'Your meeting link will be shared here.'}`;
+      } else if(bookingActionType==='join') {
+        reply=`🎥 *Join Online Meeting*\n${booking.meeting_link||'Your meeting link will be shared here.'}`;
       } else {
         reply=`☎️ *Need Help?*\nCall / WhatsApp GuruVidya\n+91 98216 27725\nhttps://wa.me/919821627725`;
       }
       const actionResult=await sendBotSailorText({mobile:booking.student_mobile,name:booking.student_name,course:booking.course},reply,`booking_action_${bookingActionType}`);
       return res.status(actionResult.success?200:400).json({status:actionResult.success?'ok':'error',action:`booking_action_${bookingActionType}`});
+    }
+
+    // WhatsApp-only reschedule continuation. Keep the current booking unchanged until
+    // the requested date/time is validated/confirmed by the booking team.
+    if (isCustomerEvent && webhookUserMessageRaw && !buttonReplyId && !buttonReplyTitle) {
+      const canonical=botSailorPhone(mobile);
+      const stateQ=await pool.query(`SELECT * FROM booking_whatsapp_states WHERE mobile=$1 AND state='awaiting_reschedule_preference' LIMIT 1`,[canonical]);
+      const state=stateQ.rows[0];
+      if(state){
+        const preference=String(webhookUserMessageRaw||'').trim();
+        if(preference){
+          await pool.query(`UPDATE booking_whatsapp_states SET state='reschedule_requested',payload=jsonb_build_object('preference',$2),updated_at=NOW() WHERE mobile=$1`,[canonical,preference]);
+          const br=await pool.query(`SELECT student_mobile,student_name,course,booking_ref FROM student_bookings WHERE id=$1 LIMIT 1`,[state.booking_id]);
+          const b=br.rows[0];
+          if(b){
+            const rr=await sendBotSailorText({mobile:b.student_mobile,name:b.student_name,course:b.course},
+              `📅 *Reschedule Request Received*\n\nPreferred date/time: *${preference}*\n\nBooking: *${b.booking_ref}*\n\nOur team will confirm the available slot here on WhatsApp.`,
+              'booking_reschedule_preference_received');
+            return res.status(rr.success?200:400).json({status:rr.success?'ok':'error',action:'booking_reschedule_preference_received'});
+          }
+        }
+      }
     }
 
     // Booking gate template: once the student taps Confirm Appointment, the inbound
