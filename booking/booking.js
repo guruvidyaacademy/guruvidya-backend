@@ -90,6 +90,9 @@ export async function initBooking(pool) {
   ALTER TABLE whatsapp_window_events ADD COLUMN IF NOT EXISTS message_text TEXT;
   CREATE TABLE IF NOT EXISTS booking_whatsapp_window_test_overrides (
     mobile TEXT PRIMARY KEY, forced_open BOOLEAN NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+  CREATE TABLE IF NOT EXISTS booking_whatsapp_window_test_slots (
+    slot SMALLINT PRIMARY KEY CHECK(slot IN (1,2)), mobile TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );`);
 
 }
@@ -210,13 +213,38 @@ export function installBookingRoutes(app,pool,hooks={}) {
       res.set('Cache-Control','no-store').json({success:true,data:result});
     }catch(e){fail(res,500,'Calendar availability unavailable');}
   });
+  app.get('/api/admin/booking/whatsapp-window-test/saved',admin,async(req,res)=>{
+    try{
+      const r=await pool.query('SELECT slot,mobile FROM booking_whatsapp_window_test_slots ORDER BY slot');
+      const saved={1:'',2:''}; for(const row of r.rows)saved[row.slot]=row.mobile||'';
+      res.set('Cache-Control','no-store').json({success:true,data:saved});
+    }catch(e){fail(res,500,'Unable to load saved WhatsApp test numbers');}
+  });
   app.get('/api/admin/booking/whatsapp-window-test',admin,async(req,res)=>{
-    try{res.set('Cache-Control','no-store').json({success:true,data:await whatsappWindowState(req.query.mobile)});}catch(e){fail(res,400,e.message||'Unable to check WhatsApp window');}
+    try{
+      const mobile=bookingPhone(req.query.mobile),slot=Number(req.query.slot||0);
+      if(!/^\d{10}$/.test(mobile))return fail(res,400,'Enter a valid 10-digit mobile number');
+      if(slot===1||slot===2){
+        const prior=await pool.query('SELECT mobile FROM booking_whatsapp_window_test_slots WHERE slot=$1',[slot]);
+        const oldMobile=bookingPhone(prior.rows[0]?.mobile||'');
+        if(/^\d{10}$/.test(oldMobile)&&oldMobile!==mobile)await pool.query('DELETE FROM booking_whatsapp_window_test_overrides WHERE mobile=$1',[oldMobile]);
+        await pool.query(`INSERT INTO booking_whatsapp_window_test_slots(slot,mobile,updated_at) VALUES($1,$2,NOW()) ON CONFLICT(slot) DO UPDATE SET mobile=EXCLUDED.mobile,updated_at=NOW()`,[slot,mobile]);
+      }
+      res.set('Cache-Control','no-store').json({success:true,data:await whatsappWindowState(mobile)});
+    }catch(e){fail(res,400,e.message||'Unable to check WhatsApp window');}
   });
   app.post('/api/admin/booking/whatsapp-window-test',admin,async(req,res)=>{
     try{
-      const mobile=bookingPhone(req.body?.mobile),mode=String(req.body?.mode||'');
+      const mobile=bookingPhone(req.body?.mobile),mode=String(req.body?.mode||''),slot=Number(req.body?.slot||0);
       if(!/^\d{10}$/.test(mobile)||!['open','closed','real'].includes(mode))return fail(res,400,'Enter a valid 10-digit mobile number and test mode');
+      if(slot===1||slot===2){
+        const prior=await pool.query('SELECT mobile FROM booking_whatsapp_window_test_slots WHERE slot=$1',[slot]);
+        const oldMobile=bookingPhone(prior.rows[0]?.mobile||'');
+        if(/^\d{10}$/.test(oldMobile)&&oldMobile!==mobile){
+          await pool.query('DELETE FROM booking_whatsapp_window_test_overrides WHERE mobile=$1',[oldMobile]);
+        }
+        await pool.query(`INSERT INTO booking_whatsapp_window_test_slots(slot,mobile,updated_at) VALUES($1,$2,NOW()) ON CONFLICT(slot) DO UPDATE SET mobile=EXCLUDED.mobile,updated_at=NOW()`,[slot,mobile]);
+      }
       if(mode==='real')await pool.query('DELETE FROM booking_whatsapp_window_test_overrides WHERE mobile=$1',[mobile]);
       else await pool.query(`INSERT INTO booking_whatsapp_window_test_overrides(mobile,forced_open,updated_at) VALUES($1,$2,NOW()) ON CONFLICT(mobile) DO UPDATE SET forced_open=EXCLUDED.forced_open,updated_at=NOW()`,[mobile,mode==='open']);
       res.set('Cache-Control','no-store').json({success:true,data:await whatsappWindowState(mobile)});
