@@ -3912,8 +3912,20 @@ async function onBookingCreatedWhatsApp(created) {
   // already have an open customer-service window even when the CRM timestamp is stale.
   // First try the professional Booking Confirmation flow. If BotSailor rejects it,
   // fall back to the approved outside-24h gate template.
-  const sessionResult=await sendBookingSessionConfirmation(b,created.manage_token,'booking_confirmation_24h');
+  let sessionResult=await sendBookingSessionConfirmation(b,created.manage_token,'booking_confirmation_24h');
   if(sessionResult?.success) return sessionResult;
+
+  // A just-completed WhatsApp verification can reach our webhook a fraction before
+  // Meta/BotSailor makes the refreshed 24-hour session usable for outbound interactive
+  // messages. For a student number that this booking has already verified, retry the
+  // same approved confirmation once after a short propagation delay before falling
+  // back to the outside-24h gate template.
+  if(created.student_whatsapp_verified===true){
+    await new Promise(resolve=>setTimeout(resolve,1200));
+    sessionResult=await sendBookingSessionConfirmation(b,created.manage_token,'booking_confirmation_24h_retry');
+    if(sessionResult?.success) return sessionResult;
+  }
+
   return sendBookingGateTemplate(b);
 }
 
