@@ -402,4 +402,39 @@ $('cancel').onclick=()=>action('cancel');$('reschedule').onclick=()=>action('res
 @media (min-width:761px) and (max-height:600px){
   .gv-wa-combined:not(:has(.gv-combo-outcome)){transform:scale(.68)!important}
 }
-</style>\n<style>\n/* 02 Oct mobile final polish: spacing, uniform blue benefits, names in single verification popups */\n.gv-wa-number .gv-wa-person-name{font-size:16px!important;margin:1px 0 7px!important;line-height:1.2!important}\n@media(max-width:760px){\n  /* Stage 2: professional number/tick breathing room. */\n  .stage2-phone-field{grid-template-columns:minmax(0,39%) minmax(0,61%)!important;gap:8px!important}\n  .stage2-phone-main input{padding-right:50px!important}\n  .stage2-phone-main .wa-window-tick{right:8px!important}\n  /* Combined blue banner: every benefit uses exactly the same typography. */\n  .gv-wa-combined .gv-combo-benefits>div,.gv-wa-combined .gv-combo-benefits>div:first-child,.gv-wa-combined .gv-combo-benefits>div span,.gv-wa-combined .gv-combo-benefits>div:first-child span{font-size:8.5px!important;line-height:1.18!important;font-weight:500!important}\n  /* Single required/optional popups use the same mobile blue WhatsApp banner. */\n  .gv-wa-card.gv-wa-required:not(.gv-wa-combined){display:grid!important;grid-template-columns:1fr!important;grid-template-rows:auto minmax(0,1fr)!important;width:100%!important;max-width:100%!important;height:calc(100dvh - 12px)!important;max-height:calc(100dvh - 12px)!important;overflow:hidden!important;border-radius:16px!important}\n  .gv-wa-card.gv-wa-required:not(.gv-wa-combined)>.gv-wa-blue{display:grid!important;visibility:visible!important;opacity:1!important;position:relative!important;width:100%!important;min-height:112px!important;padding:12px 76px 11px 14px!important;background:linear-gradient(145deg,#087bf4,#0863e9 60%,#0a48c7)!important;color:#fff!important;overflow:hidden!important}\n  .gv-wa-card.gv-wa-required:not(.gv-wa-combined)>.gv-wa-blue h3{font-size:20px!important;line-height:1.06!important;margin:0 0 5px!important;color:#fff!important}.gv-wa-card.gv-wa-required:not(.gv-wa-combined)>.gv-wa-blue h3 br{display:none!important}\n  .gv-wa-card.gv-wa-required:not(.gv-wa-combined)>.gv-wa-blue p{font-size:10px!important;line-height:1.3!important;margin:0!important;max-width:245px!important;color:#fff!important}\n  .gv-wa-card.gv-wa-required:not(.gv-wa-combined)>.gv-wa-blue .gv-wa-bigicon{display:grid!important;position:absolute!important;right:13px!important;bottom:13px!important;width:54px!important;height:54px!important;margin:0!important;border-radius:15px!important}.gv-wa-card.gv-wa-required:not(.gv-wa-combined)>.gv-wa-blue .gv-wa-bigicon svg{width:36px!important;height:36px!important}\n  .gv-wa-card.gv-wa-required:not(.gv-wa-combined)>.gv-wa-main{height:100%!important;min-height:0!important;overflow-y:auto!important;padding:16px 18px 20px!important;-webkit-overflow-scrolling:touch!important}\n  .gv-wa-card.gv-wa-required:not(.gv-wa-combined)>.gv-wa-close{color:#fff!important;z-index:50!important;top:8px!important;right:12px!important}\n  .gv-wa-single-optional .gv-wa-optional{width:100%!important;max-width:none!important}\n  .gv-wa-number{gap:10px!important}.gv-wa-number .meta{min-width:0!important}.gv-wa-number .meta strong{overflow-wrap:anywhere!important}\n}\n@media(max-width:390px){.stage2-phone-field{grid-template-columns:minmax(0,38%) minmax(0,62%)!important}.gv-wa-combined .gv-combo-benefits>div,.gv-wa-combined .gv-combo-benefits>div:first-child,.gv-wa-combined .gv-combo-benefits>div span,.gv-wa-combined .gv-combo-benefits>div:first-child span{font-size:8px!important}}\n</style>\n
+
+/* 02 Oct 11:41 PM mobile finishing fixes only */
+.gv-wa-number .gv-wa-person-name{font-size:16px!important;margin:1px 0 7px!important;line-height:1.2!important}
+@media(max-width:760px){
+  /* More usable room for 10-digit mobile + fixed breathing room before verified tick. */
+  .stage2-phone-field{grid-template-columns:minmax(0,37%) minmax(0,63%)!important;gap:8px!important}
+  .stage2-phone-main input{padding-right:60px!important}
+  .stage2-phone-main .wa-window-tick{right:10px!important}
+
+  /* All four blue-banner benefits use identical mobile typography. */
+  .gv-wa-combined .gv-combo-benefits,
+  .gv-wa-combined .gv-combo-benefits>div,
+  .gv-wa-combined .gv-combo-benefits>div:first-child,
+  .gv-wa-combined .gv-combo-benefits>div span,
+  .gv-wa-combined .gv-combo-benefits>div:first-child span{
+    font-size:8.5px!important;line-height:1.18!important;font-weight:500!important;
+  }
+
+  /* Single Student-required / Parent-optional popup keeps the same WhatsApp blue banner on mobile. */
+  .gv-wa-card.gv-wa-required:not(.gv-wa-combined){display:grid!important;grid-template-columns:1fr!important;grid-template-rows:auto minmax(0,1fr)!important;width:100%!important;max-width:100%!important;height:calc(100dvh - 12px)!important;max-height:calc(100dvh - 12px)!important;overflow:hidden!important;border-radius:16px!important}
+  .gv-wa-card.gv-wa-required:not(.gv-wa-combined)>.gv-wa-blue{display:grid!important;visibility:visible!important;opacity:1!important;position:relative!important;width:100%!important;min-height:112px!important;height:auto!important;padding:12px 76px 11px 14px!important;background:linear-gradient(145deg,#087bf4,#0863e9 60%,#0a48c7)!important;color:#fff!important;overflow:hidden!important}
+  .gv-wa-card.gv-wa-required:not(.gv-wa-combined)>.gv-wa-blue h3{display:block!important;font-size:20px!important;line-height:1.06!important;margin:0 0 5px!important;color:#fff!important}
+  .gv-wa-card.gv-wa-required:not(.gv-wa-combined)>.gv-wa-blue h3 br{display:none!important}
+  .gv-wa-card.gv-wa-required:not(.gv-wa-combined)>.gv-wa-blue p{display:block!important;font-size:10px!important;line-height:1.3!important;margin:0!important;max-width:245px!important;color:#fff!important}
+  .gv-wa-card.gv-wa-required:not(.gv-wa-combined)>.gv-wa-blue .gv-wa-bigicon{display:grid!important;position:absolute!important;right:13px!important;bottom:13px!important;width:54px!important;height:54px!important;margin:0!important;border-radius:15px!important;transform:none!important}
+  .gv-wa-card.gv-wa-required:not(.gv-wa-combined)>.gv-wa-blue .gv-wa-bigicon svg{width:36px!important;height:36px!important}
+  .gv-wa-card.gv-wa-required:not(.gv-wa-combined)>.gv-wa-main{height:100%!important;min-height:0!important;overflow-y:auto!important;padding:16px 18px 20px!important;-webkit-overflow-scrolling:touch!important}
+  .gv-wa-card.gv-wa-required:not(.gv-wa-combined)>.gv-wa-close{color:#fff!important;z-index:50!important;top:8px!important;right:12px!important}
+  .gv-wa-single-optional .gv-wa-optional{width:100%!important;max-width:none!important}
+  .gv-wa-number{gap:10px!important}.gv-wa-number .meta{min-width:0!important}.gv-wa-number .meta strong{overflow-wrap:anywhere!important}
+}
+@media(max-width:390px){
+  .stage2-phone-field{grid-template-columns:minmax(0,36%) minmax(0,64%)!important}
+  .gv-wa-combined .gv-combo-benefits,.gv-wa-combined .gv-combo-benefits>div,.gv-wa-combined .gv-combo-benefits>div:first-child,.gv-wa-combined .gv-combo-benefits>div span,.gv-wa-combined .gv-combo-benefits>div:first-child span{font-size:8px!important}
+}
+</style>
