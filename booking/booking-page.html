@@ -383,6 +383,15 @@ $('cancel').onclick=()=>action('cancel');$('reschedule').onclick=()=>action('res
   .gv-wa-card.gv-wa-required:not(.gv-wa-combined)>.gv-wa-blue .gv-single-benefits span{font-size:8px!important}
 }
 </style>
+
+<style>
+/* 03 Oct 01:09 — mobile required-number last-digit fit only.
+   Keep 16px to prevent iPhone Safari zoom; reserve tick space only when a tick actually exists. */
+@media(max-width:760px){
+  .stage2-phone-main input{padding-right:10px!important}
+  .stage2-phone-main:has(.wa-window-tick) input{padding-right:52px!important}
+}
+</style>
 </body></html><style>
 /* 01 Oct: Required WhatsApp popup viewport-fit fix — design/functionality unchanged */
 .gv-wa-card.gv-wa-required{height:auto!important;min-height:0!important;max-height:calc(100vh - 24px)!important;overflow:hidden!important}
