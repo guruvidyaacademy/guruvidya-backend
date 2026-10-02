@@ -3849,9 +3849,9 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   const {date,time}=bookingIstParts(b.starts_at);
   const place=b.mode==='offline'?(b.offline_location_name||'Head Office - Tagore Garden'):'Online Counselling';
   const address=b.mode==='offline'?(b.offline_address||'GuruVidya Academy, New Delhi'):'Meeting link is available in your booking.';
-  // Keep the interactive message body visually empty: all booking content is in the image.
-  // U+2063 is an invisible separator, used so BotSailor still receives a non-empty body.
-  const msg='\u2063';
+  // BotSailor requires a real non-empty message body for interactive buttons.
+  // Keep the approved card/image/buttons unchanged and restore the short confirmation text.
+  const msg='Appointment confirmed.';
   const result=await sendBotSailorReplyButtons(
     {mobile:b.student_mobile,name:b.student_name,course:b.course},
     msg,
@@ -3866,9 +3866,17 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
       mediaType:'image',
     }
   );
-  await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail)
-    VALUES($1,$2,'student','whatsapp',$3,$4) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status=EXCLUDED.status,detail=EXCLUDED.detail,created_at=NOW()`,
-    [b.id,action,result.success?'sent':'failed',result.message||result.status||'']);
+  const deliveryStatus=result.success?'sent':'failed';
+  const deliveryDetail=result.message||result.status||'';
+  const updatedDelivery=await pool.query(`UPDATE booking_delivery_logs
+    SET status=$3,detail=$4,created_at=NOW()
+    WHERE booking_id=$1 AND event=$2 AND recipient='student' AND channel='whatsapp'`,
+    [b.id,action,deliveryStatus,deliveryDetail]);
+  if(!updatedDelivery.rowCount){
+    await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail)
+      VALUES($1,$2,'student','whatsapp',$3,$4)`,
+      [b.id,action,deliveryStatus,deliveryDetail]);
+  }
   return { ...result, mode:'interactive_final_design' };
 }
 
@@ -3898,9 +3906,17 @@ async function sendBookingGateTemplate(b) {
   const t=await findBookingConfirmationTemplate();
   if(!t) return {success:false,status:'missing_template',message:'booking_confirmation_fifteen_min not imported'};
   const result=await sendBotSailorTemplate({mobile:b.student_mobile,name:b.student_name,course:b.course},t,bookingTemplateVariables(t,b));
-  await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail)
-    VALUES($1,'booking_confirmation_gate','student','whatsapp',$2,$3) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status=EXCLUDED.status,detail=EXCLUDED.detail,created_at=NOW()`,
-    [b.id,result.success?'sent':'failed',result.message||result.status||'']);
+  const gateStatus=result.success?'sent':'failed';
+  const gateDetail=result.message||result.status||'';
+  const updatedGate=await pool.query(`UPDATE booking_delivery_logs
+    SET status=$2,detail=$3,created_at=NOW()
+    WHERE booking_id=$1 AND event='booking_confirmation_gate' AND recipient='student' AND channel='whatsapp'`,
+    [b.id,gateStatus,gateDetail]);
+  if(!updatedGate.rowCount){
+    await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail)
+      VALUES($1,'booking_confirmation_gate','student','whatsapp',$2,$3)`,
+      [b.id,gateStatus,gateDetail]);
+  }
   return result;
 }
 
@@ -3912,20 +3928,8 @@ async function onBookingCreatedWhatsApp(created) {
   // already have an open customer-service window even when the CRM timestamp is stale.
   // First try the professional Booking Confirmation flow. If BotSailor rejects it,
   // fall back to the approved outside-24h gate template.
-  let sessionResult=await sendBookingSessionConfirmation(b,created.manage_token,'booking_confirmation_24h');
+  const sessionResult=await sendBookingSessionConfirmation(b,created.manage_token,'booking_confirmation_24h');
   if(sessionResult?.success) return sessionResult;
-
-  // A just-completed WhatsApp verification can reach our webhook a fraction before
-  // Meta/BotSailor makes the refreshed 24-hour session usable for outbound interactive
-  // messages. For a student number that this booking has already verified, retry the
-  // same approved confirmation once after a short propagation delay before falling
-  // back to the outside-24h gate template.
-  if(created.student_whatsapp_verified===true){
-    await new Promise(resolve=>setTimeout(resolve,1200));
-    sessionResult=await sendBookingSessionConfirmation(b,created.manage_token,'booking_confirmation_24h_retry');
-    if(sessionResult?.success) return sessionResult;
-  }
-
   return sendBookingGateTemplate(b);
 }
 
