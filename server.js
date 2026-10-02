@@ -4128,12 +4128,19 @@ async function onBookingCreatedWhatsApp(created) {
   return sendBookingGateTemplate(b);
 }
 
+
+async function onBookingRescheduledWhatsApp(created) {
+  const b=await loadBookingWhatsAppContext(created.booking_ref);
+  if(!b||!b.student_mobile) return {success:false,status:'no_student_mobile'};
+  return sendBookingSessionConfirmation(b,created.manage_token,'booking_reschedule_confirmation_24h',{rescheduled:true});
+}
+
 // Kept for compatibility with any older code paths.
 async function sendWhatsAppMessage(phone, message) {
   return sendBotSailorText({ mobile: phone, name: "Student", course: "" }, message, "legacy_send");
 }
 
-installBookingRoutes(app, pool, { onBookingCreated: onBookingCreatedWhatsApp });
+installBookingRoutes(app, pool, { onBookingCreated: onBookingCreatedWhatsApp, onBookingRescheduled: onBookingRescheduledWhatsApp });
 
 async function bootstrap() {
   try {
