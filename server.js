@@ -3233,7 +3233,8 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       }
       if(!bookingRef){
         const br=await pool.query(`SELECT b.booking_ref FROM student_bookings b
-          WHERE regexp_replace(COALESCE(b.student_mobile,''),'[^0-9]','','g') IN ($1,$2)
+          WHERE (regexp_replace(COALESCE(b.student_mobile,''),'[^0-9]','','g') IN ($1,$2)
+              OR regexp_replace(COALESCE(b.parent_mobile,''),'[^0-9]','','g') IN ($1,$2))
             AND b.status IN ('requested','approved','confirmed','rescheduled')
           ORDER BY b.created_at DESC LIMIT 1`,[canonical,national]);
         bookingRef=String(br.rows[0]?.booking_ref||'').trim();
@@ -3241,9 +3242,18 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       if(!bookingRef) return res.status(200).json({status:'ignored',message:'No booking found for this action'});
       const booking=await loadBookingWhatsAppContext(bookingRef);
       if(!booking) return res.status(200).json({status:'ignored',message:'Booking not found'});
+      // Reply to the WhatsApp number that actually clicked the action button.
+      // Student and Parent can receive the same booking card, so action responses
+      // must stay recipient-aware instead of always falling back to Student.
+      const studentCanonical=botSailorPhone(booking.student_mobile);
+      const parentCanonical=botSailorPhone(booking.parent_mobile);
+      const actionRecipientKind=parentCanonical&&canonical===parentCanonical?'parent':'student';
+      const actionRecipientMobile=actionRecipientKind==='parent'?booking.parent_mobile:booking.student_mobile;
+      const actionRecipientName=actionRecipientKind==='parent'?(booking.parent_name||booking.student_name):booking.student_name;
+      const actionContact={mobile:actionRecipientMobile,name:actionRecipientName,course:booking.course};
       if(bookingActionType==='reschedule' && String(booking.status||'').toLowerCase()==='cancelled'){
         const closed=await sendBotSailorText(
-          {mobile:booking.student_mobile,name:booking.student_name,course:booking.course},
+          actionContact,
           `ℹ️ *This appointment is already cancelled.*\n\nBooking: *${booking.booking_ref}*\n\nPlease book a new appointment if you would like to schedule counselling again.`,
           'booking_cancelled_reschedule_blocked'
         );
@@ -3252,7 +3262,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       let reply='';
       if(bookingActionType==='cancel') {
         const confirmResult=await sendBotSailorReplyButtons(
-          {mobile:booking.student_mobile,name:booking.student_name,course:booking.course},
+          actionContact,
           `⚠️ *Cancel this appointment?*\n\nBooking: *${booking.booking_ref}*\n\nPlease confirm your choice below.`,
           [
             {id:'booking_cancel_yes',title:'Yes, Cancel'},
@@ -3305,7 +3315,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       } else {
         reply=`☎️ *Need Help?*\nCall / WhatsApp GuruVidya\n+91 98216 27725\nhttps://wa.me/919821627725`;
       }
-      const actionResult=await sendBotSailorText({mobile:booking.student_mobile,name:booking.student_name,course:booking.course},reply,`booking_action_${bookingActionType}`);
+      const actionResult=await sendBotSailorText(actionContact,reply,`booking_action_${bookingActionType}`);
       return res.status(actionResult.success?200:400).json({status:actionResult.success?'ok':'error',action:`booking_action_${bookingActionType}`});
     }
 
