@@ -3944,7 +3944,9 @@ async function bookingCardPng(b) {
         : svgWrap(v,515,y-36,34,30,'class="val"');
     const isLastRow = ic==='pin';
     rowSvg+=`${icon((ic==='pin' && b.mode!=='offline')?'meeting':ic,155,y-5)}<text x="215" y="${y}" class="key">${xmlEsc(k)}</text><text x="465" y="${y}" class="key">:</text>${valueSvg}${isLastRow?'':`<line x1="115" y1="${y+39}" x2="955" y2="${y+39}" class="sep"/>`}`;
-    y += ic==='pin'?150:74;
+    // Offline card: add a little extra breathing room between Mode and Location only.
+    // Online spacing stays exactly as before.
+    y += ic==='pin' ? 150 : ((ic==='screen' && b.mode==='offline') ? 92 : 74);
   }
   const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1860" viewBox="0 0 1080 1860">
   <defs>
@@ -3966,14 +3968,14 @@ async function bookingCardPng(b) {
       <stop offset="0" stop-color="#08b84f"/><stop offset="0.48" stop-color="#068f3f"/><stop offset="1" stop-color="#045f32"/>
     </linearGradient>
   </defs>
-  <rect x="62" y="1680" width="956" height="110" rx="28" fill="url(#confirmGreen)"/>
-  <path d="M62 1748 Q290 1698 520 1746 T1018 1722 V1790 H62 Z" fill="#034f2b" opacity=".38"/><path d="M62 1772 Q300 1730 560 1766 T1018 1740 V1790 H62 Z" fill="#0bb45a" opacity=".22"/>
-  <circle cx="132" cy="1735" r="40" fill="#fff"/>
-  <path d="M112 1735l14 14 28-31" fill="none" stroke="#07883f" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
-  <line x1="195" y1="1698" x2="195" y2="1772" stroke="#e8fff1" stroke-width="4"/>
-  <path d="M88 1705l-17-13M82 1735H62M90 1765l-17 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round" opacity=".95"/>
-  <path d="M982 1705l16-13M988 1735h18M982 1765l16 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round" opacity=".95"/>
-  <text x="610" y="1752" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">Booking Slot Reserved</text>
+  <rect x="62" y="1648" width="956" height="110" rx="28" fill="url(#confirmGreen)"/>
+  <path d="M62 1716 Q290 1666 520 1714 T1018 1690 V1758 H62 Z" fill="#034f2b" opacity=".38"/><path d="M62 1740 Q300 1698 560 1734 T1018 1708 V1758 H62 Z" fill="#0bb45a" opacity=".22"/>
+  <circle cx="132" cy="1703" r="40" fill="#fff"/>
+  <path d="M112 1703l14 14 28-31" fill="none" stroke="#07883f" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="195" y1="1666" x2="195" y2="1740" stroke="#e8fff1" stroke-width="4"/>
+  <path d="M88 1673l-17-13M82 1703H62M90 1733l-17 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round" opacity=".95"/>
+  <path d="M982 1673l16-13M988 1703h18M982 1733l16 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round" opacity=".95"/>
+  <text x="610" y="1720" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">Booking Slot Reserved</text>
   </svg>`;
   // sequentialRead + disabled libvips cache/concurrency above prevents repeated
   // BotSailor/Meta media fetches from building up large native-memory spikes.
