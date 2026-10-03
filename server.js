@@ -3968,14 +3968,14 @@ async function bookingCardPng(b) {
       <stop offset="0" stop-color="#08b84f"/><stop offset="0.48" stop-color="#068f3f"/><stop offset="1" stop-color="#045f32"/>
     </linearGradient>
   </defs>
-  <rect x="62" y="1535" width="956" height="110" rx="28" fill="url(#confirmGreen)"/>
-  <path d="M62 1603 Q290 1553 520 1601 T1018 1577 V1645 H62 Z" fill="#034f2b" opacity=".38"/><path d="M62 1627 Q300 1585 560 1621 T1018 1595 V1645 H62 Z" fill="#0bb45a" opacity=".22"/>
-  <circle cx="132" cy="1590" r="40" fill="#fff"/>
-  <path d="M112 1590l14 14 28-31" fill="none" stroke="#07883f" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
-  <line x1="195" y1="1553" x2="195" y2="1627" stroke="#e8fff1" stroke-width="4"/>
-  <path d="M88 1560l-17-13M82 1590H62M90 1620l-17 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round" opacity=".95"/>
-  <path d="M982 1560l16-13M988 1590h18M982 1620l16 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round" opacity=".95"/>
-  <text x="610" y="1607" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">Booking Slot Reserved</text>
+  <rect x="62" y="1515" width="956" height="110" rx="28" fill="url(#confirmGreen)"/>
+  <path d="M62 1583 Q290 1533 520 1581 T1018 1557 V1625 H62 Z" fill="#034f2b" opacity=".38"/><path d="M62 1607 Q300 1565 560 1601 T1018 1575 V1625 H62 Z" fill="#0bb45a" opacity=".22"/>
+  <circle cx="132" cy="1570" r="40" fill="#fff"/>
+  <path d="M112 1570l14 14 28-31" fill="none" stroke="#07883f" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="195" y1="1533" x2="195" y2="1607" stroke="#e8fff1" stroke-width="4"/>
+  <path d="M88 1540l-17-13M82 1570H62M90 1600l-17 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round" opacity=".95"/>
+  <path d="M982 1540l16-13M988 1570h18M982 1600l16 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round" opacity=".95"/>
+  <text x="610" y="1587" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">Booking Slot Reserved</text>
   </svg>`;
   // sequentialRead + disabled libvips cache/concurrency above prevents repeated
   // BotSailor/Meta media fetches from building up large native-memory spikes.
