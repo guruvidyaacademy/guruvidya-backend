@@ -3906,6 +3906,9 @@ async function bookingCardPng(b) {
   const rows=[
     ['doc','Booking Reference',b.booking_ref],
     ['person','Student Name',b.student_name],
+    ['wa','Student WhatsApp',b.student_mobile?(String(b.student_mobile).replace(/\D/g,'').length===10?'+91 '+String(b.student_mobile).replace(/\D/g,''):'+'+String(b.student_mobile).replace(/\D/g,'')):'—'],
+    ['person','Parent/Guardian',(b.parent_name||'—')+(b.parent_relation?' ('+b.parent_relation+')':'')],
+    ['wa','Parent WhatsApp',b.parent_mobile?(String(b.parent_mobile).replace(/\D/g,'').length===10?'+91 '+String(b.parent_mobile).replace(/\D/g,''):'+'+String(b.parent_mobile).replace(/\D/g,'')):'—'],
     ['cap','Course',b.course],
     ['calendar','Date',date],
     ['clock','Time (IST)',time],
@@ -3915,6 +3918,7 @@ async function bookingCardPng(b) {
   ];
   const icon=(type,cx,cy)=>{
     const s='#083d9b', sw='7';
+    if(type==='wa') return `<circle cx="${cx}" cy="${cy}" r="25" fill="#16a34a"/><path d="M${cx} ${cy-15}a15 15 0 0 0-13 23l-2 8 8-2A15 15 0 1 0 ${cx} ${cy-15}zm8 22c-1 3-5 5-8 4-7-2-12-8-13-13-1-3 1-7 4-8 1-1 2-1 3 1l3 6c1 2-2 3-3 5 2 4 5 7 9 9 2-1 3-4 5-3l6 3c2 1 2 2 1 3z" fill="#fff"/>`;
     if(type==='person') return `<circle cx="${cx}" cy="${cy-13}" r="13" fill="${s}"/><path d="M${cx-24} ${cy+23}c2-20 13-30 24-30s22 10 24 30z" fill="${s}"/>`;
     if(type==='cap') return `<path d="M${cx-28} ${cy-8}l28-15 28 15-28 15z" fill="${s}"/><path d="M${cx-18} ${cy+1}v15c10 8 26 8 36 0V${cy+1}z" fill="${s}"/><circle cx="${cx+27}" cy="${cy-7}" r="3" fill="${s}"/>`;
     if(type==='calendar') return `<rect x="${cx-24}" y="${cy-21}" width="48" height="45" rx="5" fill="none" stroke="${s}" stroke-width="6"/><path d="M${cx-24} ${cy-7}h48M${cx-13} ${cy-27}v12M${cx+13} ${cy-27}v12" stroke="${s}" stroke-width="6" stroke-linecap="round"/><rect x="${cx-12}" y="${cy+2}" width="8" height="8" fill="${s}"/><rect x="${cx+5}" y="${cy+2}" width="8" height="8" fill="${s}"/>`;
@@ -3940,7 +3944,7 @@ async function bookingCardPng(b) {
         : svgWrap(v,515,y-36,34,30,'class="val"');
     const isLastRow = ic==='pin';
     rowSvg+=`${icon((ic==='pin' && b.mode!=='offline')?'meeting':ic,155,y-5)}<text x="215" y="${y}" class="key">${xmlEsc(k)}</text><text x="465" y="${y}" class="key">:</text>${valueSvg}${isLastRow?'':`<line x1="115" y1="${y+39}" x2="955" y2="${y+39}" class="sep"/>`}`;
-    y += ic==='pin'?150:82;
+    y += ic==='pin'?150:62;
   }
   const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1530" viewBox="0 0 1080 1530">
   <defs>
