@@ -26,7 +26,7 @@ export async function initBooking(pool) {
     online BOOLEAN NOT NULL DEFAULT TRUE, offline BOOLEAN NOT NULL DEFAULT TRUE,
     working_hours JSONB NOT NULL DEFAULT '{"1":[["09:00","18:00"]],"2":[["09:00","18:00"]],"3":[["09:00","18:00"]],"4":[["09:00","18:00"]],"5":[["09:00","18:00"]],"6":[["09:00","18:00"]]}'::jsonb);
     CREATE TABLE IF NOT EXISTS booking_settings (id INTEGER PRIMARY KEY DEFAULT 1 CHECK(id=1), settings JSONB NOT NULL DEFAULT '{}'::jsonb);
-    INSERT INTO booking_settings(id,settings) VALUES(1,'{"duration_minutes":30,"buffer_minutes":0,"advance_hours":2,"booking_days":30,"approval_required":false,"reminder_hours":[4,2,1],"offline_address":"","timezone":"Asia/Kolkata","student_address_visible":true,"student_address_required":true}') ON CONFLICT(id) DO NOTHING;
+    INSERT INTO booking_settings(id,settings) VALUES(1,'{"duration_minutes":30,"buffer_minutes":0,"advance_hours":2,"booking_days":30,"approval_required":false,"reminder_hours":[4,2,1],"offline_address":"","timezone":"Asia/Kolkata","student_address_visible":true,"student_address_required":true,"whatsapp_verification_enabled":true}') ON CONFLICT(id) DO NOTHING;
     CREATE TABLE IF NOT EXISTS student_bookings (
       id BIGSERIAL PRIMARY KEY, booking_ref TEXT UNIQUE NOT NULL, token_hash TEXT NOT NULL,
       lead_id INTEGER REFERENCES leads(id) ON DELETE SET NULL, linking_status TEXT NOT NULL DEFAULT 'pending',
@@ -306,7 +306,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
       res.set('Cache-Control','no-store').json({success:true,data:{verified:Boolean(row.verified_at),expired}});
     }catch(e){fail(res,500,'Unable to check WhatsApp verification');}
   });
-  app.get('/api/public/booking/form-settings',async(req,res)=>{try{const cfg=await settings();res.set('Cache-Control','no-store').json({success:true,data:{student_address_visible:cfg.student_address_visible!==false,student_address_required:cfg.student_address_required!==false}});}catch(e){fail(res,503,'Booking form settings unavailable');}});
+  app.get('/api/public/booking/form-settings',async(req,res)=>{try{const cfg=await settings();res.set('Cache-Control','no-store').json({success:true,data:{student_address_visible:cfg.student_address_visible!==false,student_address_required:cfg.student_address_required!==false,whatsapp_verification_enabled:cfg.whatsapp_verification_enabled!==false}});}catch(e){fail(res,503,'Booking form settings unavailable');}});
   app.get('/api/public/booking/modes',async(req,res)=>{
     try {
       const r=await pool.query(`SELECT
@@ -331,15 +331,20 @@ export function installBookingRoutes(app,pool,hooks={}) {
     try{
       await db.query('BEGIN');
       const primaryMobile=booked_by==='student'?sm:pm;
-      const verification=await db.query(`SELECT id FROM booking_whatsapp_verifications WHERE id=$1 AND request_token_hash=$2 AND mobile=$3 AND kind=$4 AND verified_at IS NOT NULL AND expires_at>NOW() FOR UPDATE`,[String(primary_verification_id||''),hash(String(primary_verification_token||'')),primaryMobile,booked_by]);
-      if(!verification.rowCount){await db.query('ROLLBACK');return fail(res,409,'Please verify the WhatsApp number being used to make this booking');}
+      const verificationRequired=formCfg.whatsapp_verification_enabled!==false;
+      let primaryVerified=false;
+      if(primary_verification_id&&primary_verification_token){
+        const verification=await db.query(`SELECT id FROM booking_whatsapp_verifications WHERE id=$1 AND request_token_hash=$2 AND mobile=$3 AND kind=$4 AND verified_at IS NOT NULL AND expires_at>NOW() FOR UPDATE`,[String(primary_verification_id),hash(String(primary_verification_token)),primaryMobile,booked_by]);
+        primaryVerified=verification.rowCount>0;
+      }
+      if(verificationRequired&&!primaryVerified){await db.query('ROLLBACK');return fail(res,409,'Please verify the WhatsApp number being used to make this booking');}
       const secondaryKind=booked_by==='student'?'parent':'student',secondaryMobile=secondaryKind==='student'?sm:pm;
       let secondaryVerified=false;
       if(secondary_verification_id&&secondary_verification_token){
         const secondary=await db.query(`SELECT id FROM booking_whatsapp_verifications WHERE id=$1 AND request_token_hash=$2 AND mobile=$3 AND kind=$4 AND verified_at IS NOT NULL AND expires_at>NOW()`,[String(secondary_verification_id),hash(String(secondary_verification_token)),secondaryMobile,secondaryKind]);
         secondaryVerified=secondary.rowCount>0;
       }
-      const studentVerified=booked_by==='student'||(secondaryKind==='student'&&secondaryVerified),parentVerified=booked_by==='parent'||(secondaryKind==='parent'&&secondaryVerified);
+      const studentVerified=(booked_by==='student'&&primaryVerified)||(secondaryKind==='student'&&secondaryVerified),parentVerified=(booked_by==='parent'&&primaryVerified)||(secondaryKind==='parent'&&secondaryVerified);
       await db.query('SELECT pg_advisory_xact_lock($1)',[Number(counsellor_id)]);
       const date=new Date(new Date(starts_at).getTime()+330*60000).toISOString().slice(0,10);
       const available=await slots(db,date,mode,Number(counsellor_id));
@@ -361,7 +366,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
       await log(db,result.rows[0].id,'customer','booked',{lead_id:leadId,mode});
       await enqueueLifecycleBlockedIntents(db,{bookingId:Number(result.rows[0].id),event:'created',eventKey:'created:'+randomUUID()});
       await db.query('COMMIT');
-      const created={...result.rows[0],manage_token:token,student_name:student_name.trim(),student_mobile:sm,parent_name:parent_name.trim(),parent_mobile:pm,parent_relation:String(parent_relation||'').trim(),recipient,booked_by,student_whatsapp_verified:studentVerified,parent_whatsapp_verified:parentVerified,course:course.trim(),mode,counsellor_id:Number(counsellor_id)};
+      const created={...result.rows[0],manage_token:token,student_name:student_name.trim(),student_mobile:sm,parent_name:parent_name.trim(),parent_mobile:pm,parent_relation:String(parent_relation||'').trim(),student_email:String(student_email||'').trim(),parent_email:String(parent_email||'').trim(),recipient,booked_by,student_whatsapp_verified:studentVerified,parent_whatsapp_verified:parentVerified,course:course.trim(),mode,counsellor_id:Number(counsellor_id)};
       // Booking WhatsApp confirmation is deliberately post-commit: a messaging failure must never roll back a valid booking.
       if(typeof hooks.onBookingCreated==='function'){
         try{created.whatsapp=await hooks.onBookingCreated(created);}catch(err){console.error('BOOKING WHATSAPP CREATE HOOK',err?.message||err);created.whatsapp={success:false,status:'hook_error'};}
@@ -622,7 +627,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
     try {const existing=await pool.query('SELECT meeting_link,online FROM booking_counsellors WHERE id=$1 AND archived_at IS NULL',[req.params.id]);if(!existing.rowCount)return fail(res,404,'Counsellor not found');const next=Object.fromEntries(values);if((next.online===undefined?existing.rows[0].online:next.online)&&!String(next.meeting_link===undefined?existing.rows[0].meeting_link:next.meeting_link||'').trim())return fail(res,400,'Meeting link is required for online bookings');const sql=values.map(([key],i)=>`${key}=$${i+2}`).join(',');const r=await pool.query(`UPDATE booking_counsellors SET ${sql} WHERE id=$1 AND archived_at IS NULL RETURNING *`,[req.params.id,...values.map(([key,value])=>key==='working_hours'?JSON.stringify(value):value)]);if(!r.rowCount)return fail(res,404,'Counsellor not found');res.json({success:true,data:r.rows[0]});}catch(e){fail(res,500,'Unable to update counsellor');}
   });
   app.get('/api/admin/booking/settings',admin,async(req,res)=>res.json({success:true,data:await settings()}));
-  app.put('/api/admin/booking/settings',admin,async(req,res)=>{const {duration_minutes,buffer_minutes,advance_hours,booking_days,approval_required,reminder_hours,offline_address,student_address_visible=true,student_address_required=true}=req.body;if(!Number.isInteger(duration_minutes)||duration_minutes<10||duration_minutes>240||!Number.isInteger(buffer_minutes)||buffer_minutes<0||buffer_minutes>120||!Number.isFinite(advance_hours)||advance_hours<0||!Number.isInteger(booking_days)||booking_days<1||booking_days>365||!Array.isArray(reminder_hours)||reminder_hours.some(x=>!Number.isFinite(x)||x<=0)||typeof approval_required!=='boolean'||typeof offline_address!=='string'||typeof student_address_visible!=='boolean'||typeof student_address_required!=='boolean')return fail(res,400,'Invalid settings');const r=await pool.query(`UPDATE booking_settings SET settings=settings||$1::jsonb WHERE id=1 RETURNING settings`,[JSON.stringify(req.body)]);res.json({success:true,data:r.rows[0].settings});});
+  app.put('/api/admin/booking/settings',admin,async(req,res)=>{const {duration_minutes,buffer_minutes,advance_hours,booking_days,approval_required,reminder_hours,offline_address,student_address_visible=true,student_address_required=true,whatsapp_verification_enabled=true}=req.body;if(!Number.isInteger(duration_minutes)||duration_minutes<10||duration_minutes>240||!Number.isInteger(buffer_minutes)||buffer_minutes<0||buffer_minutes>120||!Number.isFinite(advance_hours)||advance_hours<0||!Number.isInteger(booking_days)||booking_days<1||booking_days>365||!Array.isArray(reminder_hours)||reminder_hours.some(x=>!Number.isFinite(x)||x<=0)||typeof approval_required!=='boolean'||typeof offline_address!=='string'||typeof student_address_visible!=='boolean'||typeof student_address_required!=='boolean'||typeof whatsapp_verification_enabled!=='boolean')return fail(res,400,'Invalid settings');const r=await pool.query(`UPDATE booking_settings SET settings=settings||$1::jsonb WHERE id=1 RETURNING settings`,[JSON.stringify(req.body)]);res.json({success:true,data:r.rows[0].settings});});
   app.get('/api/admin/booking/locations',admin,async(req,res)=>{
     try {const r=await pool.query('SELECT id,name,address,map_url,is_default,created_at,updated_at FROM booking_locations ORDER BY is_default DESC,name ASC,id ASC');res.json({success:true,data:r.rows});}
     catch{fail(res,500,'Unable to load locations');}
