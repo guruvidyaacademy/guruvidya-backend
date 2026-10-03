@@ -30,12 +30,13 @@ export async function initBooking(pool) {
     CREATE TABLE IF NOT EXISTS student_bookings (
       id BIGSERIAL PRIMARY KEY, booking_ref TEXT UNIQUE NOT NULL, token_hash TEXT NOT NULL,
       lead_id INTEGER REFERENCES leads(id) ON DELETE SET NULL, linking_status TEXT NOT NULL DEFAULT 'pending',
-      student_name TEXT NOT NULL, student_mobile TEXT, parent_name TEXT, parent_mobile TEXT,
+      student_name TEXT NOT NULL, student_mobile TEXT, parent_name TEXT, parent_mobile TEXT, parent_relation TEXT,
       recipient TEXT NOT NULL DEFAULT 'both', course TEXT NOT NULL, mode TEXT NOT NULL CHECK(mode IN ('online','offline')),
       counsellor_id BIGINT REFERENCES booking_counsellors(id), starts_at TIMESTAMPTZ NOT NULL, ends_at TIMESTAMPTZ NOT NULL,
       status TEXT NOT NULL DEFAULT 'requested', customer_response TEXT NOT NULL DEFAULT 'awaiting',
       response_at TIMESTAMPTZ, admin_alert_sent_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW());
     ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS admin_alert_ack_at TIMESTAMPTZ;
+    ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS parent_relation TEXT;
     ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS admin_alert_ack_note TEXT;
     CREATE INDEX IF NOT EXISTS student_bookings_lead_idx ON student_bookings(lead_id,status);
     CREATE INDEX IF NOT EXISTS student_bookings_slot_idx ON student_bookings(counsellor_id,starts_at,ends_at);
@@ -307,7 +308,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
   });
   app.get('/api/public/booking/slots',async(req,res)=>{try{res.json({success:true,data:await slots(pool,req.query.date,req.query.mode,req.query.counsellor_id||null,{includeBooked:true})});}catch(e){fail(res,400,e.message);}});
   app.post('/api/public/booking',async(req,res)=>{
-    const {student_name,student_mobile,parent_name,parent_mobile,course,mode,starts_at,counsellor_id,recipient='both',booked_by,primary_verification_id,primary_verification_token,secondary_verification_id,secondary_verification_token}=req.body;
+    const {student_name,student_mobile,parent_name,parent_mobile,parent_relation,course,mode,starts_at,counsellor_id,recipient='both',booked_by,primary_verification_id,primary_verification_token,secondary_verification_id,secondary_verification_token}=req.body;
     const sm=bookingPhone(student_mobile),pm=bookingPhone(parent_mobile);
     if(!student_name?.trim()||!parent_name?.trim()||!validBookingPhone(sm)||!validBookingPhone(pm)||!['student','parent'].includes(booked_by)||!course?.trim()||!['online','offline'].includes(mode)||!validTime(starts_at)||!Number.isSafeInteger(Number(counsellor_id))||recipient!=='both')return fail(res,400,'Invalid booking details');
     // Never accept a notification preference that points to a missing or malformed recipient.
@@ -345,13 +346,13 @@ export function installBookingRoutes(app,pool,hooks={}) {
       const cfg=cfgRow.rows[0]?.settings||{};
       const approvalRequired=cfg.approval_required===true || cfg.approval_required==='true';
       const token=randomBytes(32).toString('hex'), ref='GV-'+randomBytes(6).toString('hex').toUpperCase();
-      const result=await db.query(`INSERT INTO student_bookings(booking_ref,token_hash,lead_id,linking_status,student_name,student_mobile,parent_name,parent_mobile,recipient,course,mode,counsellor_id,starts_at,ends_at,status,booked_by,student_whatsapp_verified,parent_whatsapp_verified)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id,booking_ref,starts_at,ends_at,status,linking_status`,[ref,hash(token),leadId,leadId?'linked':'pending',student_name.trim(),sm,parent_name.trim(),pm,recipient,course.trim(),mode,Number(counsellor_id),slot.starts_at,slot.ends_at,approvalRequired?'requested':'confirmed',booked_by,studentVerified,parentVerified]);
+      const result=await db.query(`INSERT INTO student_bookings(booking_ref,token_hash,lead_id,linking_status,student_name,student_mobile,parent_name,parent_mobile,parent_relation,recipient,course,mode,counsellor_id,starts_at,ends_at,status,booked_by,student_whatsapp_verified,parent_whatsapp_verified)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id,booking_ref,starts_at,ends_at,status,linking_status`,[ref,hash(token),leadId,leadId?'linked':'pending',student_name.trim(),sm,parent_name.trim(),pm,String(parent_relation||'').trim(),recipient,course.trim(),mode,Number(counsellor_id),slot.starts_at,slot.ends_at,approvalRequired?'requested':'confirmed',booked_by,studentVerified,parentVerified]);
       if(!approvalRequired) await db.query("UPDATE student_bookings SET customer_response='confirmed',response_at=NOW() WHERE id=$1",[result.rows[0].id]);
       await log(db,result.rows[0].id,'customer','booked',{lead_id:leadId,mode});
       await enqueueLifecycleBlockedIntents(db,{bookingId:Number(result.rows[0].id),event:'created',eventKey:'created:'+randomUUID()});
       await db.query('COMMIT');
-      const created={...result.rows[0],manage_token:token,student_name:student_name.trim(),student_mobile:sm,parent_name:parent_name.trim(),parent_mobile:pm,recipient,booked_by,student_whatsapp_verified:studentVerified,parent_whatsapp_verified:parentVerified,course:course.trim(),mode,counsellor_id:Number(counsellor_id)};
+      const created={...result.rows[0],manage_token:token,student_name:student_name.trim(),student_mobile:sm,parent_name:parent_name.trim(),parent_mobile:pm,parent_relation:String(parent_relation||'').trim(),recipient,booked_by,student_whatsapp_verified:studentVerified,parent_whatsapp_verified:parentVerified,course:course.trim(),mode,counsellor_id:Number(counsellor_id)};
       // Booking WhatsApp confirmation is deliberately post-commit: a messaging failure must never roll back a valid booking.
       if(typeof hooks.onBookingCreated==='function'){
         try{created.whatsapp=await hooks.onBookingCreated(created);}catch(err){console.error('BOOKING WHATSAPP CREATE HOOK',err?.message||err);created.whatsapp={success:false,status:'hook_error'};}
@@ -373,7 +374,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
     const token=String(req.body?.token||'');
     if(!/^[a-f0-9]{64}$/i.test(token))return fail(res,404,'Booking not found');
     try {
-      const r=await pool.query(`SELECT b.booking_ref,b.student_name,b.parent_name,b.course,b.mode,b.starts_at,b.ends_at,b.status,b.customer_response,b.recipient,c.name AS counsellor_name,c.mobile AS counsellor_mobile,c.meeting_link,l.name AS offline_location_name,l.address AS offline_address,l.map_url AS offline_map_url FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id LEFT JOIN booking_locations l ON l.id=c.location_id WHERE b.booking_ref=$1 AND b.token_hash=$2`,[req.params.ref,hash(token)]);
+      const r=await pool.query(`SELECT b.booking_ref,b.student_name,b.student_mobile,b.parent_name,b.parent_mobile,b.parent_relation,b.course,b.mode,b.starts_at,b.ends_at,b.status,b.customer_response,b.recipient,c.name AS counsellor_name,c.mobile AS counsellor_mobile,c.meeting_link,l.name AS offline_location_name,l.address AS offline_address,l.map_url AS offline_map_url FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id LEFT JOIN booking_locations l ON l.id=c.location_id WHERE b.booking_ref=$1 AND b.token_hash=$2`,[req.params.ref,hash(token)]);
       if(!r.rowCount)return fail(res,404,'Booking not found');
       const cfg=await settings();
       res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer','Pragma':'no-cache'}).json({success:true,data:{...r.rows[0],offline_address:String(cfg.offline_address||'')}});
