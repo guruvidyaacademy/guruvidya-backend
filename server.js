@@ -3994,6 +3994,10 @@ app.get('/api/public/booking/whatsapp-card/:ref.png', async (req,res)=>{
 });
 
 async function sendBookingSessionConfirmation(b, token, action='booking_confirmation_24h', options={}) {
+  const recipientKind=options.recipientKind==='parent'?'parent':'student';
+  const recipientMobile=recipientKind==='parent'?b.parent_mobile:b.student_mobile;
+  const recipientName=recipientKind==='parent'?(b.parent_name||b.student_name):b.student_name;
+  if(!recipientMobile)return {success:false,status:'no_recipient_mobile'};
   // FINAL APPROVED 28-Sep within-24h WhatsApp design.
   // Use one native WhatsApp interactive card with three clean action buttons.
   // WhatsApp itself controls the exact button radius/colour; CRM controls the
@@ -4005,7 +4009,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   // Do not replace this with blank/invisible/emoji-only content: delivery regressed in testing.
   const msg=options.rescheduled===true?`Appointment Reschedule Confirmed.\nNew Date: ${date}\nNew Time: ${time}`:'Appointment confirmed.';
   const result=await sendBotSailorReplyButtons(
-    {mobile:b.student_mobile,name:b.student_name,course:b.course},
+    {mobile:recipientMobile,name:recipientName,course:b.course},
     msg,
     [
       {id:'booking_manage',title:'Manage Appointment'},
@@ -4035,7 +4039,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
     // WhatsApp before the change-options card, preventing it from appearing first.
     await new Promise(resolve=>setTimeout(resolve,8000));
     manageResult=await sendBotSailorReplyButtons(
-      {mobile:b.student_mobile,name:b.student_name,course:b.course},
+      {mobile:recipientMobile,name:recipientName,course:b.course},
       `🗓️ *Need to make a change to your appointment?*\nUse the options below to cancel or reschedule.`,
       [
         {id:'booking_cancel',title:'Cancel'},
@@ -4050,7 +4054,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
       buttons:['Cancel','Reschedule']
     });
     if(manageResult.success){
-      const canonical=botSailorPhone(b.student_mobile);
+      const canonical=botSailorPhone(recipientMobile);
       await pool.query(`INSERT INTO booking_whatsapp_states(mobile,booking_id,booking_ref,state,payload,updated_at)
         VALUES($1,$2,$3,'change_options',$4::jsonb,NOW())
         ON CONFLICT(mobile) DO UPDATE SET booking_id=EXCLUDED.booking_id,booking_ref=EXCLUDED.booking_ref,state='change_options',payload=EXCLUDED.payload,updated_at=NOW()`,
@@ -4064,12 +4068,12 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
     const deliveryDetail=result.message||result.status||'';
     const updatedDelivery=await pool.query(`UPDATE booking_delivery_logs
       SET status=$3,detail=$4,created_at=NOW()
-      WHERE booking_id=$1 AND event=$2 AND recipient='student' AND channel='whatsapp'`,
-      [b.id,action,deliveryStatus,deliveryDetail]);
+      WHERE booking_id=$1 AND event=$2 AND recipient=$5 AND channel='whatsapp'`,
+      [b.id,action,deliveryStatus,deliveryDetail,recipientKind]);
     if(!updatedDelivery.rowCount){
       await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail)
-        VALUES($1,$2,'student','whatsapp',$3,$4)`,
-        [b.id,action,deliveryStatus,deliveryDetail]);
+        VALUES($1,$2,$5,'whatsapp',$3,$4)`,
+        [b.id,action,deliveryStatus,deliveryDetail,recipientKind]);
     }
   }catch(logErr){
     console.warn('BOOKING DELIVERY LOG SKIPPED:',logErr.message);
@@ -4103,42 +4107,50 @@ function bookingTemplateVariables(t,b) {
   return out;
 }
 
-async function sendBookingGateTemplate(b) {
+async function sendBookingGateTemplate(b,recipientKind='student') {
+  const recipientMobile=recipientKind==='parent'?b.parent_mobile:b.student_mobile;
+  const recipientName=recipientKind==='parent'?(b.parent_name||b.student_name):b.student_name;
   const t=await findBookingConfirmationTemplate();
   if(!t) return {success:false,status:'missing_template',message:'booking_confirmation_fifteen_min not imported'};
-  const result=await sendBotSailorTemplate({mobile:b.student_mobile,name:b.student_name,course:b.course},t,bookingTemplateVariables(t,b));
+  const result=await sendBotSailorTemplate({mobile:recipientMobile,name:recipientName,course:b.course},t,bookingTemplateVariables(t,b));
   const gateStatus=result.success?'sent':'failed';
   const gateDetail=result.message||result.status||'';
   const updatedGate=await pool.query(`UPDATE booking_delivery_logs
     SET status=$2,detail=$3,created_at=NOW()
-    WHERE booking_id=$1 AND event='booking_confirmation_gate' AND recipient='student' AND channel='whatsapp'`,
-    [b.id,gateStatus,gateDetail]);
+    WHERE booking_id=$1 AND event='booking_confirmation_gate' AND recipient=$4 AND channel='whatsapp'`,
+    [b.id,gateStatus,gateDetail,recipientKind]);
   if(!updatedGate.rowCount){
     await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail)
-      VALUES($1,'booking_confirmation_gate','student','whatsapp',$2,$3)`,
-      [b.id,gateStatus,gateDetail]);
+      VALUES($1,'booking_confirmation_gate',$4,'whatsapp',$2,$3)`,
+      [b.id,gateStatus,gateDetail,recipientKind]);
   }
   return result;
 }
 
-async function onBookingCreatedWhatsApp(created) {
-  const b=await loadBookingWhatsAppContext(created.booking_ref);
-  if(!b||!b.student_mobile) return {success:false,status:'no_student_mobile'};
-
-  // Do not depend only on CRM's cached last_customer_message_at. BotSailor/Meta may
-  // already have an open customer-service window even when the CRM timestamp is stale.
-  // First try the professional Booking Confirmation flow. If BotSailor rejects it,
-  // fall back to the approved outside-24h gate template.
-  const sessionResult=await sendBookingSessionConfirmation(b,created.manage_token,'booking_confirmation_24h');
-  if(sessionResult?.success) return sessionResult;
-  return sendBookingGateTemplate(b);
+async function sendBookingWhatsAppToVerifiedRecipients(b,token,action,options={}) {
+  const recipients=[];
+  if(b.student_whatsapp_verified&&b.student_mobile)recipients.push({kind:'student',mobile:botSailorPhone(b.student_mobile)});
+  if(b.parent_whatsapp_verified&&b.parent_mobile)recipients.push({kind:'parent',mobile:botSailorPhone(b.parent_mobile)});
+  const seen=new Set(),results=[];
+  for(const recipient of recipients){
+    if(!recipient.mobile||seen.has(recipient.mobile))continue;
+    seen.add(recipient.mobile);
+    const result=await sendBookingSessionConfirmation(b,token,action,{...options,recipientKind:recipient.kind});
+    results.push({recipient:recipient.kind,...result});
+  }
+  return {success:results.some(x=>x.success),status:results.length?'recipient_results':'no_open_or_verified_recipient',results};
 }
 
+async function onBookingCreatedWhatsApp(created) {
+  const b=await loadBookingWhatsAppContext(created.booking_ref);
+  if(!b) return {success:false,status:'booking_not_found'};
+  return sendBookingWhatsAppToVerifiedRecipients(b,created.manage_token,'booking_confirmation_24h');
+}
 
 async function onBookingRescheduledWhatsApp(created) {
   const b=await loadBookingWhatsAppContext(created.booking_ref);
-  if(!b||!b.student_mobile) return {success:false,status:'no_student_mobile'};
-  return sendBookingSessionConfirmation(b,created.manage_token,'booking_reschedule_confirmation_24h',{rescheduled:true});
+  if(!b) return {success:false,status:'booking_not_found'};
+  return sendBookingWhatsAppToVerifiedRecipients(b,created.manage_token,'booking_reschedule_confirmation_24h',{rescheduled:true});
 }
 
 // Kept for compatibility with any older code paths.
