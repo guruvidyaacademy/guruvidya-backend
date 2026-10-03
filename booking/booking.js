@@ -367,11 +367,15 @@ export function installBookingRoutes(app,pool,hooks={}) {
       await enqueueLifecycleBlockedIntents(db,{bookingId:Number(result.rows[0].id),event:'created',eventKey:'created:'+randomUUID()});
       await db.query('COMMIT');
       const created={...result.rows[0],manage_token:token,student_name:student_name.trim(),student_mobile:sm,parent_name:parent_name.trim(),parent_mobile:pm,parent_relation:String(parent_relation||'').trim(),student_email:String(student_email||'').trim(),parent_email:String(parent_email||'').trim(),recipient,booked_by,student_whatsapp_verified:studentVerified,parent_whatsapp_verified:parentVerified,course:course.trim(),mode,counsellor_id:Number(counsellor_id)};
-      // Booking WhatsApp confirmation is deliberately post-commit: a messaging failure must never roll back a valid booking.
-      if(typeof hooks.onBookingCreated==='function'){
-        try{created.whatsapp=await hooks.onBookingCreated(created);}catch(err){console.error('BOOKING WHATSAPP CREATE HOOK',err?.message||err);created.whatsapp={success:false,status:'hook_error'};}
-      }
+      // Booking is already committed. Return success to the browser immediately;
+      // WhatsApp delivery can include media + staged action cards and must never keep
+      // the booking request open long enough for the UI to show a false timeout.
       res.status(201).json({success:true,data:created});
+      if(typeof hooks.onBookingCreated==='function'){
+        Promise.resolve()
+          .then(()=>hooks.onBookingCreated(created))
+          .catch(err=>console.error('BOOKING WHATSAPP CREATE HOOK',err?.message||err));
+      }
     }catch(e){await db.query('ROLLBACK');fail(res,500,'Unable to create booking');}finally{db.release();}
   });
   app.get('/api/public/booking/manage/:ref',async(req,res)=>{
@@ -423,14 +427,15 @@ export function installBookingRoutes(app,pool,hooks={}) {
       await log(db,b.id,'customer',req.body.action,{old_starts_at:b.starts_at,new_starts_at:req.body.starts_at||null});
       if(req.body.action!=='cancel') await enqueueLifecycleBlockedIntents(db,{bookingId:Number(b.id),event:req.body.action==='confirm'?'confirmed':'rescheduled',eventKey:req.body.action+':'+randomUUID()});
       await db.query('COMMIT');
-      // After a successful customer reschedule, send the refreshed booking confirmation.
-      // This runs after COMMIT so WhatsApp reads the new date/time, and a delivery failure
-      // does not roll back the booking change.
-      if(req.body.action==='reschedule' && req.body.notify_whatsapp===true && typeof hooks.onBookingRescheduled==='function'){
-        try{await hooks.onBookingRescheduled({booking_ref:req.params.ref,manage_token:String(req.body.token||''),rescheduled:true});}
-        catch(e){console.error('Booking reschedule WhatsApp confirmation failed:',e?.message||e);}
-      }
+      // The reschedule is already committed. Confirm it to the browser immediately.
+      // WhatsApp delivery continues after the HTTP response so its media/action-card
+      // delays cannot trigger a false browser timeout or a second-slot retry.
       res.json({success:true});
+      if(req.body.action==='reschedule' && req.body.notify_whatsapp===true && typeof hooks.onBookingRescheduled==='function'){
+        Promise.resolve()
+          .then(()=>hooks.onBookingRescheduled({booking_ref:req.params.ref,manage_token:String(req.body.token||''),rescheduled:true}))
+          .catch(e=>console.error('Booking reschedule WhatsApp confirmation failed:',e?.message||e));
+      }
     }catch(e){await db.query('ROLLBACK');fail(res,500,'Unable to update booking');}finally{db.release();}
   });
   // Database-wide aggregate; unlike the 300-row notification list this is not a sample.
