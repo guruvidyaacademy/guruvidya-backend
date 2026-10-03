@@ -499,4 +499,14 @@ $('cancel').onclick=()=>action('cancel');$('reschedule').onclick=()=>action('res
   .stage2-phone-field{grid-template-columns:minmax(0,36%) minmax(0,64%)!important}
   .gv-wa-combined .gv-combo-benefits,.gv-wa-combined .gv-combo-benefits>div,.gv-wa-combined .gv-combo-benefits>div:first-child,.gv-wa-combined .gv-combo-benefits>div span,.gv-wa-combined .gv-combo-benefits>div:first-child span{font-size:8px!important}
 }
+
+/* 3 Oct final mobile Success/Reschedule detail-column spacing fix. */
+@media(max-width:650px){
+  .manage-card .detail-row{grid-template-columns:minmax(0,40%) minmax(0,1fr)!important;column-gap:20px!important}
+  .manage-card .detail-label,.manage-card .detail-value{min-width:0!important}
+  .manage-card .detail-label{overflow-wrap:anywhere!important}
+  .manage-card .detail-value{overflow-wrap:normal!important;word-break:normal!important}
+  .manage-card .manage-wa-link,.manage-card .gv-manage-wa-link,.manage-card .wa-number-link{white-space:nowrap!important}
+  .manage-card .detail-value a[href*="wa.me"],.manage-card .detail-value a[href*="whatsapp"]{white-space:nowrap!important;display:inline-flex!important;align-items:center!important;gap:7px!important}
+}
 </style>
