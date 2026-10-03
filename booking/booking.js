@@ -37,6 +37,14 @@ export async function initBooking(pool) {
       response_at TIMESTAMPTZ, admin_alert_sent_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW());
     ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS admin_alert_ack_at TIMESTAMPTZ;
     ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS parent_relation TEXT;
+    ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS student_email TEXT;
+    ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS parent_email TEXT;
+    ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS address_country TEXT;
+    ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS address_state TEXT;
+    ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS address_city TEXT;
+    ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS address_postal_code TEXT;
+    ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS address_line1 TEXT;
+    ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS address_line2 TEXT;
     ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS admin_alert_ack_note TEXT;
     CREATE INDEX IF NOT EXISTS student_bookings_lead_idx ON student_bookings(lead_id,status);
     CREATE INDEX IF NOT EXISTS student_bookings_slot_idx ON student_bookings(counsellor_id,starts_at,ends_at);
@@ -308,9 +316,9 @@ export function installBookingRoutes(app,pool,hooks={}) {
   });
   app.get('/api/public/booking/slots',async(req,res)=>{try{res.json({success:true,data:await slots(pool,req.query.date,req.query.mode,req.query.counsellor_id||null,{includeBooked:true})});}catch(e){fail(res,400,e.message);}});
   app.post('/api/public/booking',async(req,res)=>{
-    const {student_name,student_mobile,parent_name,parent_mobile,parent_relation,course,mode,starts_at,counsellor_id,recipient='both',booked_by,primary_verification_id,primary_verification_token,secondary_verification_id,secondary_verification_token}=req.body;
+    const {student_name,student_mobile,parent_name,parent_mobile,parent_relation,student_email='',parent_email='',address_country='',address_state='',address_city='',address_postal_code='',address_line1='',address_line2='',course,mode,starts_at,counsellor_id,recipient='both',booked_by,primary_verification_id,primary_verification_token,secondary_verification_id,secondary_verification_token}=req.body;
     const sm=bookingPhone(student_mobile),pm=bookingPhone(parent_mobile);
-    if(!student_name?.trim()||!parent_name?.trim()||!validBookingPhone(sm)||!validBookingPhone(pm)||!['student','parent'].includes(booked_by)||!course?.trim()||!['online','offline'].includes(mode)||!validTime(starts_at)||!Number.isSafeInteger(Number(counsellor_id))||recipient!=='both')return fail(res,400,'Invalid booking details');
+    if(!student_name?.trim()||!parent_name?.trim()||!validBookingPhone(sm)||!validBookingPhone(pm)||!['student','parent'].includes(booked_by)||!course?.trim()||!['online','offline'].includes(mode)||!validTime(starts_at)||!Number.isSafeInteger(Number(counsellor_id))||recipient!=='both')return fail(res,400,'Invalid booking details'); const emailOk=v=>/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v||'').trim()); if((booked_by==='student'&&!emailOk(student_email))||(booked_by==='parent'&&!emailOk(parent_email))||(student_email&&!emailOk(student_email))||(parent_email&&!emailOk(parent_email)))return fail(res,400,'Provide a valid required email address'); if(!String(address_country).trim()||!String(address_state).trim()||!String(address_city).trim()||!String(address_postal_code).trim()||!String(address_line1).trim()||!String(address_line2).trim())return fail(res,400,'Complete the student address');
     // Never accept a notification preference that points to a missing or malformed recipient.
     // A valid parent-only booking may still await manual student-lead linking.
     if ((student_mobile && !validBookingPhone(sm)) || (parent_mobile && !validBookingPhone(pm)) ||
@@ -346,8 +354,8 @@ export function installBookingRoutes(app,pool,hooks={}) {
       const cfg=cfgRow.rows[0]?.settings||{};
       const approvalRequired=cfg.approval_required===true || cfg.approval_required==='true';
       const token=randomBytes(32).toString('hex'), ref='GV-'+randomBytes(6).toString('hex').toUpperCase();
-      const result=await db.query(`INSERT INTO student_bookings(booking_ref,token_hash,lead_id,linking_status,student_name,student_mobile,parent_name,parent_mobile,parent_relation,recipient,course,mode,counsellor_id,starts_at,ends_at,status,booked_by,student_whatsapp_verified,parent_whatsapp_verified)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id,booking_ref,starts_at,ends_at,status,linking_status`,[ref,hash(token),leadId,leadId?'linked':'pending',student_name.trim(),sm,parent_name.trim(),pm,String(parent_relation||'').trim(),recipient,course.trim(),mode,Number(counsellor_id),slot.starts_at,slot.ends_at,approvalRequired?'requested':'confirmed',booked_by,studentVerified,parentVerified]);
+      const result=await db.query(`INSERT INTO student_bookings(booking_ref,token_hash,lead_id,linking_status,student_name,student_mobile,parent_name,parent_mobile,parent_relation,student_email,parent_email,address_country,address_state,address_city,address_postal_code,address_line1,address_line2,recipient,course,mode,counsellor_id,starts_at,ends_at,status,booked_by,student_whatsapp_verified,parent_whatsapp_verified)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27) RETURNING id,booking_ref,starts_at,ends_at,status,linking_status`,[ref,hash(token),leadId,leadId?'linked':'pending',student_name.trim(),sm,parent_name.trim(),pm,String(parent_relation||'').trim(),String(student_email||'').trim(),String(parent_email||'').trim(),String(address_country||'').trim(),String(address_state||'').trim(),String(address_city||'').trim(),String(address_postal_code||'').trim(),String(address_line1||'').trim(),String(address_line2||'').trim(),recipient,course.trim(),mode,Number(counsellor_id),slot.starts_at,slot.ends_at,approvalRequired?'requested':'confirmed',booked_by,studentVerified,parentVerified]);
       if(!approvalRequired) await db.query("UPDATE student_bookings SET customer_response='confirmed',response_at=NOW() WHERE id=$1",[result.rows[0].id]);
       await log(db,result.rows[0].id,'customer','booked',{lead_id:leadId,mode});
       await enqueueLifecycleBlockedIntents(db,{bookingId:Number(result.rows[0].id),event:'created',eventKey:'created:'+randomUUID()});
