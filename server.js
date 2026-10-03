@@ -3948,19 +3948,19 @@ async function bookingCardPng(b) {
     // Online spacing stays exactly as before.
     y += ic==='pin' ? 150 : ((ic==='screen' && b.mode==='offline') ? 92 : 74);
   }
-  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1860" viewBox="0 0 1080 1860">
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1695" viewBox="0 0 1080 1695">
   <defs>
     <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#072a79"/><stop offset=".55" stop-color="#0758c9"/><stop offset="1" stop-color="#08a7ed"/></linearGradient>
     <linearGradient id="cyan" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#0878e8"/><stop offset="1" stop-color="#09b9ed"/></linearGradient>
     <style>.key{font:700 27px Arial;fill:#092f83}.val{font:500 26px Arial;fill:#102f78}.sep{stroke:#d4e4ef;stroke-width:1.5}</style>
   </defs>
-  <rect width="1080" height="1860" fill="#f8f3eb"/>
+  <rect width="1080" height="1695" fill="#f8f3eb"/>
   <g opacity=".10" stroke="#cdbfae" fill="none"><circle cx="65" cy="110" r="18"/><circle cx="1015" cy="180" r="23"/><path d="M30 1320q40-35 80 0t80 0M900 70q35-30 70 0t70 0"/></g>
-  <rect x="28" y="35" width="1024" height="1770" rx="42" fill="#fff"/>
+  <rect x="28" y="35" width="1024" height="1625" rx="42" fill="#fff"/>
   <!-- Exact approved final reference header, rasterized small to avoid the old SVG artefacts. -->
   <image href="data:image/jpeg;base64,${finalHeaderJpeg}" x="60" y="55" width="960" height="473" preserveAspectRatio="xMidYMid meet"/>
   <!-- details panel -->
-  <rect x="62" y="550" width="956" height="1115" rx="40" fill="#f5faff" stroke="#dbeaf5" stroke-width="2"/>
+  <rect x="62" y="550" width="956" height="1095" rx="40" fill="#f5faff" stroke="#dbeaf5" stroke-width="2"/>
   ${rowSvg}
   <!-- Premium green status banner: visual only; WhatsApp delivery body remains unchanged. -->
   <defs>
@@ -3968,14 +3968,14 @@ async function bookingCardPng(b) {
       <stop offset="0" stop-color="#08b84f"/><stop offset="0.48" stop-color="#068f3f"/><stop offset="1" stop-color="#045f32"/>
     </linearGradient>
   </defs>
-  <rect x="62" y="1648" width="956" height="110" rx="28" fill="url(#confirmGreen)"/>
-  <path d="M62 1716 Q290 1666 520 1714 T1018 1690 V1758 H62 Z" fill="#034f2b" opacity=".38"/><path d="M62 1740 Q300 1698 560 1734 T1018 1708 V1758 H62 Z" fill="#0bb45a" opacity=".22"/>
-  <circle cx="132" cy="1703" r="40" fill="#fff"/>
-  <path d="M112 1703l14 14 28-31" fill="none" stroke="#07883f" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
-  <line x1="195" y1="1666" x2="195" y2="1740" stroke="#e8fff1" stroke-width="4"/>
-  <path d="M88 1673l-17-13M82 1703H62M90 1733l-17 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round" opacity=".95"/>
-  <path d="M982 1673l16-13M988 1703h18M982 1733l16 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round" opacity=".95"/>
-  <text x="610" y="1720" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">Booking Slot Reserved</text>
+  <rect x="62" y="1535" width="956" height="110" rx="28" fill="url(#confirmGreen)"/>
+  <path d="M62 1603 Q290 1553 520 1601 T1018 1577 V1645 H62 Z" fill="#034f2b" opacity=".38"/><path d="M62 1627 Q300 1585 560 1621 T1018 1595 V1645 H62 Z" fill="#0bb45a" opacity=".22"/>
+  <circle cx="132" cy="1590" r="40" fill="#fff"/>
+  <path d="M112 1590l14 14 28-31" fill="none" stroke="#07883f" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="195" y1="1553" x2="195" y2="1627" stroke="#e8fff1" stroke-width="4"/>
+  <path d="M88 1560l-17-13M82 1590H62M90 1620l-17 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round" opacity=".95"/>
+  <path d="M982 1560l16-13M988 1590h18M982 1620l16 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round" opacity=".95"/>
+  <text x="610" y="1607" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">Booking Slot Reserved</text>
   </svg>`;
   // sequentialRead + disabled libvips cache/concurrency above prevents repeated
   // BotSailor/Meta media fetches from building up large native-memory spikes.
