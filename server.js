@@ -2242,7 +2242,33 @@ function buildEmailTransport(emailConfig = config) {
     connectionTimeout: 12000,
     greetingTimeout: 12000,
     socketTimeout: 15000,
+    tls: { servername: host },
   });
+}
+
+function emailSmtpErrorDetails(err, emailConfig = config) {
+  const host = String(emailConfig.emailSmtpHost || "").trim();
+  const port = Number(emailConfig.emailSmtpPort || 587);
+  const code = String(err?.code || "SMTP_ERROR");
+  const raw = String(err?.message || "SMTP connection failed");
+  const timeout = code === "ETIMEDOUT" || /timed?\s*out|timeout/i.test(raw);
+  const auth = code === "EAUTH" || /auth|credential|password|535/i.test(raw);
+  const dns = code === "ENOTFOUND" || code === "EAI_AGAIN" || /getaddrinfo|dns/i.test(raw);
+
+  if (timeout) {
+    return {
+      code: "SMTP_TIMEOUT",
+      message: `SMTP connection timed out before login (${host}:${port}).`,
+      detail: "The server could not reach the SMTP port. If this backend is running on a Render Free web service, outbound SMTP ports 25, 465 and 587 are blocked by Render; upgrade the Render service or use an email provider with an HTTPS/API sending option.",
+    };
+  }
+  if (auth) {
+    return { code: "SMTP_AUTH_FAILED", message: "SMTP authentication failed.", detail: "Check the full email username and mailbox password/API secret." };
+  }
+  if (dns) {
+    return { code: "SMTP_DNS_ERROR", message: `SMTP host could not be resolved (${host}).`, detail: "Check the SMTP Host value and DNS." };
+  }
+  return { code, message: raw, detail: "Check SMTP host, port, security mode, credentials and hosting outbound-network rules." };
 }
 
 app.post("/api/admin/integrations/email/test", async (req, res) => {
@@ -2253,8 +2279,9 @@ app.post("/api/admin/integrations/email/test", async (req, res) => {
     await addIntegrationLog("email", "test_connection", "success", {}, { message: "SMTP connection verified" });
     res.json({ success: true, message: "SMTP connection successful" });
   } catch (err) {
-    await addIntegrationLog("email", "test_connection", "failed", {}, { error: err.message }).catch(() => {});
-    res.status(400).json({ success: false, message: err.message || "SMTP connection failed" });
+    const smtpError = emailSmtpErrorDetails(err, config);
+    await addIntegrationLog("email", "test_connection", "failed", {}, { error: err.message, ...smtpError }).catch(() => {});
+    res.status(400).json({ success: false, ...smtpError });
   }
 });
 
@@ -2276,8 +2303,9 @@ app.post("/api/admin/integrations/email/send-test", async (req, res) => {
     await addIntegrationLog("email", "send_test", "success", { to }, { message: "Test email sent" });
     res.json({ success: true, message: `Test email sent to ${to}` });
   } catch (err) {
-    await addIntegrationLog("email", "send_test", "failed", { to: req.body?.email || "" }, { error: err.message }).catch(() => {});
-    res.status(400).json({ success: false, message: err.message || "Test email failed" });
+    const smtpError = emailSmtpErrorDetails(err, config);
+    await addIntegrationLog("email", "send_test", "failed", { to: req.body?.email || "" }, { error: err.message, ...smtpError }).catch(() => {});
+    res.status(400).json({ success: false, ...smtpError });
   }
 });
 
