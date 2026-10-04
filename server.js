@@ -10,6 +10,7 @@ import pg from "pg";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import sharp from "sharp";
+import nodemailer from "nodemailer";
 
 const { Pool } = pg;
 
@@ -141,6 +142,18 @@ const DEFAULT_CONFIG = {
   aiProvider: "OpenAI",
   aiApiKey: "",
   aiMode: "assist",
+
+  // Central Email Service (SMTP)
+  emailEnabled: false,
+  emailProvider: "SMTP",
+  emailSenderName: "GuruVidya Academy Pvt. Ltd.",
+  emailFrom: "",
+  emailReplyTo: "",
+  emailSmtpHost: "",
+  emailSmtpPort: 587,
+  emailSmtpUsername: "",
+  emailSmtpPassword: "",
+  emailSmtpSecurity: "STARTTLS",
 
   followupDays: [2, 3, 5],
   counselors: ["Counselor 1", "Counselor 2", "Reception"],
@@ -2177,6 +2190,16 @@ app.get("/api/admin/integrations", async (req, res) => {
         aiProvider: config.aiProvider,
         aiApiKey: config.aiApiKey,
         aiMode: config.aiMode,
+        emailEnabled: Boolean(config.emailEnabled),
+        emailProvider: config.emailProvider || "SMTP",
+        emailSenderName: config.emailSenderName || "GuruVidya Academy Pvt. Ltd.",
+        emailFrom: config.emailFrom || "",
+        emailReplyTo: config.emailReplyTo || "",
+        emailSmtpHost: config.emailSmtpHost || "",
+        emailSmtpPort: Number(config.emailSmtpPort || 587),
+        emailSmtpUsername: config.emailSmtpUsername || "",
+        emailSmtpPasswordSaved: Boolean(config.emailSmtpPassword),
+        emailSmtpSecurity: config.emailSmtpSecurity || "STARTTLS",
       },
     });
   } catch (err) {
@@ -2186,13 +2209,75 @@ app.get("/api/admin/integrations", async (req, res) => {
 
 app.post("/api/admin/integrations", async (req, res) => {
   try {
-    const saved = await savePersistedConfig(req.body || {});
-    await addAlert("integration_updated", "Integration settings updated", req.body || {});
-    await addIntegrationLog("settings", "save", "success", req.body || {}, { message: "Settings saved permanently" });
+    const patch = { ...(req.body || {}) };
+    // Never erase an already-saved SMTP password when the Admin UI leaves it blank.
+    if (!patch.emailSmtpPassword || patch.emailSmtpPassword === "********") {
+      delete patch.emailSmtpPassword;
+    }
+    const saved = await savePersistedConfig(patch);
+    const safePatch = { ...patch };
+    if (safePatch.emailSmtpPassword) safePatch.emailSmtpPassword = "[SAVED SECRET]";
+    await addAlert("integration_updated", "Integration settings updated", safePatch);
+    await addIntegrationLog("settings", "save", "success", safePatch, { message: "Settings saved permanently" });
     res.json({ success: true, message: "Integration settings saved", data: saved });
   } catch (err) {
     console.error("❌ Integration settings save error:", err.message);
     res.status(500).json({ success: false, message: "Failed to save integration settings" });
+  }
+});
+
+function buildEmailTransport(emailConfig = config) {
+  const host = String(emailConfig.emailSmtpHost || "").trim();
+  const port = Number(emailConfig.emailSmtpPort || 587);
+  const user = String(emailConfig.emailSmtpUsername || "").trim();
+  const pass = String(emailConfig.emailSmtpPassword || "");
+  const security = String(emailConfig.emailSmtpSecurity || "STARTTLS").toUpperCase();
+  if (!host || !port || !user || !pass) throw new Error("SMTP Host, Port, Username and Password are required.");
+  return nodemailer.createTransport({
+    host,
+    port,
+    secure: security === "SSL/TLS" || port === 465,
+    requireTLS: security === "STARTTLS",
+    auth: { user, pass },
+    connectionTimeout: 12000,
+    greetingTimeout: 12000,
+    socketTimeout: 15000,
+  });
+}
+
+app.post("/api/admin/integrations/email/test", async (req, res) => {
+  try {
+    await loadPersistedConfig();
+    const transport = buildEmailTransport(config);
+    await transport.verify();
+    await addIntegrationLog("email", "test_connection", "success", {}, { message: "SMTP connection verified" });
+    res.json({ success: true, message: "SMTP connection successful" });
+  } catch (err) {
+    await addIntegrationLog("email", "test_connection", "failed", {}, { error: err.message }).catch(() => {});
+    res.status(400).json({ success: false, message: err.message || "SMTP connection failed" });
+  }
+});
+
+app.post("/api/admin/integrations/email/send-test", async (req, res) => {
+  try {
+    await loadPersistedConfig();
+    const to = String(req.body?.email || "").trim();
+    if (!/^\S+@\S+\.\S+$/.test(to)) return res.status(400).json({ success: false, message: "Enter a valid test email address" });
+    if (!config.emailFrom) return res.status(400).json({ success: false, message: "From Email is required" });
+    const transport = buildEmailTransport(config);
+    await transport.sendMail({
+      from: `"${String(config.emailSenderName || "GuruVidya Academy Pvt. Ltd.").replace(/[\r\n"]/g, "")}" <${config.emailFrom}>`,
+      replyTo: config.emailReplyTo || config.emailFrom,
+      to,
+      subject: "GuruVidya Email Service Test",
+      text: "Email Service is configured successfully for GuruVidya Academy.",
+      html: "<div style=\"font-family:Arial,sans-serif\"><h2>GuruVidya Academy</h2><p>Email Service is configured successfully.</p><p>This is a test email from the Integration Panel.</p></div>",
+    });
+    await addIntegrationLog("email", "send_test", "success", { to }, { message: "Test email sent" });
+    res.json({ success: true, message: `Test email sent to ${to}` });
+  } catch (err) {
+    await addIntegrationLog("email", "send_test", "failed", { to: req.body?.email || "" }, { error: err.message }).catch(() => {});
+    res.status(400).json({ success: false, message: err.message || "Test email failed" });
   }
 });
 
