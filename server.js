@@ -2200,6 +2200,11 @@ app.get("/api/admin/integrations", async (req, res) => {
         emailSmtpUsername: config.emailSmtpUsername || "",
         emailSmtpPasswordSaved: Boolean(config.emailSmtpPassword),
         emailSmtpSecurity: config.emailSmtpSecurity || "STARTTLS",
+        emailPrimaryProvider: config.emailPrimaryProvider || "resend",
+        emailFallbackProvider: config.emailFallbackProvider || "smtp",
+        emailAutoFailover: config.emailAutoFailover !== false,
+        emailResendApiKeySaved: Boolean(config.emailResendApiKey),
+        emailResendDomain: config.emailResendDomain || "guruvidya.in",
       },
     });
   } catch (err) {
@@ -2214,9 +2219,14 @@ app.post("/api/admin/integrations", async (req, res) => {
     if (!patch.emailSmtpPassword || patch.emailSmtpPassword === "********") {
       delete patch.emailSmtpPassword;
     }
+    // Never return/erase a saved Resend API key when the Admin UI leaves it blank.
+    if (!patch.emailResendApiKey || patch.emailResendApiKey === "********") {
+      delete patch.emailResendApiKey;
+    }
     const saved = await savePersistedConfig(patch);
     const safePatch = { ...patch };
     if (safePatch.emailSmtpPassword) safePatch.emailSmtpPassword = "[SAVED SECRET]";
+    if (safePatch.emailResendApiKey) safePatch.emailResendApiKey = "[SAVED SECRET]";
     await addAlert("integration_updated", "Integration settings updated", safePatch);
     await addIntegrationLog("settings", "save", "success", safePatch, { message: "Settings saved permanently" });
     res.json({ success: true, message: "Integration settings saved", data: saved });
@@ -2242,34 +2252,120 @@ function buildEmailTransport(emailConfig = config) {
     connectionTimeout: 12000,
     greetingTimeout: 12000,
     socketTimeout: 15000,
-    tls: { servername: host },
   });
 }
 
-function emailSmtpErrorDetails(err, emailConfig = config) {
-  const host = String(emailConfig.emailSmtpHost || "").trim();
-  const port = Number(emailConfig.emailSmtpPort || 587);
-  const code = String(err?.code || "SMTP_ERROR");
-  const raw = String(err?.message || "SMTP connection failed");
-  const timeout = code === "ETIMEDOUT" || /timed?\s*out|timeout/i.test(raw);
-  const auth = code === "EAUTH" || /auth|credential|password|535/i.test(raw);
-  const dns = code === "ENOTFOUND" || code === "EAI_AGAIN" || /getaddrinfo|dns/i.test(raw);
-
-  if (timeout) {
-    return {
-      code: "SMTP_TIMEOUT",
-      message: `SMTP connection timed out before login (${host}:${port}).`,
-      detail: "The server could not reach the SMTP port. If this backend is running on a Render Free web service, outbound SMTP ports 25, 465 and 587 are blocked by Render; upgrade the Render service or use an email provider with an HTTPS/API sending option.",
-    };
-  }
-  if (auth) {
-    return { code: "SMTP_AUTH_FAILED", message: "SMTP authentication failed.", detail: "Check the full email username and mailbox password/API secret." };
-  }
-  if (dns) {
-    return { code: "SMTP_DNS_ERROR", message: `SMTP host could not be resolved (${host}).`, detail: "Check the SMTP Host value and DNS." };
-  }
-  return { code, message: raw, detail: "Check SMTP host, port, security mode, credentials and hosting outbound-network rules." };
+function smtpPublicError(err) {
+  const code = String(err?.code || err?.responseCode || "SMTP_ERROR");
+  const response = String(err?.response || "").replace(/[\r\n]+/g, " ").slice(0, 300);
+  const raw = String(err?.message || "SMTP operation failed").replace(/[\r\n]+/g, " ").slice(0, 300);
+  let message = "SMTP connection failed";
+  if (code === "EAUTH" || /auth|login|credential|password/i.test(raw + response)) message = "SMTP authentication failed";
+  else if (code === "ETIMEDOUT" || /timed? ?out/i.test(raw)) message = `SMTP connection timed out before login (${config.emailSmtpHost}:${config.emailSmtpPort})`;
+  else if (code === "ECONNREFUSED") message = "SMTP server refused the connection";
+  else if (/certificate|tls|ssl/i.test(raw)) message = "SMTP security / TLS connection failed";
+  return { code: code === "ETIMEDOUT" ? "SMTP_TIMEOUT" : code, message, detail: response || raw };
 }
+
+async function resendRequest(method, path, data) {
+  const key = String(config.emailResendApiKey || "").trim();
+  if (!key) throw Object.assign(new Error("Resend API Key is required"), { publicCode: "RESEND_KEY_REQUIRED" });
+  try {
+    return await axios({ method, url: `https://api.resend.com${path}`, data, headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" }, timeout: 15000 });
+  } catch (err) {
+    const detail = err?.response?.data?.message || err?.response?.data?.name || err?.message || "Resend API request failed";
+    throw Object.assign(new Error(String(detail)), { publicCode: `RESEND_${err?.response?.status || "ERROR"}`, status: err?.response?.status || 400 });
+  }
+}
+
+async function sendViaResend({ to, subject, text, html }) {
+  if (!config.emailFrom) throw Object.assign(new Error("From Email is required"), { publicCode: "FROM_EMAIL_REQUIRED" });
+  const payload = {
+    from: `${String(config.emailSenderName || "GuruVidya Academy Pvt. Ltd.").replace(/[\r\n<>]/g, "")} <${config.emailFrom}>`,
+    to: [to], subject, text, html,
+  };
+  if (config.emailReplyTo) payload.reply_to = config.emailReplyTo;
+  const response = await resendRequest("post", "/emails", payload);
+  return { provider: "resend", id: response.data?.id || "", accepted: true };
+}
+
+async function sendViaSmtp({ to, subject, text, html }) {
+  const transport = buildEmailTransport(config);
+  const info = await transport.sendMail({
+    from: `"${String(config.emailSenderName || "GuruVidya Academy Pvt. Ltd.").replace(/[\r\n"]/g, "")}" <${config.emailFrom}>`,
+    replyTo: config.emailReplyTo || config.emailFrom, to, subject, text, html,
+  });
+  const accepted = Array.isArray(info?.accepted) ? info.accepted : [];
+  if (!accepted.length) throw Object.assign(new Error(String(info?.response || "SMTP server did not accept the recipient")), { publicCode: "EMAIL_NOT_ACCEPTED" });
+  return { provider: "smtp", id: info?.messageId || "", accepted: true };
+}
+
+async function sendEmailWithFailover(message) {
+  await loadPersistedConfig();
+  const primary = String(config.emailPrimaryProvider || "resend").toLowerCase();
+  const fallback = String(config.emailFallbackProvider || (primary === "resend" ? "smtp" : "resend")).toLowerCase();
+  const autoFailover = config.emailAutoFailover !== false;
+  const senders = { resend: sendViaResend, smtp: sendViaSmtp };
+  const attempts = [];
+  try {
+    const result = await senders[primary](message);
+    attempts.push({ provider: primary, success: true });
+    return { ...result, route: "primary", attempts };
+  } catch (err) {
+    attempts.push({ provider: primary, success: false, error: err.message });
+    if (!autoFailover || !senders[fallback] || fallback === primary) throw Object.assign(err, { attempts });
+    try {
+      const result = await senders[fallback](message);
+      attempts.push({ provider: fallback, success: true });
+      return { ...result, route: "fallback", attempts };
+    } catch (fallbackErr) {
+      attempts.push({ provider: fallback, success: false, error: fallbackErr.message });
+      throw Object.assign(fallbackErr, { attempts });
+    }
+  }
+}
+
+app.post("/api/admin/integrations/email/resend/test", async (req, res) => {
+  try {
+    await loadPersistedConfig();
+    const response = await resendRequest("get", "/domains");
+    const wanted = String(config.emailResendDomain || "").toLowerCase();
+    const domains = Array.isArray(response.data?.data) ? response.data.data : [];
+    const domain = domains.find(d => String(d?.name || "").toLowerCase() === wanted);
+    await addIntegrationLog("email", "resend_test", "success", {}, { domain: wanted, status: domain?.status || "api_connected" });
+    res.json({ success: true, code: "RESEND_OK", message: "Resend API Connected!", detail: domain ? `Domain ${wanted}: ${domain.status || "found"}.` : "API key verified. Add/verify the sending domain in Resend before production sending." });
+  } catch (err) {
+    await addIntegrationLog("email", "resend_test", "failed", {}, { error: err.message }).catch(() => {});
+    res.status(err.status || 400).json({ success: false, code: err.publicCode || "RESEND_ERROR", message: "Resend API connection failed", detail: err.message });
+  }
+});
+
+app.post("/api/admin/integrations/email/resend/send-test", async (req, res) => {
+  try {
+    await loadPersistedConfig();
+    const to = String(req.body?.email || "").trim();
+    if (!/^\S+@\S+\.\S+$/.test(to)) return res.status(400).json({ success: false, code: "INVALID_EMAIL", message: "Enter a valid test email address" });
+    const result = await sendViaResend({ to, subject: "GuruVidya Email Service Test", text: "GuruVidya Resend API is configured successfully.", html: '<div style="font-family:Arial,sans-serif"><h2>GuruVidya Academy</h2><p>Resend API is configured successfully.</p><p>This is a test email from the Integration Panel.</p></div>' });
+    await addIntegrationLog("email", "resend_send_test", "success", { to }, result);
+    res.json({ success: true, code: "RESEND_ACCEPTED", message: "Test Email Sent Successfully!", detail: `Resend accepted the email for ${to}. Message ID: ${result.id || "created"}` });
+  } catch (err) {
+    await addIntegrationLog("email", "resend_send_test", "failed", { to: req.body?.email || "" }, { error: err.message }).catch(() => {});
+    res.status(err.status || 400).json({ success: false, code: err.publicCode || "RESEND_ERROR", message: "Resend test email failed", detail: err.message });
+  }
+});
+
+app.post("/api/admin/integrations/email/routing/send-test", async (req, res) => {
+  try {
+    const to = String(req.body?.email || "").trim();
+    if (!/^\S+@\S+\.\S+$/.test(to)) return res.status(400).json({ success: false, code: "INVALID_EMAIL", message: "Enter a valid test email address" });
+    const result = await sendEmailWithFailover({ to, subject: "GuruVidya Email Routing Test", text: "GuruVidya automatic email routing is working.", html: '<div style="font-family:Arial,sans-serif"><h2>GuruVidya Academy</h2><p>Automatic email routing and failover test completed.</p></div>' });
+    await addIntegrationLog("email", "routing_send_test", "success", { to }, result);
+    res.json({ success: true, code: "ROUTING_ACCEPTED", message: "Routing test email accepted", detail: `Sent through ${result.provider.toUpperCase()} (${result.route}).`, data: result });
+  } catch (err) {
+    await addIntegrationLog("email", "routing_send_test", "failed", { to: req.body?.email || "" }, { error: err.message, attempts: err.attempts || [] }).catch(() => {});
+    res.status(400).json({ success: false, code: err.publicCode || "ROUTING_FAILED", message: "Both configured email routes failed", detail: (err.attempts || []).map(a => `${a.provider}: ${a.success ? "OK" : a.error}`).join(" | ") || err.message });
+  }
+});
 
 app.post("/api/admin/integrations/email/test", async (req, res) => {
   try {
@@ -2277,11 +2373,11 @@ app.post("/api/admin/integrations/email/test", async (req, res) => {
     const transport = buildEmailTransport(config);
     await transport.verify();
     await addIntegrationLog("email", "test_connection", "success", {}, { message: "SMTP connection verified" });
-    res.json({ success: true, message: "SMTP connection successful" });
+    res.json({ success: true, code: "SMTP_OK", message: "SMTP Connection Successful!", detail: "Server connection and SMTP authentication were verified successfully." });
   } catch (err) {
-    const smtpError = emailSmtpErrorDetails(err, config);
-    await addIntegrationLog("email", "test_connection", "failed", {}, { error: err.message, ...smtpError }).catch(() => {});
-    res.status(400).json({ success: false, ...smtpError });
+    const pub = smtpPublicError(err);
+    await addIntegrationLog("email", "test_connection", "failed", {}, { error: err.message, code: pub.code }).catch(() => {});
+    res.status(400).json({ success: false, ...pub });
   }
 });
 
@@ -2303,9 +2399,8 @@ app.post("/api/admin/integrations/email/send-test", async (req, res) => {
     await addIntegrationLog("email", "send_test", "success", { to }, { message: "Test email sent" });
     res.json({ success: true, message: `Test email sent to ${to}` });
   } catch (err) {
-    const smtpError = emailSmtpErrorDetails(err, config);
-    await addIntegrationLog("email", "send_test", "failed", { to: req.body?.email || "" }, { error: err.message, ...smtpError }).catch(() => {});
-    res.status(400).json({ success: false, ...smtpError });
+    await addIntegrationLog("email", "send_test", "failed", { to: req.body?.email || "" }, { error: err.message }).catch(() => {});
+    res.status(400).json({ success: false, message: err.message || "Test email failed" });
   }
 });
 
