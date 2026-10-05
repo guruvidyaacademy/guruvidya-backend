@@ -4359,16 +4359,123 @@ async function sendBookingWhatsAppToVerifiedRecipients(b,token,action,options={}
   return {success:results.some(x=>x.success),status:results.length?'recipient_results':'no_open_or_verified_recipient',results};
 }
 
+
+function bookingEmailEsc(v='') {
+  return String(v ?? '').replace(/[&<>\"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]));
+}
+function bookingEmailPhone(v='') {
+  const d=String(v||'').replace(/\D/g,'');
+  const ten=d.length>=10?d.slice(-10):d;
+  return ten?`+91 ${ten}`:'';
+}
+function bookingStudentAddress(b={}) {
+  return [b.address_line1,b.address_line2,b.address_city,b.address_state,b.address_postal_code,b.address_country]
+    .map(v=>String(v||'').trim()).filter(Boolean).join(', ');
+}
+function bookingEmailIcon(symbol, color='#0b3b8f') {
+  return `<span style="display:inline-block;width:24px;text-align:center;color:${color};font-size:18px;font-weight:700;line-height:22px">${symbol}</span>`;
+}
+function bookingEmailRow(icon,label,value,{valueHtml=false,whatsapp=false}={}) {
+  const val=valueHtml?String(value||''):bookingEmailEsc(value||'—');
+  const leftIcon=bookingEmailIcon(icon,'#0b3b8f');
+  const shown=whatsapp?`${bookingEmailIcon('●','#13ad4b')}<span style="vertical-align:2px">${val}</span>`:val;
+  return `<tr><td style="width:34px;padding:9px 4px;border-bottom:1px solid #dbe8f3;vertical-align:middle">${leftIcon}</td><td style="width:190px;padding:9px 4px;border-bottom:1px solid #dbe8f3;color:#073a91;font-weight:700;font-size:15px;vertical-align:middle">${bookingEmailEsc(label)}</td><td style="width:14px;padding:9px 2px;border-bottom:1px solid #dbe8f3;color:#073a91;font-weight:700;vertical-align:middle">:</td><td style="padding:9px 4px;border-bottom:1px solid #dbe8f3;color:#263b5f;font-size:15px;vertical-align:middle">${shown}</td></tr>`;
+}
+function bookingEmailHtml(b,token,{rescheduled=false}={}) {
+  const {date,time}=bookingIstParts(b.starts_at);
+  const offline=String(b.mode||'').toLowerCase()==='offline';
+  const base=String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'');
+  const manage=bookingManageUrl(b,token), cancel=`${manage}&action=cancel`, reschedule=`${manage}&action=reschedule`;
+  const call='tel:+919821627725', wa='https://wa.me/919821627725';
+  const logo=`${base}/api/public/booking/email-logo.png`;
+  const mapOrMeet=offline?(b.offline_map_url||manage):(b.meeting_link||manage);
+  const mapOrMeetText=offline?'View on Google Maps':'Join Online Meeting';
+  const modeHtml=offline
+    ? `<span style="display:inline-block;background:#ff7417;color:#fff;border-radius:12px;padding:7px 12px;font-weight:700">●&nbsp; Offline (${bookingEmailEsc(b.offline_location_name||'Head Office Tagore Garden')})</span>`
+    : `<span style="display:inline-block;background:#0878e8;color:#fff;border-radius:12px;padding:7px 14px;font-weight:700">▣&nbsp; Online</span>`;
+  const locationValue=offline?`<strong style="color:#0b3b8f">Guruvidya Academy Pvt. Ltd.</strong><br>${bookingEmailEsc(b.offline_address||'GuruVidya Academy, New Delhi')}`:`<a href="${bookingEmailEsc(mapOrMeet)}" style="display:inline-block;background:#0878e8;color:#fff;text-decoration:none;border-radius:12px;padding:8px 14px;font-weight:700">🔗 Join Online Meeting</a>`;
+  const rows=[
+    bookingEmailRow('▤','Booking Reference',b.booking_ref),
+    bookingEmailRow('●','Student Name',b.student_name),
+    bookingEmailRow('◉','Student WhatsApp',bookingEmailPhone(b.student_mobile),{whatsapp:true}),
+    bookingEmailRow('✉','Student Email ID',b.student_email||'—'),
+    bookingEmailRow('⌂','Student Address',bookingStudentAddress(b)||'—'),
+    bookingEmailRow('●','Parent/Guardian',`${b.parent_name||'—'}${b.parent_relation?` (${b.parent_relation})`:''}`),
+    bookingEmailRow('◉','Parent WhatsApp',bookingEmailPhone(b.parent_mobile),{whatsapp:true}),
+    bookingEmailRow('✉','Parent Email ID',b.parent_email||'—'),
+    bookingEmailRow('◆','Course',b.course),
+    bookingEmailRow('▣','Date',date),
+    bookingEmailRow('◷','Time (IST)',time),
+    bookingEmailRow('●','Counsellor',b.counsellor_name||'Guruvidya Admission Counsellor'),
+    bookingEmailRow('▭','Mode',modeHtml,{valueHtml:true}),
+    bookingEmailRow('●',offline?'Location':'Online Session',locationValue,{valueHtml:true}),
+  ].join('');
+  const title=rescheduled?'Appointment Rescheduled Successfully!':'Appointment Booked Successfully!';
+  const subtitle=rescheduled?'Your counselling appointment has been rescheduled.':'Your counselling appointment has been confirmed.';
+  return `<!doctype html><html><body style="margin:0;background:#eef5fb;font-family:Arial,Helvetica,sans-serif;color:#16315c"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#eef5fb"><tr><td align="center" style="padding:20px 8px"><table role="presentation" width="620" cellspacing="0" cellpadding="0" style="width:100%;max-width:620px;background:#fff;border-radius:22px;overflow:hidden;border:1px solid #d9e7f3">
+  <tr><td style="padding:16px 24px 6px;background:#fff"><img src="${logo}" alt="GuruVidya" width="330" style="display:block;max-width:76%;height:auto;border:0"></td></tr>
+  <tr><td style="background:linear-gradient(135deg,#072a79,#0878e8);padding:24px 30px 26px;border-radius:55% 0 0 0/20px 0 0 0"><div style="font-size:31px;line-height:1.08;color:#fff;font-weight:800">${bookingEmailEsc(title)}</div><div style="margin-top:9px;color:#fff;font-size:18px">${bookingEmailEsc(subtitle)}</div></td></tr>
+  <tr><td style="padding:16px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f7fbff;border:1px solid #d8e8f4;border-radius:18px;padding:8px">${rows}</table></td></tr>
+  <tr><td style="padding:0 16px 8px"><a href="${bookingEmailEsc(mapOrMeet)}" style="display:block;text-align:center;background:#0878e8;color:#fff;text-decoration:none;border-radius:12px;padding:15px 12px;font-size:19px;font-weight:800">${offline?'📍':'▣'}&nbsp; ${mapOrMeetText}</a></td></tr>
+  <tr><td style="padding:0 16px 10px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td width="50%" style="padding-right:5px"><a href="${bookingEmailEsc(manage)}" style="display:block;text-align:center;border:1.5px solid #0878e8;color:#073a91;text-decoration:none;border-radius:11px;padding:12px 6px;font-weight:700">▣&nbsp; Manage Appointment</a></td><td width="50%" style="padding-left:5px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1.5px solid #13ad4b;border-radius:11px"><tr><td width="44%" align="center"><a href="${call}" style="display:block;padding:12px 2px;color:#0b8d3c;text-decoration:none;font-weight:700">☎ Call</a></td><td width="56%" align="center"><a href="${wa}" style="display:block;padding:12px 2px;color:#0b8d3c;text-decoration:none;font-weight:700">● WhatsApp Us</a></td></tr></table></td></tr></table></td></tr>
+  <tr><td style="padding:0 16px 10px"><div style="background:#e8f5ff;border-radius:12px;padding:13px 15px;color:#073a91"><strong>ⓘ&nbsp; Need to make a change to your appointment?</strong><br><span style="font-size:13px">Use the options below to cancel or reschedule.</span></div></td></tr>
+  <tr><td style="padding:0 16px 16px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td width="50%" style="padding-right:5px"><a href="${bookingEmailEsc(cancel)}" style="display:block;text-align:center;border:1.5px solid #ff3b30;color:#e51b16;text-decoration:none;border-radius:11px;padding:12px 6px;font-weight:700">✕&nbsp; Cancel Appointment</a></td><td width="50%" style="padding-left:5px"><a href="${bookingEmailEsc(reschedule)}" style="display:block;text-align:center;border:1.5px solid #0878e8;color:#0871ee;text-decoration:none;border-radius:11px;padding:12px 6px;font-weight:700">▣&nbsp; Reschedule Appointment</a></td></tr></table></td></tr>
+  <tr><td style="border-top:1px solid #dceaf5;background:#f7fbff;padding:14px 18px"><table role="presentation" width="100%"><tr><td width="54%"><img src="${logo}" alt="GuruVidya Academy Pvt. Ltd." width="220" style="display:block;max-width:95%;height:auto;border:0"></td><td style="border-left:1px solid #9db3cc;padding-left:14px;color:#0871ee;font-weight:700">Need Help?<br><a href="${call}" style="color:#073a91;text-decoration:none">☎</a>&nbsp;&nbsp;<a href="${wa}" style="color:#13ad4b;text-decoration:none">●</a>&nbsp;&nbsp;<a href="tel:+919821627725" style="color:#0871ee">+91 9821627725</a></td></tr></table></td></tr>
+  </table></td></tr></table></body></html>`;
+}
+
+app.get('/api/public/booking/email-logo.png', async (_req,res)=>{
+  try{
+    const logo=await readFile(new URL('./booking/guruvidya-logo.png',import.meta.url));
+    res.set({'Content-Type':'image/png','Cache-Control':'public, max-age=86400','X-Content-Type-Options':'nosniff'}).send(logo);
+  }catch(e){res.status(404).end();}
+});
+
+async function sendBookingConfirmationEmails(b,token,options={}) {
+  if(config.emailEnabled===false || !String(config.emailFrom||'').trim()) return {success:false,status:'email_disabled'};
+  const cfg=await pool.query('SELECT settings FROM booking_settings WHERE id=1');
+  const settings=cfg.rows[0]?.settings||{};
+  if(settings.email_notifications_enabled===false) return {success:false,status:'booking_email_disabled'};
+  const mode=['student','parent'].includes(settings.email_recipient_mode)?settings.email_recipient_mode:'both';
+  const recipients=[];
+  if(mode!=='parent' && b.student_email) recipients.push({kind:'student',email:String(b.student_email).trim(),name:b.student_name});
+  if(mode!=='student' && b.parent_email) recipients.push({kind:'parent',email:String(b.parent_email).trim(),name:b.parent_name||b.student_name});
+  const seen=new Set(),results=[];
+  for(const r of recipients){
+    const email=r.email.toLowerCase(); if(!/^\S+@\S+\.\S+$/.test(email)||seen.has(email))continue; seen.add(email);
+    try{
+      const {date,time}=bookingIstParts(b.starts_at);
+      const subject=options.rescheduled===true
+        ? `Appointment Rescheduled – GuruVidya Academy | ${b.booking_ref}`
+        : `Appointment Confirmed – GuruVidya Academy | ${b.booking_ref}`;
+      const text=`${options.rescheduled===true?'Appointment Rescheduled':'Appointment Confirmed'}\nBooking Reference: ${b.booking_ref}\nStudent: ${b.student_name}\nCourse: ${b.course}\nDate: ${date}\nTime (IST): ${time}\nManage Appointment: ${bookingManageUrl(b,token)}`;
+      const result=await sendEmailWithFailover({to:r.email,subject,text,html:bookingEmailHtml(b,token,options)});
+      results.push({recipient:r.kind,email:r.email,success:true,provider:result.provider});
+      await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail) VALUES($1,$2,$3,'email','sent',$4) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status='sent',detail=EXCLUDED.detail,created_at=NOW()`,[b.id,options.rescheduled===true?'booking_reschedule_confirmation':'booking_confirmation',r.kind,`Sent via ${result.provider}`]).catch(()=>{});
+    }catch(e){
+      results.push({recipient:r.kind,email:r.email,success:false,error:e.message});
+      await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail) VALUES($1,$2,$3,'email','failed',$4) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status='failed',detail=EXCLUDED.detail,created_at=NOW()`,[b.id,options.rescheduled===true?'booking_reschedule_confirmation':'booking_confirmation',r.kind,String(e.message||'Email failed').slice(0,500)]).catch(()=>{});
+    }
+  }
+  return {success:results.some(x=>x.success),status:results.length?'recipient_results':'no_email_recipient',results};
+}
+
 async function onBookingCreatedWhatsApp(created) {
   const b=await loadBookingWhatsAppContext(created.booking_ref);
   if(!b) return {success:false,status:'booking_not_found'};
-  return sendBookingWhatsAppToVerifiedRecipients(b,created.manage_token,'booking_confirmation_24h');
+  const emailJob=sendBookingConfirmationEmails(b,created.manage_token).catch(err=>console.error('BOOKING EMAIL CREATE',err?.message||err));
+  const whatsappResult=await sendBookingWhatsAppToVerifiedRecipients(b,created.manage_token,'booking_confirmation_24h');
+  await emailJob;
+  return whatsappResult;
 }
 
 async function onBookingRescheduledWhatsApp(created) {
   const b=await loadBookingWhatsAppContext(created.booking_ref);
   if(!b) return {success:false,status:'booking_not_found'};
-  return sendBookingWhatsAppToVerifiedRecipients(b,created.manage_token,'booking_reschedule_confirmation_24h',{rescheduled:true});
+  const emailJob=sendBookingConfirmationEmails(b,created.manage_token,{rescheduled:true}).catch(err=>console.error('BOOKING EMAIL RESCHEDULE',err?.message||err));
+  const whatsappResult=await sendBookingWhatsAppToVerifiedRecipients(b,created.manage_token,'booking_reschedule_confirmation_24h',{rescheduled:true});
+  await emailJob;
+  return whatsappResult;
 }
 
 // Kept for compatibility with any older code paths.
