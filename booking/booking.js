@@ -392,7 +392,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
     const token=String(req.body?.token||'');
     if(!/^[a-f0-9]{64}$/i.test(token))return fail(res,404,'Booking not found');
     try {
-      const r=await pool.query(`SELECT b.booking_ref,b.student_name,b.student_mobile,b.parent_name,b.parent_mobile,b.parent_relation,b.course,b.mode,b.starts_at,b.ends_at,b.status,b.customer_response,b.recipient,c.name AS counsellor_name,c.mobile AS counsellor_mobile,c.meeting_link,l.name AS offline_location_name,l.address AS offline_address,l.map_url AS offline_map_url FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id LEFT JOIN booking_locations l ON l.id=c.location_id WHERE b.booking_ref=$1 AND b.token_hash=$2`,[req.params.ref,hash(token)]);
+      const r=await pool.query(`SELECT b.booking_ref,b.student_name,b.student_mobile,b.parent_name,b.parent_mobile,b.parent_relation,b.student_email,b.parent_email,b.address_country,b.address_state,b.address_city,b.address_postal_code,b.address_line1,b.address_line2,b.course,b.mode,b.starts_at,b.ends_at,b.status,b.customer_response,b.recipient,c.name AS counsellor_name,c.mobile AS counsellor_mobile,c.meeting_link,l.name AS offline_location_name,l.address AS offline_address,l.map_url AS offline_map_url FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id LEFT JOIN booking_locations l ON l.id=c.location_id WHERE b.booking_ref=$1 AND b.token_hash=$2`,[req.params.ref,hash(token)]);
       if(!r.rowCount)return fail(res,404,'Booking not found');
       const cfg=await settings();
       res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer','Pragma':'no-cache'}).json({success:true,data:{...r.rows[0],offline_address:String(cfg.offline_address||'')}});
