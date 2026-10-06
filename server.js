@@ -4398,7 +4398,7 @@ function bookingEmailHtml(b,token,{rescheduled=false}={}) {
   const logo=`${base}/api/public/booking/email-logo.png`;
   const headerArt=`${base}/api/public/booking/email-icon/header-art.png`;
   const exactBookedHeader=`${base}/api/public/booking/email-icon/header-booked-exact.png`;
-  const exactRescheduledHeader=`${base}/api/public/booking/email-icon/header-rescheduled-exact.png?v=1`;
+  const exactRescheduledHeader=`${base}/api/public/booking/email-icon/header-rescheduled-exact.png?v=2`;
   const gmark=`${base}/api/public/booking/email-icon/g-mark.png`;
   const mapOrMeet=offline?(b.offline_map_url||manage):(b.meeting_link||manage);
   const inlineIcon=(name,tone='blue',size=24)=>`<img src="${base}/api/public/booking/email-icon/${name}-${tone}.png${name==='whatsapp'&&tone==='green'?'?v=5':''}" width="${size}" height="${size}" alt="" style="display:block;width:${size}px;height:${size}px;border:0">`;
