@@ -4376,15 +4376,18 @@ function bookingEmailIcon(name, variant='blue', size=24) {
   const safe=String(name||'document').replace(/[^a-z-]/g,'');
   const tone=['blue','green','white','red'].includes(variant)?variant:'blue';
   const base=String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'');
-  const src=(safe==='whatsapp' && tone==='green') ? `${base}/api/public/booking/email-whatsapp.png` : `${base}/api/public/booking/email-icon/${safe}-${tone}.png`;
-  return `<img src="${src}" width="${size}" height="${size}" alt="WhatsApp" style="display:block;width:${size}px;height:${size}px;border:0;outline:none;text-decoration:none">`;
+  const file=(safe==='whatsapp' && tone==='green')?'email-whatsapp.png':`${safe}-${tone}.png`;
+  return `<img src="${base}/api/public/booking/email-icon/${file}" width="${size}" height="${size}" alt="" style="display:block;width:${size}px;height:${size}px;border:0;outline:none;text-decoration:none">`;
 }
 function bookingEmailRow(icon,label,value,{valueHtml=false,whatsapp=false,email=false,last=false}={}) {
   const val=valueHtml?String(value||''):bookingEmailEsc(value||'—');
   const border=last?'':'border-bottom:1px solid #d7e5f0;';
   const waIcon=bookingEmailIcon('whatsapp','green',22);
   const mailIcon=bookingEmailIcon('mail','blue',19);
-  const shown=whatsapp?`<table role="presentation" cellspacing="0" cellpadding="0"><tr><td style="padding-right:7px;vertical-align:middle">${waIcon}</td><td style="vertical-align:middle;color:#273d60;font-size:15px">${val}</td></tr></table>`:email?`<table role="presentation" cellspacing="0" cellpadding="0"><tr><td style="padding-right:7px;vertical-align:middle">${mailIcon}</td><td style="vertical-align:middle;color:#273d60;font-size:15px">${val}</td></tr></table>`:val;
+  const waDigits=whatsapp?String(value||'').replace(/\D/g,'').slice(-10):'';
+  const waHref=waDigits?`https://wa.me/91${waDigits}`:'';
+  const waValue=waHref?`<a href="${waHref}" style="color:#1769c5;text-decoration:underline">${val}</a>`:val;
+  const shown=whatsapp?`<table role="presentation" cellspacing="0" cellpadding="0"><tr><td style="padding-right:7px;vertical-align:middle">${waIcon}</td><td style="vertical-align:middle;color:#273d60;font-size:15px">${waValue}</td></tr></table>`:email?`<table role="presentation" cellspacing="0" cellpadding="0"><tr><td style="padding-right:7px;vertical-align:middle">${mailIcon}</td><td style="vertical-align:middle;color:#273d60;font-size:15px">${val}</td></tr></table>`:val;
   return `<tr><td style="width:38px;padding:9px 5px;${border}vertical-align:middle">${bookingEmailIcon(icon,'blue',24)}</td><td style="width:178px;padding:9px 4px;${border}color:#0a3b86;font-weight:700;font-size:15px;vertical-align:middle">${bookingEmailEsc(label)}</td><td style="width:13px;padding:9px 2px;${border}color:#0a3b86;font-weight:800;vertical-align:middle">:</td><td style="padding:9px 4px;${border}color:#273d60;font-size:15px;vertical-align:middle">${shown}</td></tr>`;
 }
 function bookingEmailHtml(b,token,{rescheduled=false}={}) {
@@ -4398,7 +4401,10 @@ function bookingEmailHtml(b,token,{rescheduled=false}={}) {
   const exactBookedHeader=`${base}/api/public/booking/email-icon/header-booked-exact.png`;
   const gmark=`${base}/api/public/booking/email-icon/g-mark.png`;
   const mapOrMeet=offline?(b.offline_map_url||manage):(b.meeting_link||manage);
-  const inlineIcon=(name,tone='blue',size=24)=>{ const src=(name==='whatsapp' && tone==='green') ? `${base}/api/public/booking/email-whatsapp.png` : `${base}/api/public/booking/email-icon/${name}-${tone}.png`; return `<img src="${src}" width="${size}" height="${size}" alt="${name==='whatsapp'?'WhatsApp':''}" style="display:block;width:${size}px;height:${size}px;border:0">`; };
+  const inlineIcon=(name,tone='blue',size=24)=>{
+    const file=(name==='whatsapp' && tone==='green')?'email-whatsapp.png':`${name}-${tone}.png`;
+    return `<img src="${base}/api/public/booking/email-icon/${file}" width="${size}" height="${size}" alt="" style="display:block;width:${size}px;height:${size}px;border:0">`;
+  };
   const iconText=(icon,html,gap=8)=>`<table role="presentation" cellspacing="0" cellpadding="0" border="0"><tr><td valign="middle" style="padding-right:${gap}px">${icon}</td><td valign="middle">${html}</td></tr></table>`;
   const modeHtml=offline
     ? `<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="background:#ff7417;border-radius:10px"><tr><td style="padding:7px 8px 7px 10px">${inlineIcon('pin','white',19)}</td><td style="padding:7px 12px 7px 0;color:#fff;font-weight:700;font-size:14px;white-space:nowrap">Offline (${bookingEmailEsc(b.offline_location_name||'Head Office Tagore Garden')})</td></tr></table>`
@@ -4435,21 +4441,6 @@ function bookingEmailHtml(b,token,{rescheduled=false}={}) {
   <tr><td style="background:#eef9ff;border-top:0;padding:12px 16px 13px;border-radius:0 0 18px 18px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td width="54%" valign="middle"><table role="presentation" cellspacing="0" cellpadding="0" border="0"><tr><td style="padding-right:8px"><img src="${logo}" width="150" alt="GuruVidya" style="display:block;width:150px;max-width:150px;height:auto;border:0"></td><td><div style="color:#0b2f79;font-size:14px;font-weight:800;white-space:nowrap">GuruVidya Academy Pvt. Ltd.</div></td></tr></table></td><td width="46%" valign="middle" style="border-left:1px solid #8fa9c5;padding-left:14px"><div style="color:#0871ee;font-size:15px;font-weight:800;margin-bottom:5px">Need Help?</div><table role="presentation" cellspacing="0" cellpadding="0" border="0"><tr><td style="padding-right:8px"><a href="${call}" style="text-decoration:none">${inlineIcon('phone','blue',24)}</a></td><td style="padding-right:8px"><a href="${wa}" style="text-decoration:none">${inlineIcon('whatsapp','green',25)}</a></td><td><a href="${call}" style="color:#0871ee;font-size:15px;font-weight:800;text-decoration:underline;white-space:nowrap">+91 9821627725</a></td></tr></table></td></tr></table></td></tr>
   </table></td></tr></table></body></html>`;
 }
-
-app.get('/api/public/booking/email-whatsapp.png', async (_req,res)=>{
-  try{
-    // Dedicated WhatsApp mark for email. Generated server-side so Gmail receives a real PNG,
-    // instead of the old green phone/call asset.
-    const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-      <circle cx="64" cy="61" r="48" fill="#25D366"/>
-      <path fill="#25D366" d="M28 103l5-23 20 15z"/>
-      <path fill="#fff" d="M45.5 35.5c2.4-2.2 5.6-2.5 7.8-.8 1.8 1.4 6.6 8.7 7.3 10.5.7 1.8.2 3.6-.9 5.1l-4.1 5.3c-.9 1.2-.7 2.6-.1 3.8 3.8 7.5 9.7 13.5 17.2 17.3 1.2.6 2.7.8 3.8-.1l5.4-4.2c1.5-1.1 3.3-1.6 5.1-.9 1.8.7 9.1 5.5 10.5 7.3 1.7 2.2 1.4 5.4-.8 7.8-3.7 4-9 7.7-15.6 7.7-7.9 0-19.4-5.6-29.8-16-10.4-10.4-16-21.9-16-29.8 0-6.6 3.7-11.9 7.7-15.6l2.5-2.4z"/>
-      <circle cx="64" cy="61" r="43" fill="none" stroke="#fff" stroke-width="5"/>
-    </svg>`;
-    const png=await sharp(Buffer.from(svg)).png().toBuffer();
-    res.set({'Content-Type':'image/png','Cache-Control':'public, max-age=300','X-Content-Type-Options':'nosniff'}).send(png);
-  }catch(e){res.status(500).end();}
-});
 
 app.get('/api/public/booking/email-icon/:name', async (req,res)=>{
   try{
