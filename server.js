@@ -4376,7 +4376,7 @@ function bookingEmailIcon(name, variant='blue', size=24) {
   const safe=String(name||'document').replace(/[^a-z-]/g,'');
   const tone=['blue','green','white','red'].includes(variant)?variant:'blue';
   const base=String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'');
-  return `<img src="${base}/api/public/booking/email-icon/${safe}-${tone}.png${safe==='whatsapp'&&tone==='green'?'?v=3':''}" width="${size}" height="${size}" alt="" style="display:block;width:${size}px;height:${size}px;border:0;outline:none;text-decoration:none">`;
+  return `<img src="${base}/api/public/booking/email-icon/${safe}-${tone}.png${safe==='whatsapp'&&tone==='green'?'?v=5':''}" width="${size}" height="${size}" alt="" style="display:block;width:${size}px;height:${size}px;border:0;outline:none;text-decoration:none">`;
 }
 function bookingEmailRow(icon,label,value,{valueHtml=false,whatsapp=false,email=false,last=false}={}) {
   const val=valueHtml?String(value||''):bookingEmailEsc(value||'—');
@@ -4400,7 +4400,7 @@ function bookingEmailHtml(b,token,{rescheduled=false}={}) {
   const exactBookedHeader=`${base}/api/public/booking/email-icon/header-booked-exact.png`;
   const gmark=`${base}/api/public/booking/email-icon/g-mark.png`;
   const mapOrMeet=offline?(b.offline_map_url||manage):(b.meeting_link||manage);
-  const inlineIcon=(name,tone='blue',size=24)=>`<img src="${base}/api/public/booking/email-icon/${name}-${tone}.png${name==='whatsapp'&&tone==='green'?'?v=3':''}" width="${size}" height="${size}" alt="" style="display:block;width:${size}px;height:${size}px;border:0">`;
+  const inlineIcon=(name,tone='blue',size=24)=>`<img src="${base}/api/public/booking/email-icon/${name}-${tone}.png${name==='whatsapp'&&tone==='green'?'?v=5':''}" width="${size}" height="${size}" alt="" style="display:block;width:${size}px;height:${size}px;border:0">`;
   const iconText=(icon,html,gap=8)=>`<table role="presentation" cellspacing="0" cellpadding="0" border="0"><tr><td valign="middle" style="padding-right:${gap}px">${icon}</td><td valign="middle">${html}</td></tr></table>`;
   const modeHtml=offline
     ? `<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="background:#ff7417;border-radius:10px"><tr><td style="padding:7px 8px 7px 10px">${inlineIcon('pin','white',19)}</td><td style="padding:7px 12px 7px 0;color:#fff;font-weight:700;font-size:14px;white-space:nowrap">Offline (${bookingEmailEsc(b.offline_location_name||'Head Office Tagore Garden')})</td></tr></table>`
