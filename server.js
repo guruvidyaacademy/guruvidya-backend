@@ -4372,15 +4372,18 @@ function bookingStudentAddress(b={}) {
   return [b.address_line1,b.address_line2,b.address_city,b.address_state,b.address_postal_code,b.address_country]
     .map(v=>String(v||'').trim()).filter(Boolean).join(', ');
 }
-function bookingEmailIcon(symbol, color='#0b3b8f', size=22) {
-  return `<span style="display:inline-block;width:28px;text-align:center;color:${color};font-size:${size}px;font-weight:800;line-height:24px;font-family:Arial,sans-serif">${symbol}</span>`;
+function bookingEmailIcon(name, variant='blue', size=24) {
+  const safe=String(name||'document').replace(/[^a-z-]/g,'');
+  const tone=['blue','green','white','red'].includes(variant)?variant:'blue';
+  const base=String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'');
+  return `<img src="${base}/api/public/booking/email-icon/${safe}-${tone}.png" width="${size}" height="${size}" alt="" style="display:block;width:${size}px;height:${size}px;border:0;outline:none;text-decoration:none">`;
 }
 function bookingEmailRow(icon,label,value,{valueHtml=false,whatsapp=false,last=false}={}) {
   const val=valueHtml?String(value||''):bookingEmailEsc(value||'—');
   const border=last?'':'border-bottom:1px solid #d7e5f0;';
-  const waIcon=`<span style="display:inline-block;width:23px;height:23px;line-height:23px;border-radius:50%;background:#16b84e;color:#fff;text-align:center;font-size:14px;font-weight:900;margin-right:7px;vertical-align:-1px">☎</span>`;
-  const shown=whatsapp?`${waIcon}<span style="vertical-align:1px">${val}</span>`:val;
-  return `<tr><td style="width:38px;padding:9px 5px;${border}vertical-align:middle">${bookingEmailIcon(icon)}</td><td style="width:178px;padding:9px 4px;${border}color:#0a3b86;font-weight:700;font-size:15px;vertical-align:middle">${bookingEmailEsc(label)}</td><td style="width:13px;padding:9px 2px;${border}color:#0a3b86;font-weight:800;vertical-align:middle">:</td><td style="padding:9px 4px;${border}color:#273d60;font-size:15px;vertical-align:middle">${shown}</td></tr>`;
+  const waIcon=bookingEmailIcon('whatsapp','green',22);
+  const shown=whatsapp?`<table role="presentation" cellspacing="0" cellpadding="0"><tr><td style="padding-right:7px;vertical-align:middle">${waIcon}</td><td style="vertical-align:middle;color:#273d60;font-size:15px">${val}</td></tr></table>`:val;
+  return `<tr><td style="width:38px;padding:9px 5px;${border}vertical-align:middle">${bookingEmailIcon(icon,'blue',24)}</td><td style="width:178px;padding:9px 4px;${border}color:#0a3b86;font-weight:700;font-size:15px;vertical-align:middle">${bookingEmailEsc(label)}</td><td style="width:13px;padding:9px 2px;${border}color:#0a3b86;font-weight:800;vertical-align:middle">:</td><td style="padding:9px 4px;${border}color:#273d60;font-size:15px;vertical-align:middle">${shown}</td></tr>`;
 }
 function bookingEmailHtml(b,token,{rescheduled=false}={}) {
   const {date,time}=bookingIstParts(b.starts_at);
@@ -4391,42 +4394,51 @@ function bookingEmailHtml(b,token,{rescheduled=false}={}) {
   const logo=`${base}/api/public/booking/email-logo.png`;
   const mapOrMeet=offline?(b.offline_map_url||manage):(b.meeting_link||manage);
   const modeHtml=offline
-    ? `<span style="display:inline-block;background:#ff7417;color:#fff;border-radius:12px;padding:8px 13px;font-weight:800;white-space:nowrap"><span style="font-size:18px;color:#fff">●</span>&nbsp; Offline (${bookingEmailEsc(b.offline_location_name||'Head Office Tagore Garden')})</span>`
-    : `<span style="display:inline-block;background:#0878e8;color:#fff;border-radius:12px;padding:8px 18px;font-weight:800"><span style="font-size:18px">▰</span>&nbsp; Online</span>`;
+    ? `<span style="display:inline-block;background:#ff7417;color:#fff;border-radius:12px;padding:8px 13px;font-weight:800;white-space:nowrap">${bookingEmailIcon('pin','white',18)}&nbsp; Offline (${bookingEmailEsc(b.offline_location_name||'Head Office Tagore Garden')})</span>`
+    : `<span style="display:inline-block;background:#0878e8;color:#fff;border-radius:12px;padding:8px 18px;font-weight:800">${bookingEmailIcon('video','white',18)}&nbsp; Online</span>`;
   const locationValue=offline
     ? `<strong style="color:#0a3b86;font-size:15px">GuruVidya Academy Pvt. Ltd.</strong><br><span style="line-height:1.35">${bookingEmailEsc(b.offline_address||'GuruVidya Academy, New Delhi')}</span>`
-    : `<a href="${bookingEmailEsc(mapOrMeet)}" style="display:inline-block;background:#0878e8;color:#fff;text-decoration:none;border-radius:12px;padding:9px 16px;font-weight:800;font-size:15px"><span style="font-size:18px">🔗</span>&nbsp; Join Online Meeting</a>`;
+    : `<a href="${bookingEmailEsc(mapOrMeet)}" style="display:inline-block;background:#0878e8;color:#fff;text-decoration:none;border-radius:12px;padding:9px 16px;font-weight:800;font-size:15px">${bookingEmailIcon('link','white',18)}&nbsp; Join Online Meeting</a>`;
   const rows=[
-    bookingEmailRow('▤','Booking Reference',`<strong style="color:#162f55">${bookingEmailEsc(b.booking_ref)}</strong>`,{valueHtml:true}),
-    bookingEmailRow('●','Student Name',b.student_name),
-    bookingEmailRow('◉','Student WhatsApp',bookingEmailPhone(b.student_mobile),{whatsapp:true}),
-    bookingEmailRow('✉','Student Email ID',b.student_email||'—'),
-    bookingEmailRow('⌂','Student Address',bookingStudentAddress(b)||'—'),
-    bookingEmailRow('●','Parent/Guardian',`${b.parent_name||'—'}${b.parent_relation?` (${b.parent_relation})`:''}`),
-    bookingEmailRow('◉','Parent WhatsApp',bookingEmailPhone(b.parent_mobile),{whatsapp:true}),
-    bookingEmailRow('✉','Parent Email ID',b.parent_email||'—'),
-    bookingEmailRow('◆','Course',b.course),
-    bookingEmailRow('▣','Date',date),
-    bookingEmailRow('◷','Time (IST)',time),
-    bookingEmailRow('●','Counsellor',b.counsellor_name||'Guruvidya Admission Counsellor'),
-    bookingEmailRow('▭','Mode',modeHtml,{valueHtml:true}),
-    bookingEmailRow(offline?'●':'▣',offline?'Location':'Online Session',locationValue,{valueHtml:true,last:true}),
+    bookingEmailRow('document','Booking Reference',`<strong style="color:#162f55">${bookingEmailEsc(b.booking_ref)}</strong>`,{valueHtml:true}),
+    bookingEmailRow('user','Student Name',b.student_name),
+    bookingEmailRow('whatsapp','Student WhatsApp',bookingEmailPhone(b.student_mobile),{whatsapp:true}),
+    bookingEmailRow('mail','Student Email ID',b.student_email||'—'),
+    bookingEmailRow('home','Student Address',bookingStudentAddress(b)||'—'),
+    bookingEmailRow('users','Parent/Guardian',`${b.parent_name||'—'}${b.parent_relation?` (${b.parent_relation})`:''}`),
+    bookingEmailRow('whatsapp','Parent WhatsApp',bookingEmailPhone(b.parent_mobile),{whatsapp:true}),
+    bookingEmailRow('mail','Parent Email ID',b.parent_email||'—'),
+    bookingEmailRow('course','Course',b.course),
+    bookingEmailRow('calendar','Date',date),
+    bookingEmailRow('clock','Time (IST)',time),
+    bookingEmailRow('user','Counsellor',b.counsellor_name||'Guruvidya Admission Counsellor'),
+    bookingEmailRow('monitor','Mode',modeHtml,{valueHtml:true}),
+    bookingEmailRow(offline?'pin':'video',offline?'Location':'Online Session',locationValue,{valueHtml:true,last:true}),
   ].join('');
   const title=rescheduled?'Appointment Rescheduled Successfully!':'Appointment Booked Successfully!';
   const subtitle=rescheduled?'Your counselling appointment has been rescheduled.':'Your counselling appointment has been confirmed.';
-  const primaryIcon=offline?'●':'▰';
+  const primaryIcon=offline?bookingEmailIcon('pin','white',23):bookingEmailIcon('video','white',23);
   const primaryText=offline?'View on Google Maps':'Join Online Meeting';
   return `<!doctype html><html><body style="margin:0;background:#eef5fb;font-family:Arial,Helvetica,sans-serif;color:#16315c"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#eef5fb"><tr><td align="center" style="padding:20px 8px"><table role="presentation" width="620" cellspacing="0" cellpadding="0" style="width:100%;max-width:620px;background:#fff;border-radius:22px;overflow:hidden;border:1px solid #d9e7f3">
   <tr><td style="padding:14px 26px 8px;background:#fff"><img src="${logo}" alt="GuruVidya" width="310" style="display:block;max-width:72%;height:auto;border:0"></td></tr>
   <tr><td style="padding:0;background:#fff"><table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td style="background:#073681;border-radius:70px 0 0 0;padding:24px 30px 6px"><div style="font-size:31px;line-height:1.08;color:#fff;font-weight:800">${bookingEmailEsc(title)}</div><div style="margin-top:9px;color:#fff;font-size:18px;line-height:1.35">${bookingEmailEsc(subtitle)}</div></td></tr><tr><td style="height:24px;background:#0878e8;border-radius:0 0 65% 0">&nbsp;</td></tr></table></td></tr>
   <tr><td style="padding:14px 16px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5faff;border:1px solid #cfe1ef;border-radius:18px"><tr><td style="padding:7px 12px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0">${rows}</table></td></tr></table></td></tr>
-  <tr><td style="padding:0 16px 9px"><a href="${bookingEmailEsc(mapOrMeet)}" style="display:block;text-align:center;background:#0878e8;color:#fff;text-decoration:none;border-radius:11px;padding:15px 12px;font-size:20px;font-weight:800"><span style="font-size:23px;color:#fff">${primaryIcon}</span>&nbsp;&nbsp;${primaryText}<span style="float:right;font-size:26px;line-height:20px">›</span></a></td></tr>
-  <tr><td style="padding:0 16px 10px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td width="50%" style="padding-right:5px"><a href="${bookingEmailEsc(manage)}" style="display:block;text-align:center;border:2px solid #3c79bd;color:#123d78;text-decoration:none;border-radius:10px;padding:12px 5px;font-size:15px;font-weight:800"><span style="font-size:19px">▣</span>&nbsp; Manage Appointment</a></td><td width="50%" style="padding-left:5px"><a href="${wa}" style="display:block;text-align:center;border:2px solid #27a84d;color:#138c38;text-decoration:none;border-radius:10px;padding:12px 5px;font-size:15px;font-weight:800"><span style="font-size:20px">☎</span>&nbsp; <span style="display:inline-block;background:#16b84e;color:#fff;width:20px;height:20px;line-height:20px;border-radius:50%;font-size:12px">☎</span>&nbsp; Call / WhatsApp Us</a></td></tr></table></td></tr>
-  <tr><td style="padding:0 16px 10px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#e7f5ff;border-radius:11px"><tr><td width="48" align="center" style="padding:12px 4px"><span style="display:inline-block;width:34px;height:34px;line-height:34px;border-radius:50%;background:#0878e8;color:#fff;font-size:23px;font-weight:800">i</span></td><td style="padding:11px 10px 11px 2px;color:#0a3b86"><div style="font-size:16px;font-weight:800">Need to make a change to your appointment?</div><div style="font-size:13px;margin-top:3px">Use the options below to cancel or reschedule.</div></td></tr></table></td></tr>
-  <tr><td style="padding:0 16px 16px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td width="50%" style="padding-right:5px"><a href="${bookingEmailEsc(cancel)}" style="display:block;text-align:center;border:2px solid #ef5a56;color:#e32620;text-decoration:none;border-radius:10px;padding:12px 5px;font-size:15px;font-weight:800"><span style="font-size:23px">✕</span>&nbsp; Cancel Appointment</a></td><td width="50%" style="padding-left:5px"><a href="${bookingEmailEsc(reschedule)}" style="display:block;text-align:center;border:2px solid #3c79bd;color:#1769c5;text-decoration:none;border-radius:10px;padding:12px 5px;font-size:15px;font-weight:800"><span style="font-size:19px">▣</span>&nbsp; Reschedule Appointment</a></td></tr></table></td></tr>
-  <tr><td style="background:#f2faff;border-top:1px solid #dceaf5;border-radius:50% 50% 0 0/16px 16px 0 0;padding:17px 18px 14px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td width="54%"><img src="${logo}" alt="GuruVidya Academy Pvt. Ltd." width="205" style="display:block;max-width:94%;height:auto;border:0"></td><td style="border-left:1px solid #8da7c4;padding-left:15px"><div style="color:#0871ee;font-size:15px;font-weight:800;margin-bottom:5px">Need Help?</div><a href="${call}" style="color:#073a91;text-decoration:none;font-size:22px;font-weight:800">☎</a>&nbsp;&nbsp;<a href="${wa}" style="display:inline-block;background:#16b84e;color:#fff;text-decoration:none;width:24px;height:24px;line-height:24px;border-radius:50%;text-align:center;font-size:14px;font-weight:900">☎</a>&nbsp;&nbsp;<a href="${call}" style="color:#0871ee;font-size:16px;font-weight:800;text-decoration:underline">+91 9821627725</a></td></tr></table></td></tr>
+  <tr><td style="padding:0 16px 9px"><a href="${bookingEmailEsc(mapOrMeet)}" style="display:block;text-align:center;background:#0878e8;color:#fff;text-decoration:none;border-radius:11px;padding:15px 12px;font-size:20px;font-weight:800">${primaryIcon}&nbsp;&nbsp;${primaryText}&nbsp;&nbsp;${bookingEmailIcon('arrow','white',20)}</a></td></tr>
+  <tr><td style="padding:0 16px 10px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td width="50%" style="padding-right:5px"><a href="${bookingEmailEsc(manage)}" style="display:block;text-align:center;border:2px solid #3c79bd;color:#123d78;text-decoration:none;border-radius:10px;padding:12px 5px;font-size:15px;font-weight:800">${bookingEmailIcon('calendar','blue',20)}&nbsp; Manage Appointment</a></td><td width="50%" style="padding-left:5px"><a href="${wa}" style="display:block;text-align:center;border:2px solid #27a84d;color:#138c38;text-decoration:none;border-radius:10px;padding:12px 5px;font-size:15px;font-weight:800">${bookingEmailIcon('phone','green',20)}&nbsp; ${bookingEmailIcon('whatsapp','green',20)}&nbsp; Call / WhatsApp Us</a></td></tr></table></td></tr>
+  <tr><td style="padding:0 16px 10px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#e7f5ff;border-radius:11px"><tr><td width="48" align="center" style="padding:12px 4px">${bookingEmailIcon('info','blue',34)}</td><td style="padding:11px 10px 11px 2px;color:#0a3b86"><div style="font-size:16px;font-weight:800">Need to make a change to your appointment?</div><div style="font-size:13px;margin-top:3px">Use the options below to cancel or reschedule.</div></td></tr></table></td></tr>
+  <tr><td style="padding:0 16px 16px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td width="50%" style="padding-right:5px"><a href="${bookingEmailEsc(cancel)}" style="display:block;text-align:center;border:2px solid #ef5a56;color:#e32620;text-decoration:none;border-radius:10px;padding:12px 5px;font-size:15px;font-weight:800">${bookingEmailIcon('close','red',22)}&nbsp; Cancel Appointment</a></td><td width="50%" style="padding-left:5px"><a href="${bookingEmailEsc(reschedule)}" style="display:block;text-align:center;border:2px solid #3c79bd;color:#1769c5;text-decoration:none;border-radius:10px;padding:12px 5px;font-size:15px;font-weight:800">${bookingEmailIcon('calendar','blue',20)}&nbsp; Reschedule Appointment</a></td></tr></table></td></tr>
+  <tr><td style="background:#f2faff;border-top:1px solid #dceaf5;border-radius:50% 50% 0 0/16px 16px 0 0;padding:17px 18px 14px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td width="54%"><img src="${logo}" alt="GuruVidya Academy Pvt. Ltd." width="205" style="display:block;max-width:94%;height:auto;border:0"></td><td style="border-left:1px solid #8da7c4;padding-left:15px"><div style="color:#0871ee;font-size:15px;font-weight:800;margin-bottom:5px">Need Help?</div><a href="${call}" style="text-decoration:none">${bookingEmailIcon('phone','blue',23)}</a>&nbsp;&nbsp;<a href="${wa}" style="text-decoration:none">${bookingEmailIcon('whatsapp','green',23)}</a>&nbsp;&nbsp;<a href="${call}" style="color:#0871ee;font-size:16px;font-weight:800;text-decoration:underline">+91 9821627725</a></td></tr></table></td></tr>
   </table></td></tr></table></body></html>`;
 }
+
+app.get('/api/public/booking/email-icon/:name', async (req,res)=>{
+  try{
+    const name=String(req.params.name||'');
+    if(!/^[a-z-]+\.png$/.test(name)) return res.status(404).end();
+    const icon=await readFile(new URL(`./booking/email-icons/${name}`,import.meta.url));
+    res.set({'Content-Type':'image/png','Cache-Control':'public, max-age=604800','X-Content-Type-Options':'nosniff'}).send(icon);
+  }catch(e){res.status(404).end();}
+});
 
 app.get('/api/public/booking/email-logo.png', async (_req,res)=>{
   try{
@@ -4541,4 +4553,4 @@ async function seedBuiltinFlowExports() {
   }
 }
 
-; 
+;
