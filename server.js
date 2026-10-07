@@ -4207,7 +4207,7 @@ app.get('/api/public/booking/whatsapp-card/:ref.png', async (req,res)=>{
     const token=String(req.query.token||''); if(!/^[a-f0-9]{64}$/i.test(token)) return res.status(404).end();
     const r=await pool.query(`SELECT b.*,c.name AS counsellor_name,c.meeting_link,l.name AS offline_location_name,l.address AS offline_address,l.map_url AS offline_map_url FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id LEFT JOIN booking_locations l ON l.id=c.location_id WHERE b.booking_ref=$1 AND b.token_hash=$2 LIMIT 1`,[req.params.ref,createHash('sha256').update(token).digest('hex')]);
     if(!r.rowCount)return res.status(404).end();
-    const png=await bookingCardPng(r.rows[0]); res.set({'Content-Type':'image/png','Cache-Control':'private, max-age=900','X-Content-Type-Options':'nosniff'}).send(png);
+    const png=await bookingCardPng(r.rows[0]); res.set({'Content-Type':'image/png','Cache-Control':'no-store, max-age=0','X-Content-Type-Options':'nosniff'}).send(png);
   }catch(e){console.error('WhatsApp booking card error:',e.message);res.status(500).end();}
 });
 
@@ -4218,42 +4218,35 @@ app.get('/api/public/booking/whatsapp-card/:ref.png', async (req,res)=>{
 // a genuine graphic instead of emoji/plain WhatsApp text.
 async function bookingDesign3ConfirmationPng(b, rescheduled=false) {
   const base=await bookingCardPng(b);
-  const {date,time}=bookingIstParts(b.starts_at);
   const title=rescheduled?'Reschedule Confirmed':'Appointment Confirmed';
-  const dateLabel=rescheduled?'New Date:':'Date:';
-  const timeLabel=rescheduled?'New Time:':'Time:';
-  const panel=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="390" viewBox="0 0 1080 390">
+  // Keep the final WhatsApp media card within a safe portrait height so Meta/WhatsApp
+  // does not visually clip the confirmation banner in the chat preview. Date/time stay
+  // in the message body directly below the graphic.
+  const panel=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="180" viewBox="0 0 1080 180">
     <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#08b84f"/><stop offset=".55" stop-color="#078f42"/><stop offset="1" stop-color="#046b35"/></linearGradient></defs>
-    <rect width="1080" height="390" fill="#f8f3eb"/>
-    <rect x="28" y="18" width="1024" height="354" rx="34" fill="#fff"/>
-    <rect x="62" y="42" width="956" height="105" rx="25" fill="url(#g)"/>
-    <circle cx="132" cy="94" r="34" fill="#fff"/><path d="M115 94l12 12 25-28" fill="none" stroke="#07883f" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
-    <path d="M82 65l-15-11M77 94H58M84 123l-15 11M988 65l15-11M993 94h19M986 123l15 11" stroke="#d5ed42" stroke-width="5" stroke-linecap="round"/>
-    <text x="590" y="108" text-anchor="middle" font-family="Arial, sans-serif" font-size="43" font-weight="700" fill="#fff">${xmlEsc(title)}</text>
-    <rect x="62" y="170" width="956" height="78" rx="22" fill="#eef7ff" stroke="#b9dcfb" stroke-width="2"/>
-    <rect x="62" y="265" width="956" height="78" rx="22" fill="#eef7ff" stroke="#b9dcfb" stroke-width="2"/>
-    <rect x="78" y="184" width="64" height="50" rx="16" fill="#e0f0ff"/><rect x="78" y="279" width="64" height="50" rx="16" fill="#e0f0ff"/>
-    <rect x="96" y="197" width="28" height="27" rx="3" fill="none" stroke="#0758c9" stroke-width="4"/><path d="M96 205h28M103 192v10M117 192v10" stroke="#0758c9" stroke-width="4" stroke-linecap="round"/>
-    <circle cx="110" cy="304" r="15" fill="none" stroke="#0758c9" stroke-width="4"/><path d="M110 294v11l8 5" fill="none" stroke="#0758c9" stroke-width="4" stroke-linecap="round"/>
-    <text x="165" y="220" font-family="Arial, sans-serif" font-size="29" font-weight="700" fill="#0758c9">${xmlEsc(dateLabel)}</text>
-    <text x="350" y="220" font-family="Arial, sans-serif" font-size="29" font-weight="600" fill="#102f78">${xmlEsc(date)}</text>
-    <text x="165" y="315" font-family="Arial, sans-serif" font-size="29" font-weight="700" fill="#0758c9">${xmlEsc(timeLabel)}</text>
-    <text x="350" y="315" font-family="Arial, sans-serif" font-size="29" font-weight="600" fill="#102f78">${xmlEsc(time)} (IST)</text>
+    <rect width="1080" height="180" fill="#f8f3eb"/>
+    <rect x="62" y="22" width="956" height="130" rx="28" fill="url(#g)"/>
+    <circle cx="132" cy="87" r="38" fill="#fff"/><path d="M112 87l14 14 29-32" fill="none" stroke="#07883f" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+    <line x1="195" y1="48" x2="195" y2="126" stroke="#e8fff1" stroke-width="4"/>
+    <path d="M88 54l-17-13M82 87H62M90 120l-17 12M982 54l16-13M988 87h18M982 120l16 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round"/>
+    <text x="610" y="103" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">${xmlEsc(title)}</text>
   </svg>`;
   const status=await sharp(Buffer.from(panel),{sequentialRead:true}).png({compressionLevel:9,adaptiveFiltering:false}).toBuffer();
-  return sharp({create:{width:1080,height:2085,channels:4,background:{r:248,g:243,b:235,alpha:1}}})
+  return sharp({create:{width:1080,height:1875,channels:4,background:{r:248,g:243,b:235,alpha:1}}})
     .composite([{input:base,top:0,left:0},{input:status,top:1695,left:0}])
     .png({compressionLevel:9,adaptiveFiltering:false}).toBuffer();
 }
 
 async function bookingDesign3ChangePng() {
-  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="300" viewBox="0 0 1080 300">
-    <rect width="1080" height="300" fill="#f8f3eb"/><rect x="28" y="20" width="1024" height="260" rx="34" fill="#fff"/>
-    <rect x="62" y="72" width="956" height="156" rx="28" fill="#0758c9"/>
-    <rect x="92" y="104" width="92" height="92" rx="24" fill="#0758c9" stroke="#ffffff" stroke-width="3"/>
-    <rect x="113" y="121" width="50" height="55" rx="5" fill="none" stroke="#fff" stroke-width="6"/><path d="M113 136h50M125 113v15M151 113v15" stroke="#fff" stroke-width="6" stroke-linecap="round"/>
-    <circle cx="159" cy="176" r="18" fill="#0758c9" stroke="#fff" stroke-width="4"/><path d="M159 163v26M146 176h26" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
-    <text x="220" y="164" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#ffffff">Need to make a change to your appointment?</text>
+  // Compact, high-contrast change-options graphic. The explanatory sentence is
+  // intentionally NOT inside this image; it is sent once as the WhatsApp body below.
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="190" viewBox="0 0 1080 190">
+    <rect width="1080" height="190" fill="#f8f3eb"/>
+    <rect x="62" y="22" width="956" height="146" rx="30" fill="#0758c9"/>
+    <rect x="92" y="49" width="92" height="92" rx="24" fill="#0758c9" stroke="#ffffff" stroke-width="3"/>
+    <rect x="113" y="66" width="50" height="55" rx="5" fill="none" stroke="#fff" stroke-width="6"/><path d="M113 81h50M125 58v15M151 58v15" stroke="#fff" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="159" cy="121" r="18" fill="#0758c9" stroke="#fff" stroke-width="4"/><path d="M159 108v26M146 121h26" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
+    <text x="220" y="108" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#ffffff">Need to make a change to your appointment?</text>
   </svg>`;
   return sharp(Buffer.from(svg),{sequentialRead:true}).png({compressionLevel:9,adaptiveFiltering:false}).toBuffer();
 }
@@ -4264,12 +4257,12 @@ app.get('/api/public/booking/whatsapp-design3/:ref.png', async (req,res)=>{
     const r=await pool.query(`SELECT b.*,c.name AS counsellor_name,c.meeting_link,l.name AS offline_location_name,l.address AS offline_address,l.map_url AS offline_map_url FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id LEFT JOIN booking_locations l ON l.id=c.location_id WHERE b.booking_ref=$1 AND b.token_hash=$2 LIMIT 1`,[req.params.ref,createHash('sha256').update(token).digest('hex')]);
     if(!r.rowCount)return res.status(404).end();
     const png=await bookingDesign3ConfirmationPng(r.rows[0],String(req.query.rescheduled||'')==='1');
-    res.set({'Content-Type':'image/png','Cache-Control':'private, max-age=900','X-Content-Type-Options':'nosniff'}).send(png);
+    res.set({'Content-Type':'image/png','Cache-Control':'no-store, max-age=0','X-Content-Type-Options':'nosniff'}).send(png);
   }catch(e){console.error('WhatsApp Design3 card error:',e.message);res.status(500).end();}
 });
 
 app.get('/api/public/booking/whatsapp-design3-change.png', async (_req,res)=>{
-  try{const png=await bookingDesign3ChangePng();res.set({'Content-Type':'image/png','Cache-Control':'public, max-age=86400','X-Content-Type-Options':'nosniff'}).send(png);}
+  try{const png=await bookingDesign3ChangePng();res.set({'Content-Type':'image/png','Cache-Control':'no-store, max-age=0','X-Content-Type-Options':'nosniff'}).send(png);}
   catch(e){console.error('WhatsApp Design3 change card error:',e.message);res.status(500).end();}
 });
 
@@ -4291,7 +4284,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   // Keep the native action buttons unchanged; only improve status/date/time presentation.
   // Design 3 status/date/time is now rendered inside the media graphic.
   // Keep a short caption because BotSailor/Meta requires a non-empty message body.
-  const msg=options.rescheduled===true ? `📅 New Date: ${date}\n🕒 New Time (IST): ${time}` : `📅 Date: ${date}\n🕒 Time (IST): ${time}`;
+  const msg=options.rescheduled===true ? `📅   New Date: ${date}\n🕒   New Time (IST): ${time}` : `📅   Date: ${date}\n🕒   Time (IST): ${time}`;
   const result=await sendBotSailorReplyButtons(
     {mobile:recipientMobile,name:recipientName,course:b.course},
     msg,
@@ -4307,7 +4300,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
     ],
     action,
     {
-      mediaUrl:`${String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/whatsapp-design3/${encodeURIComponent(b.booking_ref)}.png?token=${encodeURIComponent(token)}${options.rescheduled===true?'&rescheduled=1':''}`,
+      mediaUrl:`${String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/whatsapp-design3/${encodeURIComponent(b.booking_ref)}.png?token=${encodeURIComponent(token)}${options.rescheduled===true?'&rescheduled=1':''}&v=7oct-final2`,
       mediaType:'image',
     }
   );
@@ -4331,7 +4324,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
       ],
       `${action}_change_options`,
       {
-        mediaUrl:`${String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/whatsapp-design3-change.png`,
+        mediaUrl:`${String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/whatsapp-design3-change.png?v=7oct-final2`,
         mediaType:'image'
       }
     );
