@@ -4232,14 +4232,16 @@ async function bookingDesign3ConfirmationPng(b, rescheduled=false) {
     <text x="610" y="103" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">${xmlEsc(title)}</text>
   </svg>`;
   const status=await sharp(Buffer.from(panel),{sequentialRead:true}).png({compressionLevel:9,adaptiveFiltering:false}).toBuffer();
-  // Build the full card first, then fit the WHOLE card into WhatsApp's safe portrait
-  // preview area. This prevents Meta/WhatsApp from cropping the second green
-  // confirmation banner while keeping Booking Slot Reserved fully visible.
-  const full=await sharp({create:{width:1080,height:1875,channels:4,background:{r:248,g:243,b:235,alpha:1}}})
-    .composite([{input:base,top:0,left:0},{input:status,top:1695,left:0}])
+  // IMPORTANT: Meta/BotSailor was intermittently dropping this first message when
+  // the endpoint had to build an oversized 1875px image and then resize it again.
+  // Compose directly at the final 1080x1695 delivery size instead: the approved
+  // booking card (including Booking Slot Reserved) is scaled as one intact block,
+  // then the confirmation banner is appended in the reserved bottom area.
+  const safeBase=await sharp(base,{sequentialRead:true})
+    .resize({width:1080,height:1515,fit:'fill'})
     .png({compressionLevel:9,adaptiveFiltering:false}).toBuffer();
-  return sharp(full,{sequentialRead:true})
-    .resize({width:1080,height:1695,fit:'contain',position:'centre',background:{r:248,g:243,b:235,alpha:1}})
+  return sharp({create:{width:1080,height:1695,channels:4,background:{r:248,g:243,b:235,alpha:1}}})
+    .composite([{input:safeBase,top:0,left:0},{input:status,top:1515,left:0}])
     .png({compressionLevel:9,adaptiveFiltering:false}).toBuffer();
 }
 
@@ -4307,7 +4309,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
     ],
     action,
     {
-      mediaUrl:`${String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/whatsapp-design3/${encodeURIComponent(b.booking_ref)}.png?token=${encodeURIComponent(token)}${options.rescheduled===true?'&rescheduled=1':''}&v=7oct-confirm-reschedule-visible-final4`,
+      mediaUrl:`${String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/whatsapp-design3/${encodeURIComponent(b.booking_ref)}.png?token=${encodeURIComponent(token)}${options.rescheduled===true?'&rescheduled=1':''}&v=7oct-main-confirm-send-final5`,
       mediaType:'image',
     }
   );
