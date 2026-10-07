@@ -4238,10 +4238,10 @@ async function bookingDesign3ConfirmationPng(b, rescheduled=false) {
   // booking card (including Booking Slot Reserved) is scaled as one intact block,
   // then the confirmation banner is appended in the reserved bottom area.
   const safeBase=await sharp(base,{sequentialRead:true})
-    .resize({width:1080,height:1515,fit:'fill'})
+    .resize({width:1080,height:1350,fit:'fill'})
     .png({compressionLevel:9,adaptiveFiltering:false}).toBuffer();
-  return sharp({create:{width:1080,height:1695,channels:4,background:{r:248,g:243,b:235,alpha:1}}})
-    .composite([{input:safeBase,top:0,left:0},{input:status,top:1515,left:0}])
+  return sharp({create:{width:1080,height:1530,channels:4,background:{r:248,g:243,b:235,alpha:1}}})
+    .composite([{input:safeBase,top:0,left:0},{input:status,top:1350,left:0}])
     .png({compressionLevel:9,adaptiveFiltering:false}).toBuffer();
 }
 
@@ -4309,7 +4309,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
     ],
     action,
     {
-      mediaUrl:`${String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/whatsapp-design3/${encodeURIComponent(b.booking_ref)}.png?token=${encodeURIComponent(token)}${options.rescheduled===true?'&rescheduled=1':''}&v=7oct-main-confirm-send-final5`,
+      mediaUrl:`${String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/whatsapp-design3/${encodeURIComponent(b.booking_ref)}.png?token=${encodeURIComponent(token)}${options.rescheduled===true?'&rescheduled=1':''}&v=7oct-main-confirm-visible-final6`,
       mediaType:'image',
     }
   );
