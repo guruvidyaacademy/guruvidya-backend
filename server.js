@@ -4248,15 +4248,12 @@ async function bookingDesign3ConfirmationPng(b, rescheduled=false) {
 
 async function bookingDesign3ChangePng() {
   const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="300" viewBox="0 0 1080 300">
-    <defs><linearGradient id="b" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#edf8ff"/><stop offset="1" stop-color="#dcefff"/></linearGradient></defs>
     <rect width="1080" height="300" fill="#f8f3eb"/><rect x="28" y="20" width="1024" height="260" rx="34" fill="#fff"/>
-    <rect x="62" y="48" width="956" height="204" rx="28" fill="url(#b)" stroke="#9fd3ff" stroke-width="2"/>
-    <rect x="92" y="92" width="92" height="92" rx="24" fill="#0878e8"/>
-    <rect x="113" y="109" width="50" height="55" rx="5" fill="none" stroke="#fff" stroke-width="6"/><path d="M113 124h50M125 101v15M151 101v15" stroke="#fff" stroke-width="6" stroke-linecap="round"/>
-    <circle cx="159" cy="164" r="18" fill="#fff"/><path d="M159 151v26M146 164h26" stroke="#0878e8" stroke-width="5" stroke-linecap="round"/>
-    <text x="220" y="118" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#092f83">Need to make a change</text>
-    <text x="220" y="158" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#092f83">to your appointment?</text>
-    <text x="220" y="207" font-family="Arial, sans-serif" font-size="25" font-weight="500" fill="#365f8c">Use the options below to cancel or reschedule.</text>
+    <rect x="62" y="72" width="956" height="156" rx="28" fill="#0758c9"/>
+    <rect x="92" y="104" width="92" height="92" rx="24" fill="#0758c9" stroke="#ffffff" stroke-width="3"/>
+    <rect x="113" y="121" width="50" height="55" rx="5" fill="none" stroke="#fff" stroke-width="6"/><path d="M113 136h50M125 113v15M151 113v15" stroke="#fff" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="159" cy="176" r="18" fill="#0758c9" stroke="#fff" stroke-width="4"/><path d="M159 163v26M146 176h26" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
+    <text x="220" y="164" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#ffffff">Need to make a change to your appointment?</text>
   </svg>`;
   return sharp(Buffer.from(svg),{sequentialRead:true}).png({compressionLevel:9,adaptiveFiltering:false}).toBuffer();
 }
@@ -4294,7 +4291,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   // Keep the native action buttons unchanged; only improve status/date/time presentation.
   // Design 3 status/date/time is now rendered inside the media graphic.
   // Keep a short caption because BotSailor/Meta requires a non-empty message body.
-  const msg=options.rescheduled===true ? `🔄 Reschedule Confirmed` : `✅ Appointment Confirmed`;
+  const msg=options.rescheduled===true ? `📅 New Date: ${date}\n🕒 New Time (IST): ${time}` : `📅 Date: ${date}\n🕒 Time (IST): ${time}`;
   const result=await sendBotSailorReplyButtons(
     {mobile:recipientMobile,name:recipientName,course:b.course},
     msg,
@@ -4327,7 +4324,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
     await new Promise(resolve=>setTimeout(resolve,8000));
     manageResult=await sendBotSailorReplyButtons(
       {mobile:recipientMobile,name:recipientName,course:b.course},
-      `⚙️ *Need to make a change to your appointment?*\n💡 Use the options below to cancel or reschedule.`,
+      `💡 Use the options below to cancel or reschedule.`,
       [
         {id:'booking_cancel',title:'Cancel'},
         {id:'booking_reschedule',title:'Reschedule'}
