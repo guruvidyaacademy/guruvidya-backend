@@ -4307,7 +4307,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
     ],
     action,
     {
-      mediaUrl:`${String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/whatsapp-design3/${encodeURIComponent(b.booking_ref)}.png?token=${encodeURIComponent(token)}${options.rescheduled===true?'&rescheduled=1':''}&v=7oct-final3`,
+      mediaUrl:`${String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/whatsapp-design3/${encodeURIComponent(b.booking_ref)}.png?token=${encodeURIComponent(token)}${options.rescheduled===true?'&rescheduled=1':''}&v=7oct-confirm-reschedule-visible-final4`,
       mediaType:'image',
     }
   );
