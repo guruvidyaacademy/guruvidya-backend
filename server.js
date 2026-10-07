@@ -4211,6 +4211,71 @@ app.get('/api/public/booking/whatsapp-card/:ref.png', async (req,res)=>{
   }catch(e){console.error('WhatsApp booking card error:',e.message);res.status(500).end();}
 });
 
+// 7-Oct Design 3: render the approved confirmation/status block as real pixels.
+// WhatsApp interactive messages allow one media header only, so we append the
+// Design-3 status panel to the already-approved booking card. This keeps the
+// original booking graphic intact while making Appointment Confirmed/Date/Time
+// a genuine graphic instead of emoji/plain WhatsApp text.
+async function bookingDesign3ConfirmationPng(b, rescheduled=false) {
+  const base=await bookingCardPng(b);
+  const {date,time}=bookingIstParts(b.starts_at);
+  const title=rescheduled?'Reschedule Confirmed':'Appointment Confirmed';
+  const dateLabel=rescheduled?'New Date:':'Date:';
+  const timeLabel=rescheduled?'New Time:':'Time:';
+  const panel=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="390" viewBox="0 0 1080 390">
+    <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#08b84f"/><stop offset=".55" stop-color="#078f42"/><stop offset="1" stop-color="#046b35"/></linearGradient></defs>
+    <rect width="1080" height="390" fill="#f8f3eb"/>
+    <rect x="28" y="18" width="1024" height="354" rx="34" fill="#fff"/>
+    <rect x="62" y="42" width="956" height="105" rx="25" fill="url(#g)"/>
+    <circle cx="132" cy="94" r="34" fill="#fff"/><path d="M115 94l12 12 25-28" fill="none" stroke="#07883f" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M82 65l-15-11M77 94H58M84 123l-15 11M988 65l15-11M993 94h19M986 123l15 11" stroke="#d5ed42" stroke-width="5" stroke-linecap="round"/>
+    <text x="590" y="108" text-anchor="middle" font-family="Arial, sans-serif" font-size="43" font-weight="700" fill="#fff">${xmlEsc(title)}</text>
+    <rect x="62" y="170" width="956" height="78" rx="22" fill="#eef7ff" stroke="#b9dcfb" stroke-width="2"/>
+    <rect x="62" y="265" width="956" height="78" rx="22" fill="#eef7ff" stroke="#b9dcfb" stroke-width="2"/>
+    <rect x="78" y="184" width="64" height="50" rx="16" fill="#e0f0ff"/><rect x="78" y="279" width="64" height="50" rx="16" fill="#e0f0ff"/>
+    <rect x="96" y="197" width="28" height="27" rx="3" fill="none" stroke="#0758c9" stroke-width="4"/><path d="M96 205h28M103 192v10M117 192v10" stroke="#0758c9" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="110" cy="304" r="15" fill="none" stroke="#0758c9" stroke-width="4"/><path d="M110 294v11l8 5" fill="none" stroke="#0758c9" stroke-width="4" stroke-linecap="round"/>
+    <text x="165" y="220" font-family="Arial, sans-serif" font-size="29" font-weight="700" fill="#0758c9">${xmlEsc(dateLabel)}</text>
+    <text x="350" y="220" font-family="Arial, sans-serif" font-size="29" font-weight="600" fill="#102f78">${xmlEsc(date)}</text>
+    <text x="165" y="315" font-family="Arial, sans-serif" font-size="29" font-weight="700" fill="#0758c9">${xmlEsc(timeLabel)}</text>
+    <text x="350" y="315" font-family="Arial, sans-serif" font-size="29" font-weight="600" fill="#102f78">${xmlEsc(time)} (IST)</text>
+  </svg>`;
+  const status=await sharp(Buffer.from(panel),{sequentialRead:true}).png({compressionLevel:9,adaptiveFiltering:false}).toBuffer();
+  return sharp({create:{width:1080,height:2085,channels:4,background:{r:248,g:243,b:235,alpha:1}}})
+    .composite([{input:base,top:0,left:0},{input:status,top:1695,left:0}])
+    .png({compressionLevel:9,adaptiveFiltering:false}).toBuffer();
+}
+
+async function bookingDesign3ChangePng() {
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="300" viewBox="0 0 1080 300">
+    <defs><linearGradient id="b" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#edf8ff"/><stop offset="1" stop-color="#dcefff"/></linearGradient></defs>
+    <rect width="1080" height="300" fill="#f8f3eb"/><rect x="28" y="20" width="1024" height="260" rx="34" fill="#fff"/>
+    <rect x="62" y="48" width="956" height="204" rx="28" fill="url(#b)" stroke="#9fd3ff" stroke-width="2"/>
+    <rect x="92" y="92" width="92" height="92" rx="24" fill="#0878e8"/>
+    <rect x="113" y="109" width="50" height="55" rx="5" fill="none" stroke="#fff" stroke-width="6"/><path d="M113 124h50M125 101v15M151 101v15" stroke="#fff" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="159" cy="164" r="18" fill="#fff"/><path d="M159 151v26M146 164h26" stroke="#0878e8" stroke-width="5" stroke-linecap="round"/>
+    <text x="220" y="118" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#092f83">Need to make a change</text>
+    <text x="220" y="158" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#092f83">to your appointment?</text>
+    <text x="220" y="207" font-family="Arial, sans-serif" font-size="25" font-weight="500" fill="#365f8c">Use the options below to cancel or reschedule.</text>
+  </svg>`;
+  return sharp(Buffer.from(svg),{sequentialRead:true}).png({compressionLevel:9,adaptiveFiltering:false}).toBuffer();
+}
+
+app.get('/api/public/booking/whatsapp-design3/:ref.png', async (req,res)=>{
+  try{
+    const token=String(req.query.token||''); if(!/^[a-f0-9]{64}$/i.test(token)) return res.status(404).end();
+    const r=await pool.query(`SELECT b.*,c.name AS counsellor_name,c.meeting_link,l.name AS offline_location_name,l.address AS offline_address,l.map_url AS offline_map_url FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id LEFT JOIN booking_locations l ON l.id=c.location_id WHERE b.booking_ref=$1 AND b.token_hash=$2 LIMIT 1`,[req.params.ref,createHash('sha256').update(token).digest('hex')]);
+    if(!r.rowCount)return res.status(404).end();
+    const png=await bookingDesign3ConfirmationPng(r.rows[0],String(req.query.rescheduled||'')==='1');
+    res.set({'Content-Type':'image/png','Cache-Control':'private, max-age=900','X-Content-Type-Options':'nosniff'}).send(png);
+  }catch(e){console.error('WhatsApp Design3 card error:',e.message);res.status(500).end();}
+});
+
+app.get('/api/public/booking/whatsapp-design3-change.png', async (_req,res)=>{
+  try{const png=await bookingDesign3ChangePng();res.set({'Content-Type':'image/png','Cache-Control':'public, max-age=86400','X-Content-Type-Options':'nosniff'}).send(png);}
+  catch(e){console.error('WhatsApp Design3 change card error:',e.message);res.status(500).end();}
+});
+
 async function sendBookingSessionConfirmation(b, token, action='booking_confirmation_24h', options={}) {
   const recipientKind=options.recipientKind==='parent'?'parent':'student';
   const recipientMobile=recipientKind==='parent'?b.parent_mobile:b.student_mobile;
@@ -4227,9 +4292,9 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   // Do not replace this with blank/invisible/emoji-only content: delivery regressed in testing.
   // Compact premium status block for the WhatsApp text that sits below the existing media card.
   // Keep the native action buttons unchanged; only improve status/date/time presentation.
-  const msg=options.rescheduled===true
-    ? `🔄 *Reschedule Confirmed*\n📅 *New Date:* ${date}\n🕐 *New Time:* ${time}`
-    : `✅ *Appointment Confirmed*\n📅 *Date:* ${date}\n🕐 *Time:* ${time}`;
+  // Design 3 status/date/time is now rendered inside the media graphic.
+  // Keep a short caption because BotSailor/Meta requires a non-empty message body.
+  const msg=options.rescheduled===true ? `🔄 Reschedule Confirmed` : `✅ Appointment Confirmed`;
   const result=await sendBotSailorReplyButtons(
     {mobile:recipientMobile,name:recipientName,course:b.course},
     msg,
@@ -4245,7 +4310,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
     ],
     action,
     {
-      mediaUrl:`${String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/whatsapp-card/${encodeURIComponent(b.booking_ref)}.png?token=${encodeURIComponent(token)}`,
+      mediaUrl:`${String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/whatsapp-design3/${encodeURIComponent(b.booking_ref)}.png?token=${encodeURIComponent(token)}${options.rescheduled===true?'&rescheduled=1':''}`,
       mediaType:'image',
     }
   );
@@ -4267,7 +4332,11 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
         {id:'booking_cancel',title:'Cancel'},
         {id:'booking_reschedule',title:'Reschedule'}
       ],
-      `${action}_change_options`
+      `${action}_change_options`,
+      {
+        mediaUrl:`${String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/whatsapp-design3-change.png`,
+        mediaType:'image'
+      }
     );
     console.log('BOOKING CHANGE ACTION BUTTONS:', {
       success:manageResult.success,
