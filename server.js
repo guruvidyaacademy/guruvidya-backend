@@ -4168,11 +4168,11 @@ async function bookingCardPng(b, confirmationTitle="") {
   }
   const cardHeight=1695;
   const confirmExtra=confirmationTitle?`
-  <rect x="62" y="1515" width="956" height="110" rx="28" fill="url(#confirmGreen)"/>
-  <circle cx="132" cy="1570" r="40" fill="#fff"/><path d="M112 1570l14 14 28-31" fill="none" stroke="#07883f" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
-  <line x1="195" y1="1533" x2="195" y2="1607" stroke="#e8fff1" stroke-width="4"/>
-  <path d="M88 1540l-17-13M82 1570H62M90 1600l-17 12M982 1540l16-13M988 1570h18M982 1600l16 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round"/>
-  <text x="610" y="1587" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">${xmlEsc(confirmationTitle)}</text>`:'';
+  <rect x="62" y="1487" width="956" height="110" rx="28" fill="url(#confirmGreen)"/>
+  <circle cx="132" cy="1542" r="40" fill="#fff"/><path d="M112 1542l14 14 28-31" fill="none" stroke="#07883f" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="195" y1="1505" x2="195" y2="1579" stroke="#e8fff1" stroke-width="4"/>
+  <path d="M88 1512l-17-13M82 1542H62M90 1572l-17 12M982 1512l16-13M988 1542h18M982 1572l16 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round"/>
+  <text x="610" y="1559" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">${xmlEsc(confirmationTitle)}</text>`:'';
   const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="${cardHeight}" viewBox="0 0 1080 ${cardHeight}">
   <defs>
     <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#072a79"/><stop offset=".55" stop-color="#0758c9"/><stop offset="1" stop-color="#08a7ed"/></linearGradient>
@@ -4194,14 +4194,14 @@ async function bookingCardPng(b, confirmationTitle="") {
     </linearGradient>
   </defs>
   ${confirmationTitle?'':`
-  <rect x="62" y="1515" width="956" height="110" rx="28" fill="url(#confirmGreen)"/>
+  <rect x="62" y="1487" width="956" height="110" rx="28" fill="url(#confirmGreen)"/>
   <path d="M62 1583 Q290 1533 520 1581 T1018 1557 V1625 H62 Z" fill="#034f2b" opacity=".38"/><path d="M62 1607 Q300 1565 560 1601 T1018 1575 V1625 H62 Z" fill="#0bb45a" opacity=".22"/>
-  <circle cx="132" cy="1570" r="40" fill="#fff"/>
-  <path d="M112 1570l14 14 28-31" fill="none" stroke="#07883f" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
-  <line x1="195" y1="1533" x2="195" y2="1607" stroke="#e8fff1" stroke-width="4"/>
+  <circle cx="132" cy="1542" r="40" fill="#fff"/>
+  <path d="M112 1542l14 14 28-31" fill="none" stroke="#07883f" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="195" y1="1505" x2="195" y2="1579" stroke="#e8fff1" stroke-width="4"/>
   <path d="M88 1540l-17-13M82 1570H62M90 1600l-17 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round" opacity=".95"/>
   <path d="M982 1540l16-13M988 1570h18M982 1600l16 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round" opacity=".95"/>
-  <text x="610" y="1587" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">Booking Slot Reserved</text>`}
+  <text x="610" y="1559" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">Booking Slot Reserved</text>`}
   ${confirmExtra}
   </svg>`;
   // sequentialRead + disabled libvips cache/concurrency above prevents repeated
@@ -4311,7 +4311,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   // Keep the native action buttons unchanged; only improve status/date/time presentation.
   // Design 3 status/date/time is now rendered inside the media graphic.
   // Keep a short caption because BotSailor/Meta requires a non-empty message body.
-  const msg=options.rescheduled===true ? `New Date: ${date}\nNew Time (IST): ${time}` : `Date: ${date}\nTime (IST): ${time}`;
+  const msg=`📅 ${date}\n🕒 ${time}`;
   // Pre-render/cache the media BEFORE submitting the interactive message.
   // The buttons and media are still one BotSailor message; this only makes the
   // public image URL instantly fetchable by BotSailor/Meta.
