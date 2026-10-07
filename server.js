@@ -4310,7 +4310,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   // Keep the native action buttons unchanged; only improve status/date/time presentation.
   // Design 3 status/date/time is now rendered inside the media graphic.
   // Keep a short caption because BotSailor/Meta requires a non-empty message body.
-  const msg=options.rescheduled===true ? `📅   New Date: ${date}\n🕒   New Time (IST): ${time}` : `📅   Date: ${date}\n🕒   Time (IST): ${time}`;
+  const msg=options.rescheduled===true ? `📅   ${date}\n🕒   ${time}` : `📅   ${date}\n🕒   ${time}`;
   // Pre-render/cache the media BEFORE submitting the interactive message.
   // The buttons and media are still one BotSailor message; this only makes the
   // public image URL instantly fetchable by BotSailor/Meta.
