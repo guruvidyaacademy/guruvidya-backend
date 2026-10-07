@@ -4232,21 +4232,28 @@ async function bookingDesign3ConfirmationPng(b, rescheduled=false) {
     <text x="610" y="103" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">${xmlEsc(title)}</text>
   </svg>`;
   const status=await sharp(Buffer.from(panel),{sequentialRead:true}).png({compressionLevel:9,adaptiveFiltering:false}).toBuffer();
-  return sharp({create:{width:1080,height:1875,channels:4,background:{r:248,g:243,b:235,alpha:1}}})
+  // Build the full card first, then fit the WHOLE card into WhatsApp's safe portrait
+  // preview area. This prevents Meta/WhatsApp from cropping the second green
+  // confirmation banner while keeping Booking Slot Reserved fully visible.
+  const full=await sharp({create:{width:1080,height:1875,channels:4,background:{r:248,g:243,b:235,alpha:1}}})
     .composite([{input:base,top:0,left:0},{input:status,top:1695,left:0}])
+    .png({compressionLevel:9,adaptiveFiltering:false}).toBuffer();
+  return sharp(full,{sequentialRead:true})
+    .resize({width:1080,height:1695,fit:'contain',position:'centre',background:{r:248,g:243,b:235,alpha:1}})
     .png({compressionLevel:9,adaptiveFiltering:false}).toBuffer();
 }
 
 async function bookingDesign3ChangePng() {
   // Compact, high-contrast change-options graphic. The explanatory sentence is
   // intentionally NOT inside this image; it is sent once as the WhatsApp body below.
-  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="190" viewBox="0 0 1080 190">
-    <rect width="1080" height="190" fill="#f8f3eb"/>
-    <rect x="62" y="22" width="956" height="146" rx="30" fill="#0758c9"/>
-    <rect x="92" y="49" width="92" height="92" rx="24" fill="#0758c9" stroke="#ffffff" stroke-width="3"/>
-    <rect x="113" y="66" width="50" height="55" rx="5" fill="none" stroke="#fff" stroke-width="6"/><path d="M113 81h50M125 58v15M151 58v15" stroke="#fff" stroke-width="6" stroke-linecap="round"/>
-    <circle cx="159" cy="121" r="18" fill="#0758c9" stroke="#fff" stroke-width="4"/><path d="M159 108v26M146 121h26" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
-    <text x="220" y="108" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#ffffff">Need to make a change to your appointment?</text>
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="210" viewBox="0 0 1080 210">
+    <rect width="1080" height="210" fill="#f8f3eb"/>
+    <!-- Extra safe margins keep the icon/title clear of WhatsApp preview cropping. -->
+    <rect x="105" y="24" width="870" height="162" rx="30" fill="#0758c9"/>
+    <rect x="135" y="59" width="86" height="86" rx="22" fill="#0758c9" stroke="#ffffff" stroke-width="3"/>
+    <rect x="154" y="74" width="48" height="52" rx="5" fill="none" stroke="#fff" stroke-width="6"/><path d="M154 89h48M166 66v15M190 66v15" stroke="#fff" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="199" cy="128" r="17" fill="#0758c9" stroke="#fff" stroke-width="4"/><path d="M199 116v24M187 128h24" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
+    <text x="250" y="116" font-family="Arial, sans-serif" font-size="29" font-weight="700" fill="#ffffff">Need to make a change to your appointment?</text>
   </svg>`;
   return sharp(Buffer.from(svg),{sequentialRead:true}).png({compressionLevel:9,adaptiveFiltering:false}).toBuffer();
 }
@@ -4300,7 +4307,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
     ],
     action,
     {
-      mediaUrl:`${String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/whatsapp-design3/${encodeURIComponent(b.booking_ref)}.png?token=${encodeURIComponent(token)}${options.rescheduled===true?'&rescheduled=1':''}&v=7oct-final2`,
+      mediaUrl:`${String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/whatsapp-design3/${encodeURIComponent(b.booking_ref)}.png?token=${encodeURIComponent(token)}${options.rescheduled===true?'&rescheduled=1':''}&v=7oct-final3`,
       mediaType:'image',
     }
   );
@@ -4324,7 +4331,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
       ],
       `${action}_change_options`,
       {
-        mediaUrl:`${String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/whatsapp-design3-change.png?v=7oct-final2`,
+        mediaUrl:`${String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/whatsapp-design3-change.png?v=7oct-final3`,
         mediaType:'image'
       }
     );
