@@ -4225,7 +4225,11 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   const address=b.mode==='offline'?(b.offline_address||'GuruVidya Academy, New Delhi'):'Meeting link is available in your booking.';
   // Preserve the exact Server51 working BotSailor message body.
   // Do not replace this with blank/invisible/emoji-only content: delivery regressed in testing.
-  const msg=options.rescheduled===true?`Appointment Reschedule Confirmed.\nNew Date: ${date}\nNew Time: ${time}`:'Appointment confirmed.';
+  // Compact premium status block for the WhatsApp text that sits below the existing media card.
+  // Keep the native action buttons unchanged; only improve status/date/time presentation.
+  const msg=options.rescheduled===true
+    ? `🔄 *Reschedule Confirmed*\n📅 *New Date:* ${date}\n🕐 *New Time:* ${time}`
+    : `✅ *Appointment Confirmed*\n📅 *Date:* ${date}\n🕐 *Time:* ${time}`;
   const result=await sendBotSailorReplyButtons(
     {mobile:recipientMobile,name:recipientName,course:b.course},
     msg,
@@ -4258,7 +4262,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
     await new Promise(resolve=>setTimeout(resolve,8000));
     manageResult=await sendBotSailorReplyButtons(
       {mobile:recipientMobile,name:recipientName,course:b.course},
-      `🗓️ *Need to make a change to your appointment?*\nUse the options below to cancel or reschedule.`,
+      `⚙️ *Need to make a change to your appointment?*\n💡 Use the options below to cancel or reschedule.`,
       [
         {id:'booking_cancel',title:'Cancel'},
         {id:'booking_reschedule',title:'Reschedule'}
