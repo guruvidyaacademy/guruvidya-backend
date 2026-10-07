@@ -4166,13 +4166,13 @@ async function bookingCardPng(b, confirmationTitle="") {
     // Online spacing stays exactly as before.
     y += ic==='pin' ? 150 : ((ic==='screen' && b.mode==='offline') ? 92 : 74);
   }
-  const cardHeight=confirmationTitle?1875:1695;
+  const cardHeight=1695;
   const confirmExtra=confirmationTitle?`
-  <rect x="62" y="1688" width="956" height="130" rx="28" fill="url(#confirmGreen)"/>
-  <circle cx="132" cy="1753" r="38" fill="#fff"/><path d="M112 1753l14 14 29-32" fill="none" stroke="#07883f" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
-  <line x1="195" y1="1714" x2="195" y2="1792" stroke="#e8fff1" stroke-width="4"/>
-  <path d="M88 1720l-17-13M82 1753H62M90 1786l-17 12M982 1720l16-13M988 1753h18M982 1786l16 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round"/>
-  <text x="610" y="1769" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">${xmlEsc(confirmationTitle)}</text>`:'';
+  <rect x="62" y="1515" width="956" height="110" rx="28" fill="url(#confirmGreen)"/>
+  <circle cx="132" cy="1570" r="40" fill="#fff"/><path d="M112 1570l14 14 28-31" fill="none" stroke="#07883f" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="195" y1="1533" x2="195" y2="1607" stroke="#e8fff1" stroke-width="4"/>
+  <path d="M88 1540l-17-13M82 1570H62M90 1600l-17 12M982 1540l16-13M988 1570h18M982 1600l16 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round"/>
+  <text x="610" y="1587" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">${xmlEsc(confirmationTitle)}</text>`:'';
   const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="${cardHeight}" viewBox="0 0 1080 ${cardHeight}">
   <defs>
     <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#072a79"/><stop offset=".55" stop-color="#0758c9"/><stop offset="1" stop-color="#08a7ed"/></linearGradient>
@@ -4181,7 +4181,7 @@ async function bookingCardPng(b, confirmationTitle="") {
   </defs>
   <rect width="1080" height="${cardHeight}" fill="#f8f3eb"/>
   <g opacity=".10" stroke="#cdbfae" fill="none"><circle cx="65" cy="110" r="18"/><circle cx="1015" cy="180" r="23"/><path d="M30 1320q40-35 80 0t80 0M900 70q35-30 70 0t70 0"/></g>
-  <rect x="28" y="35" width="1024" height="${confirmationTitle?1805:1625}" rx="42" fill="#fff"/>
+  <rect x="28" y="35" width="1024" height="1625" rx="42" fill="#fff"/>
   <!-- Exact approved final reference header, rasterized small to avoid the old SVG artefacts. -->
   <image href="data:image/jpeg;base64,${finalHeaderJpeg}" x="60" y="55" width="960" height="473" preserveAspectRatio="xMidYMid meet"/>
   <!-- details panel -->
@@ -4193,6 +4193,7 @@ async function bookingCardPng(b, confirmationTitle="") {
       <stop offset="0" stop-color="#08b84f"/><stop offset="0.48" stop-color="#068f3f"/><stop offset="1" stop-color="#045f32"/>
     </linearGradient>
   </defs>
+  ${confirmationTitle?'':`
   <rect x="62" y="1515" width="956" height="110" rx="28" fill="url(#confirmGreen)"/>
   <path d="M62 1583 Q290 1533 520 1581 T1018 1557 V1625 H62 Z" fill="#034f2b" opacity=".38"/><path d="M62 1607 Q300 1565 560 1601 T1018 1575 V1625 H62 Z" fill="#0bb45a" opacity=".22"/>
   <circle cx="132" cy="1570" r="40" fill="#fff"/>
@@ -4200,7 +4201,7 @@ async function bookingCardPng(b, confirmationTitle="") {
   <line x1="195" y1="1533" x2="195" y2="1607" stroke="#e8fff1" stroke-width="4"/>
   <path d="M88 1540l-17-13M82 1570H62M90 1600l-17 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round" opacity=".95"/>
   <path d="M982 1540l16-13M988 1570h18M982 1600l16 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round" opacity=".95"/>
-  <text x="610" y="1587" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">Booking Slot Reserved</text>
+  <text x="610" y="1587" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">Booking Slot Reserved</text>`}
   ${confirmExtra}
   </svg>`;
   // sequentialRead + disabled libvips cache/concurrency above prevents repeated
@@ -4310,7 +4311,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   // Keep the native action buttons unchanged; only improve status/date/time presentation.
   // Design 3 status/date/time is now rendered inside the media graphic.
   // Keep a short caption because BotSailor/Meta requires a non-empty message body.
-  const msg=options.rescheduled===true ? `📅   ${date}\n🕒   ${time}` : `📅   ${date}\n🕒   ${time}`;
+  const msg=options.rescheduled===true ? `New Date: ${date}\nNew Time (IST): ${time}` : `Date: ${date}\nTime (IST): ${time}`;
   // Pre-render/cache the media BEFORE submitting the interactive message.
   // The buttons and media are still one BotSailor message; this only makes the
   // public image URL instantly fetchable by BotSailor/Meta.
