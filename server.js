@@ -640,44 +640,6 @@ async function sendBotSailorText(record, message, action = "send_message") {
   return { ...result, messageText: finalMessage };
 }
 
-async function sendBotSailorMediaMessage(record, message, mediaUrl, action = "send_media_message") {
-  if (!config.whatsappEnabled) {
-    return { success: false, status: "disabled", message: "WhatsApp disabled" };
-  }
-
-  const finalMessage = renderMessage(message, record);
-  const payload = {
-    apiToken: config.botsailorToken,
-    phone_number_id: config.botsailorInstanceId,
-    phone_number: botSailorPhone(record.mobile || ""),
-    message: finalMessage,
-    media_url: String(mediaUrl || ""),
-    media_type: "image",
-  };
-
-  const result = await botSailorPost(
-    config.botsailorApiUrl || "https://botsailor.com/api/v1/whatsapp/send",
-    payload
-  );
-
-  await addIntegrationLog(
-    "whatsapp",
-    action,
-    result.success ? "success" : "failed",
-    { ...payload, apiToken: "***" },
-    result.response || { error: result.error || result.message }
-  );
-
-  console.log("BotSailor Standalone Media:", {
-    success: result.success,
-    status: result.status,
-    message: result.message,
-    response: result.response || {},
-  });
-
-  return { ...result, messageText: finalMessage };
-}
-
 async function sendBotSailorReplyButtons(
   record,
   message,
@@ -4153,7 +4115,7 @@ function svgWrap(text, x, y, maxChars=38, line=34, attrs='') {
   if(cur)out.push(cur);
   return out.map(v=>`<text x="${x}" y="${yy+=line}" ${attrs}>${xmlEsc(v)}</text>`).join('');
 }
-async function bookingCardPng(b) {
+async function bookingCardPng(b, confirmationTitle="") {
   // SERVER 50: fixed actual vertical-line source in Course graduation-cap SVG (absolute V1 -> local row Y). WhatsApp send/buttons untouched.
   const {date,time}=bookingIstParts(b.starts_at);
   const place=b.mode==='offline'?(b.offline_location_name||'Head Office - Tagore Garden'):'Online Counselling';
@@ -4204,15 +4166,22 @@ async function bookingCardPng(b) {
     // Online spacing stays exactly as before.
     y += ic==='pin' ? 150 : ((ic==='screen' && b.mode==='offline') ? 92 : 74);
   }
-  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1695" viewBox="0 0 1080 1695">
+  const cardHeight=confirmationTitle?1875:1695;
+  const confirmExtra=confirmationTitle?`
+  <rect x="62" y="1688" width="956" height="130" rx="28" fill="url(#confirmGreen)"/>
+  <circle cx="132" cy="1753" r="38" fill="#fff"/><path d="M112 1753l14 14 29-32" fill="none" stroke="#07883f" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="195" y1="1714" x2="195" y2="1792" stroke="#e8fff1" stroke-width="4"/>
+  <path d="M88 1720l-17-13M82 1753H62M90 1786l-17 12M982 1720l16-13M988 1753h18M982 1786l16 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round"/>
+  <text x="610" y="1769" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">${xmlEsc(confirmationTitle)}</text>`:'';
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="${cardHeight}" viewBox="0 0 1080 ${cardHeight}">
   <defs>
     <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#072a79"/><stop offset=".55" stop-color="#0758c9"/><stop offset="1" stop-color="#08a7ed"/></linearGradient>
     <linearGradient id="cyan" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#0878e8"/><stop offset="1" stop-color="#09b9ed"/></linearGradient>
     <style>.key{font:700 27px Arial;fill:#092f83}.val{font:500 26px Arial;fill:#102f78}.sep{stroke:#d4e4ef;stroke-width:1.5}</style>
   </defs>
-  <rect width="1080" height="1695" fill="#f8f3eb"/>
+  <rect width="1080" height="${cardHeight}" fill="#f8f3eb"/>
   <g opacity=".10" stroke="#cdbfae" fill="none"><circle cx="65" cy="110" r="18"/><circle cx="1015" cy="180" r="23"/><path d="M30 1320q40-35 80 0t80 0M900 70q35-30 70 0t70 0"/></g>
-  <rect x="28" y="35" width="1024" height="1625" rx="42" fill="#fff"/>
+  <rect x="28" y="35" width="1024" height="${confirmationTitle?1805:1625}" rx="42" fill="#fff"/>
   <!-- Exact approved final reference header, rasterized small to avoid the old SVG artefacts. -->
   <image href="data:image/jpeg;base64,${finalHeaderJpeg}" x="60" y="55" width="960" height="473" preserveAspectRatio="xMidYMid meet"/>
   <!-- details panel -->
@@ -4232,6 +4201,7 @@ async function bookingCardPng(b) {
   <path d="M88 1540l-17-13M82 1570H62M90 1600l-17 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round" opacity=".95"/>
   <path d="M982 1540l16-13M988 1570h18M982 1600l16 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round" opacity=".95"/>
   <text x="610" y="1587" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">Booking Slot Reserved</text>
+  ${confirmExtra}
   </svg>`;
   // sequentialRead + disabled libvips cache/concurrency above prevents repeated
   // BotSailor/Meta media fetches from building up large native-memory spikes.
@@ -4254,33 +4224,37 @@ app.get('/api/public/booking/whatsapp-card/:ref.png', async (req,res)=>{
 // Design-3 status panel to the already-approved booking card. This keeps the
 // original booking graphic intact while making Appointment Confirmed/Date/Time
 // a genuine graphic instead of emoji/plain WhatsApp text.
+// Short-lived in-process cache for the exact WhatsApp media that BotSailor/Meta
+// fetches immediately after the interactive message is submitted. Pre-rendering the
+// PNG before the API call prevents a slow Sharp render from making the media appear
+// minutes after its buttons. The cache is refreshed on every booking/reschedule send.
+const bookingDesign3MediaCache = new Map();
+function bookingDesign3MediaCacheKey(ref, rescheduled=false) {
+  return `${String(ref||'')}:${rescheduled?'1':'0'}`;
+}
+function cacheBookingDesign3Media(ref, rescheduled, png) {
+  const key=bookingDesign3MediaCacheKey(ref,rescheduled);
+  bookingDesign3MediaCache.set(key,{png,expiresAt:Date.now()+5*60*1000});
+  setTimeout(()=>{
+    const hit=bookingDesign3MediaCache.get(key);
+    if(hit && hit.expiresAt<=Date.now()) bookingDesign3MediaCache.delete(key);
+  },5*60*1000+1000).unref?.();
+}
+function getCachedBookingDesign3Media(ref,rescheduled) {
+  const key=bookingDesign3MediaCacheKey(ref,rescheduled);
+  const hit=bookingDesign3MediaCache.get(key);
+  if(!hit) return null;
+  if(hit.expiresAt<=Date.now()){ bookingDesign3MediaCache.delete(key); return null; }
+  return hit.png;
+}
+
 async function bookingDesign3ConfirmationPng(b, rescheduled=false) {
-  const base=await bookingCardPng(b);
+  // Render the booking card + confirmation banner in ONE Sharp pass.
+  // This avoids the previous second composite/resize pass, which could make the
+  // public media endpoint too slow for BotSailor/Meta to fetch, resulting in
+  // buttons arriving without the Appointment/Reschedule Confirmed graphic.
   const title=rescheduled?'Reschedule Confirmed':'Appointment Confirmed';
-  // Keep the final WhatsApp media card within a safe portrait height so Meta/WhatsApp
-  // does not visually clip the confirmation banner in the chat preview. Date/time stay
-  // in the message body directly below the graphic.
-  const panel=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="180" viewBox="0 0 1080 180">
-    <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#08b84f"/><stop offset=".55" stop-color="#078f42"/><stop offset="1" stop-color="#046b35"/></linearGradient></defs>
-    <rect width="1080" height="180" fill="#f8f3eb"/>
-    <rect x="62" y="22" width="956" height="130" rx="28" fill="url(#g)"/>
-    <circle cx="132" cy="87" r="38" fill="#fff"/><path d="M112 87l14 14 29-32" fill="none" stroke="#07883f" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
-    <line x1="195" y1="48" x2="195" y2="126" stroke="#e8fff1" stroke-width="4"/>
-    <path d="M88 54l-17-13M82 87H62M90 120l-17 12M982 54l16-13M988 87h18M982 120l16 12" stroke="#d5ed42" stroke-width="6" stroke-linecap="round"/>
-    <text x="610" y="103" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#fff">${xmlEsc(title)}</text>
-  </svg>`;
-  const status=await sharp(Buffer.from(panel),{sequentialRead:true}).png({compressionLevel:9,adaptiveFiltering:false}).toBuffer();
-  // IMPORTANT: Meta/BotSailor was intermittently dropping this first message when
-  // the endpoint had to build an oversized 1875px image and then resize it again.
-  // Compose directly at the final 1080x1695 delivery size instead: the approved
-  // booking card (including Booking Slot Reserved) is scaled as one intact block,
-  // then the confirmation banner is appended in the reserved bottom area.
-  const safeBase=await sharp(base,{sequentialRead:true})
-    .resize({width:1080,height:1350,fit:'fill'})
-    .png({compressionLevel:9,adaptiveFiltering:false}).toBuffer();
-  return sharp({create:{width:1080,height:1530,channels:4,background:{r:248,g:243,b:235,alpha:1}}})
-    .composite([{input:safeBase,top:0,left:0},{input:status,top:1350,left:0}])
-    .png({compressionLevel:9,adaptiveFiltering:false}).toBuffer();
+  return bookingCardPng(b,title);
 }
 
 async function bookingDesign3ChangePng() {
@@ -4303,7 +4277,12 @@ app.get('/api/public/booking/whatsapp-design3/:ref.png', async (req,res)=>{
     const token=String(req.query.token||''); if(!/^[a-f0-9]{64}$/i.test(token)) return res.status(404).end();
     const r=await pool.query(`SELECT b.*,c.name AS counsellor_name,c.meeting_link,l.name AS offline_location_name,l.address AS offline_address,l.map_url AS offline_map_url FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id LEFT JOIN booking_locations l ON l.id=c.location_id WHERE b.booking_ref=$1 AND b.token_hash=$2 LIMIT 1`,[req.params.ref,createHash('sha256').update(token).digest('hex')]);
     if(!r.rowCount)return res.status(404).end();
-    const png=await bookingDesign3ConfirmationPng(r.rows[0],String(req.query.rescheduled||'')==='1');
+    const isRescheduled=String(req.query.rescheduled||'')==='1';
+    // The normal send path pre-renders this exact image before BotSailor receives
+    // the media URL, so its fetch returns immediately. Keep generation fallback
+    // for direct/manual URL opens.
+    const png=getCachedBookingDesign3Media(r.rows[0].booking_ref,isRescheduled)
+      || await bookingDesign3ConfirmationPng(r.rows[0],isRescheduled);
     res.set({'Content-Type':'image/png','Cache-Control':'no-store, max-age=0','X-Content-Type-Options':'nosniff'}).send(png);
   }catch(e){console.error('WhatsApp Design3 card error:',e.message);res.status(500).end();}
 });
@@ -4332,32 +4311,33 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   // Design 3 status/date/time is now rendered inside the media graphic.
   // Keep a short caption because BotSailor/Meta requires a non-empty message body.
   const msg=options.rescheduled===true ? `📅   New Date: ${date}\n🕒   New Time (IST): ${time}` : `📅   Date: ${date}\n🕒   Time (IST): ${time}`;
-  // Send the confirmation artwork as a standalone media message first. BotSailor/Meta
-  // was dropping the media header when it was attached to the 3-reply-button message,
-  // while standalone media delivery is reliable. Keep the existing action buttons as
-  // the next native interactive message and keep the approved Need-to-make card untouched.
-  const confirmationMediaUrl=`${String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/whatsapp-design3/${encodeURIComponent(b.booking_ref)}.png?token=${encodeURIComponent(token)}${options.rescheduled===true?'&rescheduled=1':''}&v=7oct-standalone-confirm1`;
-  const mediaResult=await sendBotSailorMediaMessage(
-    {mobile:recipientMobile,name:recipientName,course:b.course},
-    msg,
-    confirmationMediaUrl,
-    `${action}_confirmation_media`
-  );
-
-  // Give WhatsApp a short moment to place the media card before the native action row.
-  if(mediaResult.success) await new Promise(resolve=>setTimeout(resolve,1800));
-
+  // Pre-render/cache the media BEFORE submitting the interactive message.
+  // The buttons and media are still one BotSailor message; this only makes the
+  // public image URL instantly fetchable by BotSailor/Meta.
+  try{
+    const preparedPng=await bookingDesign3ConfirmationPng(b,options.rescheduled===true);
+    cacheBookingDesign3Media(b.booking_ref,options.rescheduled===true,preparedPng);
+  }catch(e){
+    console.error('WhatsApp Design3 pre-render error:',e.message);
+  }
   const result=await sendBotSailorReplyButtons(
     {mobile:recipientMobile,name:recipientName,course:b.course},
-    `Appointment options`,
+    msg,
     [
       {id:'booking_manage',title:'Manage Appointment'},
       String(b.mode || '').trim().toLowerCase() === 'offline'
         ? {id:'booking_maps',title:'View on Google Maps'}
+        // Keep the proven booking_maps postback id for BotSailor/Meta delivery compatibility.
+        // The visible online title changes, and the webhook already routes booking_maps
+        // to the meeting link whenever the latest booking mode is online.
         : {id:'booking_maps',title:'Join Online Meeting'},
       {id:'booking_help',title:'Call / WhatsApp Us'}
     ],
-    action
+    action,
+    {
+      mediaUrl:`${String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/whatsapp-design3/${encodeURIComponent(b.booking_ref)}.png?token=${encodeURIComponent(token)}${options.rescheduled===true?'&rescheduled=1':''}&v=7oct-final3`,
+      mediaType:'image',
+    }
   );
   // Keep the proven three-button confirmation untouched. Send Cancel/Reschedule as
   // a separate native WhatsApp interactive message immediately after the first send.
@@ -4369,7 +4349,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
     // Media cards can take a moment to render on WhatsApp even after Meta accepts
     // the send. An 8-second delivery gap gives the media card enough time to reach/render on
     // WhatsApp before the change-options card, preventing it from appearing first.
-    await new Promise(resolve=>setTimeout(resolve,8000));
+    await new Promise(resolve=>setTimeout(resolve,15000));
     manageResult=await sendBotSailorReplyButtons(
       {mobile:recipientMobile,name:recipientName,course:b.course},
       `💡 Use the options below to cancel or reschedule.`,
