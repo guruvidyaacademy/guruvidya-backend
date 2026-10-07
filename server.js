@@ -640,6 +640,44 @@ async function sendBotSailorText(record, message, action = "send_message") {
   return { ...result, messageText: finalMessage };
 }
 
+async function sendBotSailorMediaMessage(record, message, mediaUrl, action = "send_media_message") {
+  if (!config.whatsappEnabled) {
+    return { success: false, status: "disabled", message: "WhatsApp disabled" };
+  }
+
+  const finalMessage = renderMessage(message, record);
+  const payload = {
+    apiToken: config.botsailorToken,
+    phone_number_id: config.botsailorInstanceId,
+    phone_number: botSailorPhone(record.mobile || ""),
+    message: finalMessage,
+    media_url: String(mediaUrl || ""),
+    media_type: "image",
+  };
+
+  const result = await botSailorPost(
+    config.botsailorApiUrl || "https://botsailor.com/api/v1/whatsapp/send",
+    payload
+  );
+
+  await addIntegrationLog(
+    "whatsapp",
+    action,
+    result.success ? "success" : "failed",
+    { ...payload, apiToken: "***" },
+    result.response || { error: result.error || result.message }
+  );
+
+  console.log("BotSailor Standalone Media:", {
+    success: result.success,
+    status: result.status,
+    message: result.message,
+    response: result.response || {},
+  });
+
+  return { ...result, messageText: finalMessage };
+}
+
 async function sendBotSailorReplyButtons(
   record,
   message,
@@ -4294,24 +4332,32 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
   // Design 3 status/date/time is now rendered inside the media graphic.
   // Keep a short caption because BotSailor/Meta requires a non-empty message body.
   const msg=options.rescheduled===true ? `📅   New Date: ${date}\n🕒   New Time (IST): ${time}` : `📅   Date: ${date}\n🕒   Time (IST): ${time}`;
-  const result=await sendBotSailorReplyButtons(
+  // Send the confirmation artwork as a standalone media message first. BotSailor/Meta
+  // was dropping the media header when it was attached to the 3-reply-button message,
+  // while standalone media delivery is reliable. Keep the existing action buttons as
+  // the next native interactive message and keep the approved Need-to-make card untouched.
+  const confirmationMediaUrl=`${String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/whatsapp-design3/${encodeURIComponent(b.booking_ref)}.png?token=${encodeURIComponent(token)}${options.rescheduled===true?'&rescheduled=1':''}&v=7oct-standalone-confirm1`;
+  const mediaResult=await sendBotSailorMediaMessage(
     {mobile:recipientMobile,name:recipientName,course:b.course},
     msg,
+    confirmationMediaUrl,
+    `${action}_confirmation_media`
+  );
+
+  // Give WhatsApp a short moment to place the media card before the native action row.
+  if(mediaResult.success) await new Promise(resolve=>setTimeout(resolve,1800));
+
+  const result=await sendBotSailorReplyButtons(
+    {mobile:recipientMobile,name:recipientName,course:b.course},
+    `Appointment options`,
     [
       {id:'booking_manage',title:'Manage Appointment'},
       String(b.mode || '').trim().toLowerCase() === 'offline'
         ? {id:'booking_maps',title:'View on Google Maps'}
-        // Keep the proven booking_maps postback id for BotSailor/Meta delivery compatibility.
-        // The visible online title changes, and the webhook already routes booking_maps
-        // to the meeting link whenever the latest booking mode is online.
         : {id:'booking_maps',title:'Join Online Meeting'},
       {id:'booking_help',title:'Call / WhatsApp Us'}
     ],
-    action,
-    {
-      mediaUrl:`${String(process.env.PUBLIC_API_URL || 'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/whatsapp-design3/${encodeURIComponent(b.booking_ref)}.png?token=${encodeURIComponent(token)}${options.rescheduled===true?'&rescheduled=1':''}&v=7oct-main-confirm-visible-final6`,
-      mediaType:'image',
-    }
+    action
   );
   // Keep the proven three-button confirmation untouched. Send Cancel/Reschedule as
   // a separate native WhatsApp interactive message immediately after the first send.
