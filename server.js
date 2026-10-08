@@ -4353,7 +4353,7 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
     await new Promise(resolve=>setTimeout(resolve,15000));
     manageResult=await sendBotSailorReplyButtons(
       {mobile:recipientMobile,name:recipientName,course:b.course},
-      `💡 Tap below to cancel or reschedule.`,
+      `💡 Update Your Booking`,
       [
         {id:'booking_cancel',title:'Cancel'},
         {id:'booking_reschedule',title:'Reschedule'}
