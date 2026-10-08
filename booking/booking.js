@@ -35,6 +35,10 @@ export async function initBooking(pool) {
       counsellor_id BIGINT REFERENCES booking_counsellors(id), starts_at TIMESTAMPTZ NOT NULL, ends_at TIMESTAMPTZ NOT NULL,
       status TEXT NOT NULL DEFAULT 'requested', customer_response TEXT NOT NULL DEFAULT 'awaiting',
       response_at TIMESTAMPTZ, admin_alert_sent_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW());
+    ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS cancellation_reason TEXT;
+    ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS cancellation_note TEXT;
+    ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS cancelled_via TEXT;
+    ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
     ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS admin_alert_ack_at TIMESTAMPTZ;
     ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS parent_relation TEXT;
     ALTER TABLE student_bookings ADD COLUMN IF NOT EXISTS student_email TEXT;
@@ -425,7 +429,13 @@ export function installBookingRoutes(app,pool,hooks={}) {
         if(!slot){await db.query('ROLLBACK');return fail(res,409,'New slot unavailable');}
         const cfg=await settings();
         await db.query(`UPDATE student_bookings SET starts_at=$2,ends_at=$3,status=$4,customer_response=$5,response_at=NOW(),admin_alert_sent_at=NULL,admin_alert_ack_at=NULL,admin_alert_ack_note=NULL,updated_at=NOW() WHERE id=$1`,[b.id,slot.starts_at,slot.ends_at,cfg.approval_required?'requested':'confirmed',cfg.approval_required?'awaiting':'confirmed']);
-      }else if(req.body.action==='cancel')await db.query(`UPDATE student_bookings SET status='cancelled',customer_response='cancelled',response_at=NOW(),updated_at=NOW() WHERE id=$1`,[b.id]);
+      }else if(req.body.action==='cancel'){
+        const reason=String(req.body.cancellation_reason||'').trim();
+        const allowed=['Schedule Conflict','Personal Reasons','Date Not Suitable','Need Different Time','Prefer Online','Prefer Offline','Admission Plan Changed','Not Interested','Booked by Mistake','Duplicate Booking','Other Reason'];
+        const note=String(req.body.cancellation_note||'').trim();
+        if(!allowed.includes(reason)||(reason==='Other Reason'&&(!note||note.length>500))){await db.query('ROLLBACK');return fail(res,400,'Please select a valid cancellation reason');}
+        await db.query(`UPDATE student_bookings SET status='cancelled',customer_response='cancelled',response_at=NOW(),updated_at=NOW(),cancellation_reason=$2,cancellation_note=$3,cancelled_via='Browser',cancelled_at=NOW() WHERE id=$1`,[b.id,reason,reason==='Other Reason'?note:null]);
+      }
       else await db.query(`UPDATE student_bookings SET customer_response='confirmed',response_at=NOW(),status='confirmed',updated_at=NOW() WHERE id=$1`,[b.id]);
       await log(db,b.id,'customer',req.body.action,{old_starts_at:b.starts_at,new_starts_at:req.body.starts_at||null});
       if(req.body.action!=='cancel') await enqueueLifecycleBlockedIntents(db,{bookingId:Number(b.id),event:req.body.action==='confirm'?'confirmed':'rescheduled',eventKey:req.body.action+':'+randomUUID()});
@@ -550,7 +560,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
     }catch(e){await db.query('ROLLBACK');fail(res,500,'Unable to acknowledge alert');}
     finally{db.release();}
   });
-  app.get('/api/admin/booking',admin,async(req,res)=>{const r=await pool.query(`SELECT b.id,b.booking_ref,b.lead_id,b.linking_status,b.student_name,b.student_mobile,b.parent_name,b.parent_mobile,b.recipient,b.booked_by,b.student_whatsapp_verified,b.parent_whatsapp_verified,b.course,b.mode,b.counsellor_id,b.starts_at,b.ends_at,b.status,b.customer_response,b.response_at,b.admin_alert_sent_at,b.created_at,b.updated_at,c.name AS counsellor_name,c.meeting_link,c.location_id,l.name AS location_name FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id LEFT JOIN booking_locations l ON l.id=c.location_id WHERE b.trashed_at IS NULL ORDER BY b.starts_at DESC LIMIT 500`);res.json({success:true,data:r.rows});});
+  app.get('/api/admin/booking',admin,async(req,res)=>{const r=await pool.query(`SELECT b.id,b.booking_ref,b.lead_id,b.linking_status,b.student_name,b.student_mobile,b.parent_name,b.parent_mobile,b.recipient,b.booked_by,b.student_whatsapp_verified,b.parent_whatsapp_verified,b.course,b.mode,b.counsellor_id,b.starts_at,b.ends_at,b.status,b.customer_response,b.response_at,b.cancellation_reason,b.cancellation_note,b.cancelled_via,b.cancelled_at,b.admin_alert_sent_at,b.created_at,b.updated_at,c.name AS counsellor_name,c.meeting_link,c.location_id,l.name AS location_name FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id LEFT JOIN booking_locations l ON l.id=c.location_id WHERE b.trashed_at IS NULL ORDER BY b.starts_at DESC LIMIT 500`);res.json({success:true,data:r.rows});});
   // Booking trash: reversible soft-delete; active appointments must be cancelled first.
   app.get('/api/admin/booking/trash',admin,async(req,res)=>{
     try {const r=await pool.query(`SELECT id,booking_ref,student_name,course,mode,starts_at,status,trashed_at FROM student_bookings WHERE trashed_at IS NOT NULL ORDER BY trashed_at DESC LIMIT 500`);res.json({success:true,data:r.rows});}

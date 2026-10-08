@@ -3476,6 +3476,39 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     }
 
 
+    // Cancellation reasons are handled only for the exact pending booking and recipient.
+    const gvCancelReasons=['Schedule Conflict','Personal Reasons','Date Not Suitable','Need Different Time','Prefer Online','Prefer Offline','Admission Plan Changed','Not Interested','Booked by Mistake','Duplicate Booking','Other Reason'];
+    const gvCancelSignal=String(buttonReplyId||buttonReplyTitle||webhookUserMessage||'').trim().toLowerCase();
+    const gvCancelMobile=botSailorPhone(mobile);
+    const gvCancelStateQ=await pool.query(`SELECT booking_ref,state,payload FROM booking_whatsapp_states WHERE mobile=$1 AND state IN ('cancel_reason','cancel_other','cancel_confirm') LIMIT 1`,[gvCancelMobile]);
+    const gvCancelState=gvCancelStateQ.rows[0];
+    const gvCancelPayload=gvCancelState?.payload||{};
+    const gvCancelSetState=async(state,values={})=>pool.query(`UPDATE booking_whatsapp_states SET state=$2,payload=COALESCE(payload,'{}'::jsonb)||$3::jsonb,updated_at=NOW() WHERE mobile=$1 AND booking_ref=$4`,[gvCancelMobile,state,JSON.stringify(values),gvCancelState?.booking_ref]);
+    if(gvCancelState && (gvCancelSignal.startsWith('gv_cancel_') || (gvCancelState.state==='cancel_other' && webhookUserMessage && !buttonReplyId && !buttonReplyTitle))){
+      const pending=await loadBookingWhatsAppContext(gvCancelState.booking_ref);
+      if(!pending||!['requested','approved','confirmed','rescheduled'].includes(String(pending.status||'').toLowerCase()))return res.json({status:'ignored',message:'Booking is no longer active'});
+      const sender=gvCancelMobile===botSailorPhone(pending.parent_mobile)?{mobile:pending.parent_mobile,name:pending.parent_name||pending.student_name,course:pending.course}:{mobile:pending.student_mobile,name:pending.student_name,course:pending.course};
+      const reply=async(message,buttons,action)=>sendBotSailorReplyButtons(sender,message,buttons,action);
+      const pageButtons=(page)=>{const start=page*2;const opts=gvCancelReasons.slice(start,start+2).map((r,i)=>({id:'gv_cancel_reason_'+(start+i),title:r}));if(start+2<gvCancelReasons.length)opts.push({id:'gv_cancel_page_'+(page+1),title:'More Reasons'});return opts;};
+      if(gvCancelSignal==='gv_cancel_start'){
+        await gvCancelSetState('cancel_reason',{cancel_page:0,cancel_reason:null,cancel_note:null});
+        await reply(`Booking: *${pending.booking_ref}*\n\nPlease select your cancellation reason.`,pageButtons(0),'booking_cancel_reasons');
+      }else if(gvCancelSignal.startsWith('gv_cancel_page_')&&gvCancelState.state==='cancel_reason'){
+        const page=Number(gvCancelSignal.slice(15));if(Number.isInteger(page)&&page>=0&&page<=5){await gvCancelSetState('cancel_reason',{cancel_page:page});await reply('Select your cancellation reason:',pageButtons(page),'booking_cancel_reasons_page');}
+      }else if(gvCancelSignal.startsWith('gv_cancel_reason_')&&gvCancelState.state==='cancel_reason'){
+        const idx=Number(gvCancelSignal.slice(17));const reason=gvCancelReasons[idx];
+        if(reason){await gvCancelSetState(reason==='Other Reason'?'cancel_other':'cancel_confirm',{cancel_reason:reason,cancel_note:null});
+          if(reason==='Other Reason')await sendBotSailorText(sender,`Booking: *${pending.booking_ref}*\n\nPlease type your cancellation reason (up to 500 characters).`,'booking_cancel_other');
+          else await reply(`Booking: *${pending.booking_ref}*\nReason: *${reason}*\n\nDo you want to cancel this appointment?`,[{id:'booking_cancel_yes',title:'Yes, Cancel'},{id:'gv_cancel_keep',title:'Keep Appointment'}],'booking_cancel_final_confirm');}
+      }else if(gvCancelState.state==='cancel_other' && webhookUserMessage && !buttonReplyId && !buttonReplyTitle){
+        const note=String(webhookUserMessageRaw||'').trim();
+        if(note.length<3||note.length>500)await sendBotSailorText(sender,'Please enter a reason between 3 and 500 characters.','booking_cancel_other_retry');
+        else{await gvCancelSetState('cancel_confirm',{cancel_note:note});await reply(`Booking: *${pending.booking_ref}*\nReason: *Other Reason*\n${note}\n\nDo you want to cancel this appointment?`,[{id:'booking_cancel_yes',title:'Yes, Cancel'},{id:'gv_cancel_keep',title:'Keep Appointment'}],'booking_cancel_final_confirm');}
+      }else if(gvCancelSignal==='gv_cancel_keep'){
+        await gvCancelSetState('active',{cancel_reason:null,cancel_note:null});await sendBotSailorText(sender,'Your appointment has been kept. No cancellation was made.','booking_cancel_kept');
+      }
+      return res.json({status:'ok',action:'booking_cancel_reason_flow'});
+    }
     // FINAL APPROVED booking confirmation action buttons.
     const bookingAction = [buttonReplyId, buttonReplyTitle, webhookUserMessage]
       .map(v => normalizeLooseText(v));
@@ -3525,11 +3558,14 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       }
       let reply='';
       if(bookingActionType==='cancel') {
+        await pool.query(`INSERT INTO booking_whatsapp_states(mobile,booking_id,booking_ref,state,payload,updated_at)
+          VALUES($1,$2,$3,'cancel_reason','{}'::jsonb,NOW())
+          ON CONFLICT(mobile) DO UPDATE SET booking_id=EXCLUDED.booking_id,booking_ref=EXCLUDED.booking_ref,state='cancel_reason',payload=COALESCE(booking_whatsapp_states.payload,'{}'::jsonb)-'cancel_reason'-'cancel_note',updated_at=NOW()`,[canonical,booking.id,booking.booking_ref]);
         const confirmResult=await sendBotSailorReplyButtons(
           actionContact,
           `Booking: *${booking.booking_ref}*\n\nPlease confirm your choice below.`,
           [
-            {id:'booking_cancel_yes',title:'Yes, Cancel'},
+            {id:'gv_cancel_start',title:'Select Reason'},
             {id:'booking_reschedule',title:'Reschedule'}
           ],
           'booking_cancel_confirm',
@@ -3537,14 +3573,22 @@ app.post("/api/webhook/botsailor", async (req, res) => {
         );
         return res.status(confirmResult.success?200:400).json({status:confirmResult.success?'ok':'error',action:'booking_cancel_confirm'});
       } else if(bookingActionType==='cancel_yes') {
-        await pool.query(`UPDATE student_bookings SET status='cancelled',customer_response='cancelled',response_at=NOW(),updated_at=NOW() WHERE id=$1`,[booking.id]);
+        const pendingQ=await pool.query(`SELECT state,payload,booking_ref FROM booking_whatsapp_states WHERE mobile=$1 LIMIT 1`,[canonical]);
+        const pending=pendingQ.rows[0];
+        const selected=String(pending?.payload?.cancel_reason||'');
+        if(pending?.state!=='cancel_confirm'||pending.booking_ref!==booking.booking_ref||!gvCancelReasons.includes(selected)){
+          await sendBotSailorText(actionContact,'Please select a cancellation reason before confirming.','booking_cancel_reason_required');
+          return res.json({status:'ok',action:'booking_cancel_reason_required'});
+        }
+        const cancelled=await pool.query(`UPDATE student_bookings SET status='cancelled',customer_response='cancelled',response_at=NOW(),updated_at=NOW(),cancellation_reason=$2,cancellation_note=$3,cancelled_via='WhatsApp',cancelled_at=NOW() WHERE id=$1 AND status IN ('requested','approved','confirmed','rescheduled') RETURNING id`,[booking.id,selected,selected==='Other Reason'?String(pending.payload.cancel_note||'').slice(0,500):null]);
+        if(!cancelled.rowCount)return res.json({status:'ignored',message:'Booking already closed'});
         // Keep the cancelled booking bound to this WhatsApp action set so an old
         // Reschedule button can never jump to a different booking on the same mobile.
         await pool.query(`INSERT INTO booking_whatsapp_states(mobile,booking_id,booking_ref,state,payload,updated_at)
           VALUES($1,$2,$3,'cancelled','{}'::jsonb,NOW())
           ON CONFLICT(mobile) DO UPDATE SET booking_id=EXCLUDED.booking_id,booking_ref=EXCLUDED.booking_ref,state='cancelled',payload='{}'::jsonb,updated_at=NOW()`,
           [canonical,booking.id,booking.booking_ref]);
-        reply=`\n\nYour appointment *${booking.booking_ref}* has been cancelled successfully.\n\nIf you need counselling later, please book a new appointment.`;
+        reply=`\n\nYour appointment *${booking.booking_ref}* has been cancelled successfully.\n\nIf you need counselling later, please book a new appointment.\n\nBook a new appointment for a future slot using this link:\n${String(process.env.PUBLIC_BOOKING_URL || 'https://guruvidya-backend.onrender.com/booking').split('#')[0]}`;
       } else if(bookingActionType==='reschedule') {
         // Reuse the currently valid private token when available. Rotating it here
         // invalidates an already-open browser page and makes refresh show Booking not found.
