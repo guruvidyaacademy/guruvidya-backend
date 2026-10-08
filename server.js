@@ -3529,6 +3529,13 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       : bookingAction.includes('booking_cancel') || bookingAction.includes('cancel') ? 'cancel'
       : bookingAction.includes('booking_reschedule') || bookingAction.includes('reschedule') ? 'reschedule'
       : '';
+    // The already-cancelled reply includes a working new-booking quick reply.
+    // Keep it independent of the old booking's status or WhatsApp state.
+    if (bookingAction.includes('booking_new_appointment') || bookingAction.includes('book new appointment')) {
+      const newBookingUrl=String(process.env.PUBLIC_BOOKING_URL || 'https://guruvidya-backend.onrender.com/booking').split('#')[0];
+      const sent=await sendBotSailorText({mobile},`Book your new counselling appointment using the link below:\n\n${newBookingUrl}`,'booking_new_appointment_link');
+      return res.status(sent.success?200:400).json({status:sent.success?'ok':'error',action:'booking_new_appointment_link'});
+    }
     if (bookingActionType) {
       const canonical=botSailorPhone(mobile);
       const national=canonical.startsWith('91')&&canonical.length===12?canonical.slice(2):canonical;
@@ -3559,11 +3566,20 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       const actionRecipientMobile=actionRecipientKind==='parent'?booking.parent_mobile:booking.student_mobile;
       const actionRecipientName=actionRecipientKind==='parent'?(booking.parent_name||booking.student_name):booking.student_name;
       const actionContact={mobile:actionRecipientMobile,name:actionRecipientName,course:booking.course};
-      if(bookingActionType==='reschedule' && String(booking.status||'').toLowerCase()==='cancelled'){
+      if(['reschedule','cancel','cancel_yes'].includes(bookingActionType) && String(booking.status||'').toLowerCase()==='cancelled'){
+        const newBookingUrl=String(process.env.PUBLIC_BOOKING_URL || 'https://guruvidya-backend.onrender.com/booking').split('#')[0];
         const closed=await sendBookingActionGraphicText(actionContact,'already_cancelled',
-          `\n\nBooking: *${booking.booking_ref}*\n\nPlease book a new appointment if you would like to schedule counselling again.`,
-          'booking_cancelled_reschedule_blocked');
-        return res.status(closed.success?200:400).json({status:closed.success?'ok':'error',action:'booking_cancelled_reschedule_blocked'});
+          `\n\nBooking: *${booking.booking_ref}*\n\nThis appointment has already been cancelled. To schedule another counselling session, please book a new appointment below.`,
+          'booking_already_cancelled');
+        if(!closed.success)return res.status(400).json({status:'error',action:'booking_already_cancelled'});
+        // BotSailor reply buttons are supported by the existing integration.
+        // Also include the direct link so a student can book even if quick replies expire.
+        const next=await sendBotSailorReplyButtons(actionContact,
+          `Schedule a new appointment:\n${newBookingUrl}`,
+          [{id:'booking_new_appointment',title:'Book New Appointment'}],
+          'booking_already_cancelled_new_booking_button');
+        if(!next.success)await sendBotSailorText(actionContact,`Book a new appointment:\n${newBookingUrl}`,'booking_already_cancelled_new_booking_fallback');
+        return res.status(200).json({status:'ok',action:'booking_already_cancelled_new_booking'});
       }
       let reply='';
       if(bookingActionType==='cancel') {
