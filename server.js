@@ -3575,7 +3575,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
         // BotSailor reply buttons are supported by the existing integration.
         // Also include the direct link so a student can book even if quick replies expire.
         const next=await sendBotSailorReplyButtons(actionContact,
-          `Schedule a new appointment:\n${newBookingUrl}`,
+          'Please use the button below to book a new appointment.',
           [{id:'booking_new_appointment',title:'Book New Appointment'}],
           'booking_already_cancelled_new_booking_button');
         if(!next.success)await sendBotSailorText(actionContact,`Book a new appointment:\n${newBookingUrl}`,'booking_already_cancelled_new_booking_fallback');
