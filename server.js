@@ -658,7 +658,7 @@ async function bookingActionGraphicPng(kind){
   }[item.theme];
   const [bg1,bg2,iconColor,textColor]=palette;
   const escaped=item.title.replace(/&/g,'&amp;').replace(/</g,'&lt;');
-  const icon=kind==='cancel'?'<path d="M48 12 86 82H10Z" fill="none" stroke="white" stroke-width="8" stroke-linejoin="round"/><path d="M48 38v18m0 12v2" stroke="white" stroke-width="8" stroke-linecap="round"/>':kind==='reschedule'?'<rect x="18" y="24" width="60" height="58" rx="7" fill="none" stroke="white" stroke-width="7"/><path d="M18 42h60M33 16v17M63 16v17M34 57h10m11 0h10M34 70h10" stroke="white" stroke-width="6" stroke-linecap="round"/>':kind==='cancelled'?'<path d="m20 50 19 19 39-42" fill="none" stroke="white" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>':'<circle cx="48" cy="48" r="33" fill="none" stroke="white" stroke-width="8"/><path d="M48 44v24m0-39v2" stroke="white" stroke-width="9" stroke-linecap="round"/>';
+  const icon=kind==='cancel'?'<path d="M48 12 86 82H10Z" fill="none" stroke="white" stroke-width="8" stroke-linejoin="round"/><path d="M48 38v18m0 12v2" stroke="white" stroke-width="8" stroke-linecap="round"/>':kind==='reschedule'?'<rect x="18" y="24" width="60" height="58" rx="7" fill="none" stroke="#0756c7" stroke-width="7"/><path d="M18 42h60M33 16v17M63 16v17M34 57h10m11 0h10M34 70h10" stroke="#0756c7" stroke-width="6" stroke-linecap="round"/>':kind==='cancelled'?'<path d="m20 50 19 19 39-42" fill="none" stroke="white" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>':'<circle cx="48" cy="48" r="33" fill="none" stroke="white" stroke-width="8"/><path d="M48 44v24m0-39v2" stroke="white" stroke-width="9" stroke-linecap="round"/>';
   // Match the already-approved bookingDesign3ChangePng graphic geometry exactly:
   // 1080x210 canvas, inset x=105..975, safe icon/text region. WhatsApp crops
   // the outside canvas in its preview, not the banner content.
@@ -680,7 +680,7 @@ app.get('/api/public/booking/action-graphic/:kind.png',async(req,res)=>{
   }catch(e){console.error('Booking action graphic error:',e.message);res.status(500).end();}
 });
 function bookingActionGraphicUrl(kind){
-  return `${String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/action-graphic/${kind}.png?v=8oct4-design3-safe`;
+  return `${String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/action-graphic/${kind}.png?v=${kind==='reschedule'?'8oct-reschedule-icon-visible':'8oct4-design3-safe'}`;
 }
 async function sendBookingActionGraphicText(record,kind,body,action){
   // BotSailor's documented Send File endpoint supports a caption. On a media
