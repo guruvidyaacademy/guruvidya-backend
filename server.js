@@ -646,6 +646,7 @@ const BOOKING_ACTION_GRAPHICS = Object.freeze({
   reschedule: {title:'Reschedule Appointment',theme:'blue'},
   cancelled: {title:'Appointment Cancelled',theme:'success'},
   already_cancelled: {title:'This appointment is already cancelled.',theme:'info'},
+  rebook: {title:'Book Your Next Appointment',theme:'blue'},
 });
 async function bookingActionGraphicPng(kind){
   const item=BOOKING_ACTION_GRAPHICS[kind];
@@ -658,7 +659,7 @@ async function bookingActionGraphicPng(kind){
   }[item.theme];
   const [bg1,bg2,iconColor,textColor]=palette;
   const escaped=item.title.replace(/&/g,'&amp;').replace(/</g,'&lt;');
-  const icon=kind==='cancel'?'<path d="M48 12 86 82H10Z" fill="none" stroke="white" stroke-width="8" stroke-linejoin="round"/><path d="M48 38v18m0 12v2" stroke="white" stroke-width="8" stroke-linecap="round"/>':kind==='reschedule'?'<rect x="18" y="24" width="60" height="58" rx="7" fill="none" stroke="#0756c7" stroke-width="7"/><path d="M18 42h60M33 16v17M63 16v17M34 57h10m11 0h10M34 70h10" stroke="#0756c7" stroke-width="6" stroke-linecap="round"/>':kind==='cancelled'?'<path d="m20 50 19 19 39-42" fill="none" stroke="white" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>':'<circle cx="48" cy="48" r="33" fill="none" stroke="white" stroke-width="8"/><path d="M48 44v24m0-39v2" stroke="white" stroke-width="9" stroke-linecap="round"/>';
+  const icon=kind==='rebook'?'<rect x="18" y="24" width="60" height="58" rx="7" fill="none" stroke="#0756c7" stroke-width="7"/><path d="M18 42h60M33 16v17M63 16v17" stroke="#0756c7" stroke-width="7"/>':kind==='cancel'?'<path d="M48 12 86 82H10Z" fill="none" stroke="white" stroke-width="8" stroke-linejoin="round"/><path d="M48 38v18m0 12v2" stroke="white" stroke-width="8" stroke-linecap="round"/>':kind==='reschedule'?'<rect x="18" y="24" width="60" height="58" rx="7" fill="none" stroke="#0756c7" stroke-width="7"/><path d="M18 42h60M33 16v17M63 16v17M34 57h10m11 0h10M34 70h10" stroke="#0756c7" stroke-width="6" stroke-linecap="round"/>':kind==='cancelled'?'<path d="m20 50 19 19 39-42" fill="none" stroke="white" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>':'<circle cx="48" cy="48" r="33" fill="none" stroke="white" stroke-width="8"/><path d="M48 44v24m0-39v2" stroke="white" stroke-width="9" stroke-linecap="round"/>';
   // Match the already-approved bookingDesign3ChangePng graphic geometry exactly:
   // 1080x210 canvas, inset x=105..975, safe icon/text region. WhatsApp crops
   // the outside canvas in its preview, not the banner content.
@@ -3476,6 +3477,20 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     }
 
 
+    // A user-initiated rebooking-link request opens the real WhatsApp service window.
+    // Match the cancelled booking AND its booked-by phone; never send to an arbitrary sender.
+    const rebookMatch=String(webhookUserMessageRaw||'').trim().match(/^(?:VERIFY\s+)?GV-BOOK-LINK\s+(GV-[A-Z0-9]+)$/i);
+    if(isCustomerEvent&&rebookMatch){
+      const ref=rebookMatch[1].toUpperCase();
+      const match=await pool.query(`SELECT booking_ref,student_mobile,parent_mobile,recipient,status FROM student_bookings WHERE booking_ref=$1`,[ref]);
+      const b=match.rows[0];
+      const intended=b&&(String(b.recipient||'').toLowerCase()==='parent'&&b.parent_mobile?b.parent_mobile:b.student_mobile);
+      if(b?.status==='cancelled'&&botSailorPhone(intended)===botSailorPhone(mobile)){
+        const result=await sendGuruVidyaRebookingCard({mobile:intended},ref);
+        return res.status(200).json({status:result.success?'ok':'failed',action:'booking_rebook_link_requested'});
+      }
+      return res.status(200).json({status:'ignored',action:'booking_rebook_link_invalid'});
+    }
     // Cancellation reasons are handled only for the exact pending booking and recipient.
     const gvCancelReasons=['Schedule Conflict','Personal Reasons','Date Not Suitable','Need Different Time','Prefer Online','Prefer Offline','Admission Plan Changed','Not Interested','Booked by Mistake','Duplicate Booking','Other Reason'];
     // BotSailor sometimes returns only the visible reply-button title (including
@@ -4746,7 +4761,37 @@ async function sendWhatsAppMessage(phone, message) {
   return sendBotSailorText({ mobile: phone, name: "Student", course: "" }, message, "legacy_send");
 }
 
-installBookingRoutes(app, pool, { onBookingCreated: onBookingCreatedWhatsApp, onBookingRescheduled: onBookingRescheduledWhatsApp });
+async function sendGuruVidyaRebookingCard(recipient,bookingRef){
+  const url=String(process.env.PUBLIC_BOOKING_URL||'https://guruvidya-backend.onrender.com/booking').split('#')[0];
+  const graphic=await sendBookingActionGraphicText(recipient,'rebook',
+    `\n\nYour previous appointment has been cancelled successfully.\n\nNeed admission counselling again? Choose a convenient available date and time.`,
+    'booking_rebook_graphic');
+  if(!graphic.success)return graphic;
+  // Existing BotSailor integration supports reply buttons. A reply delivers the
+  // booking URL; do not pretend this is a native WhatsApp URL CTA.
+  return sendBotSailorReplyButtons(recipient,'Choose your course, date and time to book again.',
+    [{id:'booking_new_appointment',title:'Book New Appointment'}],'booking_rebook_button');
+}
+async function onBookingCancelledRebook({booking_ref}){
+  const b=await loadBookingWhatsAppContext(booking_ref);
+  if(!b||String(b.status).toLowerCase()!=='cancelled')return {success:false};
+  const target=String(b.recipient||'').toLowerCase()==='parent'&&b.parent_mobile?b.parent_mobile:b.student_mobile;
+  const mobile=String(target||'').replace(/\D/g,'').replace(/^91(?=\d{10}$)/,'');
+  if(!/^\d{10}$/.test(mobile))return {success:false};
+  const window=await pool.query(`SELECT MAX(received_at) AS last_incoming FROM whatsapp_window_events WHERE mobile IN ($1,$2)`,['91'+mobile,mobile]);
+  const lead=await pool.query(`SELECT MAX(last_customer_message_at) AS last_incoming FROM leads WHERE regexp_replace(COALESCE(mobile,''),'[^0-9]','','g') IN ($1,$2)`,['91'+mobile,mobile]);
+  const last=Math.max(new Date(window.rows[0]?.last_incoming||0).getTime(),new Date(lead.rows[0]?.last_incoming||0).getTime());
+  if(!(last>Date.now()-86400000&&last<=Date.now()))return {success:false,status:'window_closed'};
+  const claimed=await pool.query(`INSERT INTO booking_rebook_link_deliveries(booking_id,mobile,status)
+    SELECT id,$2,'pending' FROM student_bookings WHERE booking_ref=$1 AND status='cancelled'
+    ON CONFLICT DO NOTHING RETURNING booking_id`,[booking_ref,mobile]);
+  if(!claimed.rowCount)return {success:true,status:'already_claimed'};
+  let result={success:false};
+  try{result=await sendGuruVidyaRebookingCard({mobile:target},booking_ref);}
+  finally{await pool.query(`UPDATE booking_rebook_link_deliveries SET status=$3,updated_at=NOW() WHERE booking_id=$1 AND mobile=$2`,[claimed.rows[0].booking_id,mobile,result.success?'sent':'failed']);}
+  return result;
+}
+installBookingRoutes(app, pool, { onBookingCreated: onBookingCreatedWhatsApp, onBookingRescheduled: onBookingRescheduledWhatsApp, onBookingCancelled: onBookingCancelledRebook, onRebookLinkRequested: ({booking_ref,mobile})=>sendGuruVidyaRebookingCard({mobile},booking_ref) });
 
 async function bootstrap() {
   try {

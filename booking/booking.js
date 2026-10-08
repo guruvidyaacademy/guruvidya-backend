@@ -54,6 +54,14 @@ export async function initBooking(pool) {
     CREATE INDEX IF NOT EXISTS student_bookings_slot_idx ON student_bookings(counsellor_id,starts_at,ends_at);
     CREATE TABLE IF NOT EXISTS booking_events(id BIGSERIAL PRIMARY KEY, booking_id BIGINT REFERENCES student_bookings(id), actor TEXT NOT NULL, action TEXT NOT NULL, details JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ DEFAULT NOW());
     CREATE TABLE IF NOT EXISTS booking_delivery_logs(id BIGSERIAL PRIMARY KEY, booking_id BIGINT REFERENCES student_bookings(id), event TEXT NOT NULL, recipient TEXT NOT NULL, channel TEXT NOT NULL, status TEXT NOT NULL, detail TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(booking_id,event,recipient,channel));`);
+  // One outbound rebooking invitation per cancelled booking and WhatsApp recipient.
+  await pool.query(`CREATE TABLE IF NOT EXISTS booking_rebook_link_deliveries (
+    booking_id BIGINT NOT NULL REFERENCES student_bookings(id) ON DELETE CASCADE,
+    mobile TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(booking_id,mobile)
+  )`);
   await pool.query(`CREATE TABLE IF NOT EXISTS booking_closed_dates (
     id BIGSERIAL PRIMARY KEY, start_date DATE NOT NULL, end_date DATE NOT NULL,
     title TEXT NOT NULL, counsellor_id BIGINT REFERENCES booking_counsellors(id) ON DELETE CASCADE,
@@ -405,6 +413,39 @@ export function installBookingRoutes(app,pool,hooks={}) {
       res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer','Pragma':'no-cache'}).json({success:true,data:{...r.rows[0],offline_address:String(cfg.offline_address||'')}});
     }catch(e){fail(res,500,'Unable to load booking');}
   });
+  // Authenticated booking owner only: expose the REAL 24-hour status (never a test override).
+  app.post('/api/public/booking/manage/:ref/rebook-whatsapp',async(req,res)=>{
+    res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer'});
+    const token=String(req.body?.token||'');
+    if(!/^[a-f0-9]{64}$/i.test(token))return fail(res,404,'Booking not found');
+    try{
+      const found=await pool.query(`SELECT id,booking_ref,status,student_mobile,parent_mobile,recipient
+        FROM student_bookings WHERE booking_ref=$1 AND token_hash=$2`,[req.params.ref,hash(token)]);
+      if(!found.rowCount)return fail(res,404,'Booking not found');
+      const b=found.rows[0];
+      if(b.status!=='cancelled')return fail(res,409,'Appointment is not cancelled');
+      // The booked-by contact is the primary recipient. The existing student number
+      // is used for student-booked appointments, parent for parent-booked ones.
+      const target=String(b.recipient||'').toLowerCase()==='parent'&&validBookingPhone(bookingPhone(b.parent_mobile))?b.parent_mobile:b.student_mobile;
+      const mobile=bookingPhone(target);
+      if(!/^\d{10}$/.test(mobile))return fail(res,400,'Booking WhatsApp number unavailable');
+      const real=await whatsappWindowState(mobile);
+      const prior=await pool.query('SELECT status FROM booking_rebook_link_deliveries WHERE booking_id=$1 AND mobile=$2',[b.id,mobile]);
+      let sent=prior.rows[0]?.status==='sent';
+      if(real.real_open&&!sent&&prior.rows[0]?.status!=='failed'&&typeof hooks.onRebookLinkRequested==='function'){
+        // Unique insert prevents refresh/polling from dispatching multiple messages.
+        const claimed=await pool.query(`INSERT INTO booking_rebook_link_deliveries(booking_id,mobile,status)
+          VALUES($1,$2,'pending') ON CONFLICT DO NOTHING RETURNING booking_id`,[b.id,mobile]);
+        if(claimed.rowCount){
+          Promise.resolve().then(()=>hooks.onRebookLinkRequested({booking_ref:b.booking_ref,mobile:target}))
+            .then(async result=>pool.query(`UPDATE booking_rebook_link_deliveries SET status=$3,updated_at=NOW()
+              WHERE booking_id=$1 AND mobile=$2`,[b.id,mobile,result?.success?'sent':'failed']))
+            .catch(async e=>{console.error('Rebooking WhatsApp failed',e?.message||e);await pool.query(`UPDATE booking_rebook_link_deliveries SET status='failed',updated_at=NOW() WHERE booking_id=$1 AND mobile=$2`,[b.id,mobile]).catch(()=>{});});
+        }
+      }
+      res.json({success:true,data:{window_open:real.real_open&&prior.rows[0]?.status!=='failed',status:sent?'sent':prior.rows[0]?.status||'pending',mobile,whatsapp_url:'https://wa.me/919821627725?text='+encodeURIComponent('VERIFY GV-BOOK-LINK '+b.booking_ref)}});
+    }catch(e){console.error('Rebooking window status error',e?.message||e);fail(res,500,'Unable to check WhatsApp status');}
+  });
   app.post('/api/public/booking/manage/:ref/action',async(req,res)=>{
     res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer','Pragma':'no-cache'});
     if(!/^[a-f0-9]{64}$/i.test(String(req.body?.token||'')))return fail(res,404,'Booking not found');
@@ -444,6 +485,10 @@ export function installBookingRoutes(app,pool,hooks={}) {
       // WhatsApp delivery continues after the HTTP response so its media/action-card
       // delays cannot trigger a false browser timeout or a second-slot retry.
       res.json({success:true});
+      if(req.body.action==='cancel' && typeof hooks.onBookingCancelled==='function'){
+        Promise.resolve().then(()=>hooks.onBookingCancelled({booking_ref:req.params.ref,manage_token:String(req.body.token||'')}))
+          .catch(e=>console.error('Rebooking invitation check failed',e?.message||e));
+      }
       if(req.body.action==='reschedule' && req.body.notify_whatsapp===true && typeof hooks.onBookingRescheduled==='function'){
         Promise.resolve()
           .then(()=>hooks.onBookingRescheduled({booking_ref:req.params.ref,manage_token:String(req.body.token||''),rescheduled:true}))
