@@ -640,6 +640,54 @@ async function sendBotSailorText(record, message, action = "send_message") {
   return { ...result, messageText: finalMessage };
 }
 
+// WhatsApp cancellation-action graphics: presentation only; no booking logic changes.
+const BOOKING_ACTION_GRAPHICS = Object.freeze({
+  cancel: {title:'Cancel this appointment?',theme:'warning'},
+  reschedule: {title:'Reschedule Appointment',theme:'blue'},
+  cancelled: {title:'Appointment Cancelled',theme:'success'},
+  already_cancelled: {title:'This appointment is already cancelled.',theme:'info'},
+});
+async function bookingActionGraphicPng(kind){
+  const item=BOOKING_ACTION_GRAPHICS[kind];
+  if(!item)throw new Error('Unknown booking action graphic');
+  const palette={
+    warning:['#fff0f0','#f9c9cc','#d92532','#981725'],
+    blue:['#0756c7','#1687f0','#ffffff','#ffffff'],
+    success:['#e8faef','#b7eccb','#148443','#075d31'],
+    info:['#e9f5ff','#b7dcff','#1872d1','#164c87']
+  }[item.theme];
+  const [bg1,bg2,iconColor,textColor]=palette;
+  const escaped=item.title.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  const icon=kind==='cancel'?'<path d="M48 12 86 82H10Z" fill="none" stroke="white" stroke-width="8" stroke-linejoin="round"/><path d="M48 38v18m0 12v2" stroke="white" stroke-width="8" stroke-linecap="round"/>':kind==='reschedule'?'<rect x="18" y="24" width="60" height="58" rx="7" fill="none" stroke="white" stroke-width="7"/><path d="M18 42h60M33 16v17M63 16v17M34 57h10m11 0h10M34 70h10" stroke="white" stroke-width="6" stroke-linecap="round"/>':kind==='cancelled'?'<path d="m20 50 19 19 39-42" fill="none" stroke="white" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>':'<circle cx="48" cy="48" r="33" fill="none" stroke="white" stroke-width="8"/><path d="M48 44v24m0-39v2" stroke="white" stroke-width="9" stroke-linecap="round"/>';
+  const fontSize=kind==='already_cancelled'?37:48;
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="190" viewBox="0 0 1080 190"><defs><linearGradient id="g" x2="1" y2="1"><stop stop-color="${bg1}"/><stop offset="1" stop-color="${bg2}"/></linearGradient></defs><rect width="1080" height="190" fill="#f8f5ef"/><rect x="60" y="20" width="960" height="150" rx="26" fill="url(#g)"/><circle cx="158" cy="95" r="55" fill="${iconColor}"/><g transform="translate(115 52) scale(.9)">${icon}</g><text x="246" y="110" font-family="Arial,sans-serif" font-weight="bold" font-size="${fontSize}" fill="${textColor}">${escaped}</text></svg>`;
+  return sharp(Buffer.from(svg)).png().toBuffer();
+}
+app.get('/api/public/booking/action-graphic/:kind.png',async(req,res)=>{
+  try{
+    if(!Object.prototype.hasOwnProperty.call(BOOKING_ACTION_GRAPHICS,req.params.kind))return res.status(404).end();
+    res.set({'Content-Type':'image/png','Cache-Control':'public,max-age=86400','X-Content-Type-Options':'nosniff'}).send(await bookingActionGraphicPng(req.params.kind));
+  }catch(e){console.error('Booking action graphic error:',e.message);res.status(500).end();}
+});
+function bookingActionGraphicUrl(kind){
+  return `${String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/action-graphic/${kind}.png?v=8oct1`;
+}
+async function sendBookingActionGraphicText(record,kind,body,action){
+  // BotSailor's documented Send File endpoint supports a caption. On a media
+  // failure, preserve the proven original text message rather than losing it.
+  const originalHeading={reschedule:'📅 *Reschedule Appointment*',cancelled:'✅ *Appointment Cancelled*',already_cancelled:'ℹ️ *This appointment is already cancelled.*'}[kind]||'';
+  const fallback=originalHeading+body;
+  try{
+    if(!config.whatsappEnabled)return sendBotSailorText(record,fallback,action);
+    const payload={apiToken:config.botsailorToken,phone_number_id:config.botsailorInstanceId,phone_number:botSailorPhone(record.mobile||''),media_url:bookingActionGraphicUrl(kind),media_type:'image',media_caption_text:renderMessage(body.trim(),record)};
+    const result=await botSailorPost('https://botsailor.com/api/v1/whatsapp/send/file',payload);
+    await addIntegrationLog('whatsapp',`${action}_graphic`,result.success?'success':'failed',{...payload,apiToken:'***'},result.response||{error:result.error||result.message});
+    if(result.success)return result;
+    console.error('Booking action graphic send failed; using text fallback:',result.message);
+  }catch(e){console.error('Booking action graphic send exception; using text fallback:',e.message);}
+  return sendBotSailorText(record,fallback,`${action}_text_fallback`);
+}
+
 async function sendBotSailorReplyButtons(
   record,
   message,
@@ -3460,23 +3508,22 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       const actionRecipientName=actionRecipientKind==='parent'?(booking.parent_name||booking.student_name):booking.student_name;
       const actionContact={mobile:actionRecipientMobile,name:actionRecipientName,course:booking.course};
       if(bookingActionType==='reschedule' && String(booking.status||'').toLowerCase()==='cancelled'){
-        const closed=await sendBotSailorText(
-          actionContact,
-          `ℹ️ *This appointment is already cancelled.*\n\nBooking: *${booking.booking_ref}*\n\nPlease book a new appointment if you would like to schedule counselling again.`,
-          'booking_cancelled_reschedule_blocked'
-        );
+        const closed=await sendBookingActionGraphicText(actionContact,'already_cancelled',
+          `\n\nBooking: *${booking.booking_ref}*\n\nPlease book a new appointment if you would like to schedule counselling again.`,
+          'booking_cancelled_reschedule_blocked');
         return res.status(closed.success?200:400).json({status:closed.success?'ok':'error',action:'booking_cancelled_reschedule_blocked'});
       }
       let reply='';
       if(bookingActionType==='cancel') {
         const confirmResult=await sendBotSailorReplyButtons(
           actionContact,
-          `⚠️ *Cancel this appointment?*\n\nBooking: *${booking.booking_ref}*\n\nPlease confirm your choice below.`,
+          `Booking: *${booking.booking_ref}*\n\nPlease confirm your choice below.`,
           [
             {id:'booking_cancel_yes',title:'Yes, Cancel'},
             {id:'booking_reschedule',title:'Reschedule'}
           ],
-          'booking_cancel_confirm'
+          'booking_cancel_confirm',
+          {mediaUrl:bookingActionGraphicUrl('cancel'),mediaType:'image'}
         );
         return res.status(confirmResult.success?200:400).json({status:confirmResult.success?'ok':'error',action:'booking_cancel_confirm'});
       } else if(bookingActionType==='cancel_yes') {
@@ -3487,7 +3534,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
           VALUES($1,$2,$3,'cancelled','{}'::jsonb,NOW())
           ON CONFLICT(mobile) DO UPDATE SET booking_id=EXCLUDED.booking_id,booking_ref=EXCLUDED.booking_ref,state='cancelled',payload='{}'::jsonb,updated_at=NOW()`,
           [canonical,booking.id,booking.booking_ref]);
-        reply=`✅ *Appointment Cancelled*\n\nYour appointment *${booking.booking_ref}* has been cancelled successfully.\n\nIf you need counselling later, please book a new appointment.`;
+        reply=`\n\nYour appointment *${booking.booking_ref}* has been cancelled successfully.\n\nIf you need counselling later, please book a new appointment.`;
       } else if(bookingActionType==='reschedule') {
         // Reuse the currently valid private token when available. Rotating it here
         // invalidates an already-open browser page and makes refresh show Booking not found.
@@ -3501,7 +3548,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
           await pool.query(`UPDATE booking_whatsapp_states SET payload=jsonb_set(COALESCE(payload,'{}'::jsonb),'{manage_token}',to_jsonb($1::text),true),updated_at=NOW() WHERE mobile=$2 AND booking_ref=$3`,[token,canonical,booking.booking_ref]);
         }
         const rescheduleUrl=bookingManageUrl(booking,token)+'&action=reschedule';
-        reply=`📅 *Reschedule Appointment*\n\nOpen the secure link below to choose a new date and available time slot:\n\n${rescheduleUrl}`;
+        reply=`\n\nOpen the secure link below to choose a new date and available time slot:\n\n${rescheduleUrl}`;
       } else if(bookingActionType==='manage') {
         // Keep the same valid token so an open booking page remains refreshable.
         const stateTokenQ=await pool.query(`SELECT payload->>'manage_token' AS manage_token FROM booking_whatsapp_states WHERE mobile=$1 AND booking_ref=$2 LIMIT 1`,[canonical,booking.booking_ref]);
@@ -3523,7 +3570,9 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       } else {
         reply=`☎️ *Need Help?*\nCall / WhatsApp GuruVidya\n+91 98216 27725\nhttps://wa.me/919821627725`;
       }
-      const actionResult=await sendBotSailorText(actionContact,reply,`booking_action_${bookingActionType}`);
+      const actionResult=['cancel_yes','reschedule'].includes(bookingActionType)
+        ? await sendBookingActionGraphicText(actionContact,bookingActionType==='cancel_yes'?'cancelled':'reschedule',reply,`booking_action_${bookingActionType}`)
+        : await sendBotSailorText(actionContact,reply,`booking_action_${bookingActionType}`);
       return res.status(actionResult.success?200:400).json({status:actionResult.success?'ok':'error',action:`booking_action_${bookingActionType}`});
     }
 
