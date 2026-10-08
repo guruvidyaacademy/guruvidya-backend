@@ -3478,13 +3478,22 @@ app.post("/api/webhook/botsailor", async (req, res) => {
 
     // Cancellation reasons are handled only for the exact pending booking and recipient.
     const gvCancelReasons=['Schedule Conflict','Personal Reasons','Date Not Suitable','Need Different Time','Prefer Online','Prefer Offline','Admission Plan Changed','Not Interested','Booked by Mistake','Duplicate Booking','Other Reason'];
-    const gvCancelSignal=String(buttonReplyId||buttonReplyTitle||webhookUserMessage||'').trim().toLowerCase();
+    // BotSailor sometimes returns only the visible reply-button title (including
+    // #button_reply# transport messages), not the custom button ID.
+    const gvCancelRawSignal=String(buttonReplyId||buttonReplyTitle||webhookUserMessage||'').trim().toLowerCase();
     const gvCancelMobile=botSailorPhone(mobile);
     const gvCancelStateQ=await pool.query(`SELECT booking_ref,state,payload FROM booking_whatsapp_states WHERE mobile=$1 AND state IN ('cancel_reason','cancel_other','cancel_confirm') LIMIT 1`,[gvCancelMobile]);
     const gvCancelState=gvCancelStateQ.rows[0];
     const gvCancelPayload=gvCancelState?.payload||{};
+    const gvCancelPage=Math.max(0,Math.min(5,Number(gvCancelPayload.cancel_page)||0));
+    const gvCancelReasonIndex=gvCancelReasons.findIndex((r,i)=>i>=gvCancelPage*2&&i<gvCancelPage*2+2&&r.toLowerCase()===gvCancelRawSignal);
+    const gvCancelSignal=gvCancelRawSignal==='select reason'?'gv_cancel_start'
+      :gvCancelRawSignal==='more reasons'?'gv_cancel_page_'+(gvCancelPage+1)
+      :gvCancelRawSignal==='keep appointment'?'gv_cancel_keep'
+      :gvCancelReasonIndex>=0?'gv_cancel_reason_'+gvCancelReasonIndex
+      :gvCancelRawSignal;
     const gvCancelSetState=async(state,values={})=>pool.query(`UPDATE booking_whatsapp_states SET state=$2,payload=COALESCE(payload,'{}'::jsonb)||$3::jsonb,updated_at=NOW() WHERE mobile=$1 AND booking_ref=$4`,[gvCancelMobile,state,JSON.stringify(values),gvCancelState?.booking_ref]);
-    if(gvCancelState && (gvCancelSignal.startsWith('gv_cancel_') || (gvCancelState.state==='cancel_other' && webhookUserMessage && !buttonReplyId && !buttonReplyTitle))){
+    if(gvCancelState && (gvCancelSignal.startsWith('gv_cancel_') || (gvCancelState.state==='cancel_other' && webhookUserMessage && !buttonReplyId && !buttonReplyTitle && !/^#button[ _-]*reply#/i.test(webhookUserMessageRaw)))){
       const pending=await loadBookingWhatsAppContext(gvCancelState.booking_ref);
       if(!pending||!['requested','approved','confirmed','rescheduled'].includes(String(pending.status||'').toLowerCase()))return res.json({status:'ignored',message:'Booking is no longer active'});
       const sender=gvCancelMobile===botSailorPhone(pending.parent_mobile)?{mobile:pending.parent_mobile,name:pending.parent_name||pending.student_name,course:pending.course}:{mobile:pending.student_mobile,name:pending.student_name,course:pending.course};
