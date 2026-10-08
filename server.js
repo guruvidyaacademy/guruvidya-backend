@@ -659,11 +659,10 @@ async function bookingActionGraphicPng(kind){
   const [bg1,bg2,iconColor,textColor]=palette;
   const escaped=item.title.replace(/&/g,'&amp;').replace(/</g,'&lt;');
   const icon=kind==='cancel'?'<path d="M48 12 86 82H10Z" fill="none" stroke="white" stroke-width="8" stroke-linejoin="round"/><path d="M48 38v18m0 12v2" stroke="white" stroke-width="8" stroke-linecap="round"/>':kind==='reschedule'?'<rect x="18" y="24" width="60" height="58" rx="7" fill="none" stroke="white" stroke-width="7"/><path d="M18 42h60M33 16v17M63 16v17M34 57h10m11 0h10M34 70h10" stroke="white" stroke-width="6" stroke-linecap="round"/>':kind==='cancelled'?'<path d="m20 50 19 19 39-42" fill="none" stroke="white" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>':'<circle cx="48" cy="48" r="33" fill="none" stroke="white" stroke-width="8"/><path d="M48 44v24m0-39v2" stroke="white" stroke-width="9" stroke-linecap="round"/>';
-  // Keep all icon artwork inside a generous safe zone. WhatsApp may crop
-  // unusually wide media thumbnails; a 2:1 canvas prevents the left edge
-  // of the badge being lost in the chat preview.
-  const fontSize=kind==='already_cancelled'?34:46;
-  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="540" viewBox="0 0 1080 540"><defs><linearGradient id="g" x2="1" y2="1"><stop stop-color="${bg1}"/><stop offset="1" stop-color="${bg2}"/></linearGradient></defs><rect width="1080" height="540" fill="#f8f5ef"/><rect x="105" y="148" width="870" height="244" rx="32" fill="url(#g)"/><circle cx="248" cy="270" r="63" fill="${iconColor}"/><g transform="translate(205 227) scale(.9)">${icon}</g><text x="345" y="284" font-family="Arial,sans-serif" font-weight="bold" font-size="${fontSize}" fill="${textColor}">${escaped}</text></svg>`;
+  // Compact, full-bleed heading banner. No outer canvas or blank padding.
+  // The icon is wholly inside the canvas, and the background fills every edge.
+  const fontSize=kind==='already_cancelled'?37:49;
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="190" viewBox="0 0 1080 190"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="${bg1}"/><stop offset="1" stop-color="${bg2}"/></linearGradient></defs><rect width="1080" height="190" fill="url(#g)"/><circle cx="107" cy="95" r="59" fill="${iconColor}"/><g transform="translate(64 52) scale(.9)">${icon}</g><text x="197" y="111" font-family="Arial,sans-serif" font-weight="bold" font-size="${fontSize}" fill="${textColor}">${escaped}</text></svg>`;
   return sharp(Buffer.from(svg)).png().toBuffer();
 }
 app.get('/api/public/booking/action-graphic/:kind.png',async(req,res)=>{
@@ -673,7 +672,7 @@ app.get('/api/public/booking/action-graphic/:kind.png',async(req,res)=>{
   }catch(e){console.error('Booking action graphic error:',e.message);res.status(500).end();}
 });
 function bookingActionGraphicUrl(kind){
-  return `${String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/action-graphic/${kind}.png?v=8oct2`;
+  return `${String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/action-graphic/${kind}.png?v=8oct3`;
 }
 async function sendBookingActionGraphicText(record,kind,body,action){
   // BotSailor's documented Send File endpoint supports a caption. On a media
