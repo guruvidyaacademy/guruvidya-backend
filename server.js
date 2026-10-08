@@ -3567,20 +3567,25 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       }
       let reply='';
       if(bookingActionType==='cancel') {
+        // Cancellation reasons are collected by the existing secure browser form.
+        // Reuse the valid booking token to avoid invalidating open manage links.
+        const stateTokenQ=await pool.query(`SELECT payload->>'manage_token' AS manage_token FROM booking_whatsapp_states WHERE mobile=$1 AND booking_ref=$2 LIMIT 1`,[canonical,booking.booking_ref]);
+        let token=String(stateTokenQ.rows[0]?.manage_token||'');
+        const currentHash=String(booking.token_hash||'');
+        if(!/^[a-f0-9]{64}$/i.test(token) || createHash('sha256').update(token).digest('hex')!==currentHash){
+          token=randomBytes(32).toString('hex');
+          const tokenHash=createHash('sha256').update(token).digest('hex');
+          await pool.query(`UPDATE student_bookings SET token_hash=$1,updated_at=NOW() WHERE id=$2`,[tokenHash,booking.id]);
+        }
         await pool.query(`INSERT INTO booking_whatsapp_states(mobile,booking_id,booking_ref,state,payload,updated_at)
-          VALUES($1,$2,$3,'cancel_reason','{}'::jsonb,NOW())
-          ON CONFLICT(mobile) DO UPDATE SET booking_id=EXCLUDED.booking_id,booking_ref=EXCLUDED.booking_ref,state='cancel_reason',payload=COALESCE(booking_whatsapp_states.payload,'{}'::jsonb)-'cancel_reason'-'cancel_note',updated_at=NOW()`,[canonical,booking.id,booking.booking_ref]);
-        const confirmResult=await sendBotSailorReplyButtons(
-          actionContact,
-          `Booking: *${booking.booking_ref}*\n\nPlease confirm your choice below.`,
-          [
-            {id:'gv_cancel_start',title:'Select Reason'},
-            {id:'booking_reschedule',title:'Reschedule'}
-          ],
-          'booking_cancel_confirm',
-          {mediaUrl:bookingActionGraphicUrl('cancel'),mediaType:'image'}
-        );
-        return res.status(confirmResult.success?200:400).json({status:confirmResult.success?'ok':'error',action:'booking_cancel_confirm'});
+          VALUES($1,$2,$3,'cancel_browser',$4::jsonb,NOW())
+          ON CONFLICT(mobile) DO UPDATE SET booking_id=EXCLUDED.booking_id,booking_ref=EXCLUDED.booking_ref,state='cancel_browser',payload=EXCLUDED.payload,updated_at=NOW()`,
+          [canonical,booking.id,booking.booking_ref,JSON.stringify({manage_token:token})]);
+        const cancelUrl=bookingManageUrl(booking,token)+'&action=cancel';
+        const result=await sendBookingActionGraphicText(actionContact,'cancel',
+          `\n\nBooking: *${booking.booking_ref}*\n\nOpen the secure link below to select your cancellation reason and confirm your choice:\n\n${cancelUrl}`,
+          'booking_cancel_browser_link');
+        return res.status(result.success?200:400).json({status:result.success?'ok':'error',action:'booking_cancel_browser_link'});
       } else if(bookingActionType==='cancel_yes') {
         const pendingQ=await pool.query(`SELECT state,payload,booking_ref FROM booking_whatsapp_states WHERE mobile=$1 LIMIT 1`,[canonical]);
         const pending=pendingQ.rows[0];
