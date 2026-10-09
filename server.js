@@ -3486,7 +3486,15 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       const b=match.rows[0];
       const intended=b&&(String(b.recipient||'').toLowerCase()==='parent'&&b.parent_mobile?b.parent_mobile:b.student_mobile);
       if(b?.status==='cancelled'&&botSailorPhone(intended)===botSailorPhone(mobile)){
-        const result=await sendGuruVidyaRebookingCard({mobile:intended},ref);
+        // Claim this booking/recipient atomically: webhook retries and window-status polling
+        // must not send the same rebooking card twice.
+        const claimed=await pool.query(`INSERT INTO booking_rebook_link_deliveries(booking_id,mobile,status,updated_at)
+          SELECT id,$2,'pending',NOW() FROM student_bookings WHERE booking_ref=$1 AND status='cancelled'
+          ON CONFLICT(booking_id,mobile) DO NOTHING RETURNING booking_id`,[ref,botSailorPhone(intended).replace(/^91/,'')]);
+        if(!claimed.rowCount)return res.status(200).json({status:'ok',action:'booking_rebook_link_already_requested'});
+        let result={success:false};
+        try{result=await sendGuruVidyaRebookingCard({mobile:intended},ref);}
+        finally{await pool.query(`UPDATE booking_rebook_link_deliveries SET status=$3,updated_at=NOW() WHERE booking_id=$1 AND mobile=$2`,[claimed.rows[0].booking_id,botSailorPhone(intended).replace(/^91/,''),result.success?'sent':'failed']);}
         return res.status(200).json({status:result.success?'ok':'failed',action:'booking_rebook_link_requested'});
       }
       return res.status(200).json({status:'ignored',action:'booking_rebook_link_invalid'});
@@ -4769,7 +4777,7 @@ async function sendGuruVidyaRebookingCard(recipient,bookingRef){
   if(!graphic.success)return graphic;
   // Existing BotSailor integration supports reply buttons. A reply delivers the
   // booking URL; do not pretend this is a native WhatsApp URL CTA.
-  return sendBotSailorReplyButtons(recipient,'Choose your course, date and time to book again.',
+  return sendBotSailorReplyButtons(recipient,'Book your next appointment',
     [{id:'booking_new_appointment',title:'Book New Appointment'}],'booking_rebook_button');
 }
 async function onBookingCancelledRebook({booking_ref}){
