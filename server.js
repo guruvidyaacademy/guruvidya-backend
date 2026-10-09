@@ -3479,9 +3479,9 @@ app.post("/api/webhook/botsailor", async (req, res) => {
 
     // A user-initiated rebooking-link request opens the real WhatsApp service window.
     // Match the cancelled booking AND its booked-by phone; never send to an arbitrary sender.
-    const rebookMatch=String(webhookUserMessageRaw||'').trim().match(/^(?:VERIFY\s+)?GV-BOOK-LINK\s+(GV-[A-Z0-9]+)$/i);
+    const rebookMatch=String(webhookUserMessageRaw||'').trim().match(/^(?:VERIFY[\s-]+)?GV[\s-]+BOOK[\s-]+LINK[\s-]+GV[\s-]+([A-Z0-9]+)$/i);
     if(isCustomerEvent&&rebookMatch){
-      const ref=rebookMatch[1].toUpperCase();
+      const ref='GV-'+rebookMatch[1].toUpperCase();
       const match=await pool.query(`SELECT booking_ref,student_mobile,parent_mobile,recipient,status FROM student_bookings WHERE booking_ref=$1`,[ref]);
       const b=match.rows[0];
       const intended=b&&(String(b.recipient||'').toLowerCase()==='parent'&&b.parent_mobile?b.parent_mobile:b.student_mobile);
