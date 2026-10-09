@@ -3484,7 +3484,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       const ref='GV-'+rebookMatch[1].toUpperCase();
       const match=await pool.query(`SELECT booking_ref,student_mobile,parent_mobile,recipient,status FROM student_bookings WHERE booking_ref=$1`,[ref]);
       const b=match.rows[0];
-      const intended=b&&(String(b.recipient||'').toLowerCase()==='parent'&&b.parent_mobile?b.parent_mobile:b.student_mobile);
+      const intended=b&&[b.student_mobile,b.parent_mobile].find(x=>botSailorPhone(x)===botSailorPhone(mobile));
       if(b?.status==='cancelled'&&botSailorPhone(intended)===botSailorPhone(mobile)){
         // Claim this booking/recipient atomically: webhook retries and window-status polling
         // must not send the same rebooking card twice.
@@ -3633,7 +3633,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
           await sendBotSailorText(actionContact,'Please select a cancellation reason before confirming.','booking_cancel_reason_required');
           return res.json({status:'ok',action:'booking_cancel_reason_required'});
         }
-        const cancelled=await pool.query(`UPDATE student_bookings SET status='cancelled',customer_response='cancelled',response_at=NOW(),updated_at=NOW(),cancellation_reason=$2,cancellation_note=$3,cancelled_via='WhatsApp',cancelled_at=NOW() WHERE id=$1 AND status IN ('requested','approved','confirmed','rescheduled') RETURNING id`,[booking.id,selected,selected==='Other Reason'?String(pending.payload.cancel_note||'').slice(0,500):null]);
+        const cancelled=await pool.query(`UPDATE student_bookings SET status='cancelled',customer_response='cancelled',response_at=NOW(),updated_at=NOW(),cancellation_reason=$2,cancellation_note=$3,cancelled_via='WhatsApp',cancelled_by=$4,cancelled_at=NOW() WHERE id=$1 AND status IN ('requested','approved','confirmed','rescheduled') RETURNING id`,[booking.id,selected,selected==='Other Reason'?String(pending.payload.cancel_note||'').slice(0,500):null,String(booking.student_mobile||'').replace(/\D/g,'').slice(-10)===String(canonical||'').replace(/\D/g,'').slice(-10)?'student':'parent']);
         if(!cancelled.rowCount)return res.json({status:'ignored',message:'Booking already closed'});
         // Keep the cancelled booking bound to this WhatsApp action set so an old
         // Reschedule button can never jump to a different booking on the same mobile.
@@ -3677,6 +3677,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       } else {
         reply=`☎️ *Need Help?*\nCall / WhatsApp GuruVidya\n+91 98216 27725\nhttps://wa.me/919821627725`;
       }
+      if(bookingActionType==='cancel_yes')Promise.resolve().then(()=>onBookingCancelledRebook({booking_ref:booking.booking_ref})).catch(e=>console.error('WhatsApp cancellation notifications failed',e?.message||e));
       const actionResult=['cancel_yes','reschedule'].includes(bookingActionType)
         ? await sendBookingActionGraphicText(actionContact,bookingActionType==='cancel_yes'?'cancelled':'reschedule',reply,`booking_action_${bookingActionType}`)
         : await sendBotSailorText(actionContact,reply,`booking_action_${bookingActionType}`);
@@ -4770,36 +4771,57 @@ async function sendWhatsAppMessage(phone, message) {
 }
 
 async function sendGuruVidyaRebookingCard(recipient,bookingRef){
-  // Keep the approved graphic and copy, but deliver the native reply button in
-  // the same interactive media message. A separate button message requires its
-  // own body and previously displayed the unwanted extra sentence.
-  const body='Your previous appointment has been cancelled successfully.\n\nNeed admission counselling again? Choose a convenient available date and time.';
-  return sendBotSailorReplyButtons(recipient,body,
-    [{id:'booking_new_appointment',title:'Book New Appointment'}],
-    'booking_rebook_button',
-    {mediaUrl:bookingActionGraphicUrl('rebook'),mediaType:'image'});
+  const b=await loadBookingWhatsAppContext(bookingRef);
+  const who=v=>v==='parent'?'Parent / Guardian':v==='admin'?'GuruVidya Admin':'Student';
+  const details=b?`\n\nBooked By: ${who(b.booked_by)}\nCancelled By: ${who(b.cancelled_by)}`:'';
+  const intro=b?.cancelled_by==='admin'?'Your previous appointment has been cancelled by GuruVidya Academy.':'Your previous appointment has been cancelled successfully.';
+  const body=intro+details+'\n\nNeed admission counselling again? Choose a convenient available date and time.';
+  return sendBotSailorReplyButtons(recipient,body,[{id:'booking_new_appointment',title:'Book New Appointment'}],
+    'booking_rebook_button',{mediaUrl:bookingActionGraphicUrl('rebook'),mediaType:'image'});
+}
+async function sendBookingCancellationEmails(b){
+  if(config.emailEnabled===false||!String(config.emailFrom||'').trim())return;
+  const cfg=await pool.query('SELECT settings FROM booking_settings WHERE id=1');
+  if(cfg.rows[0]?.settings?.email_notifications_enabled===false)return;
+  const emails=[b.student_email,b.parent_email].map(x=>String(x||'').trim()).filter(Boolean);
+  const seen=new Set();const who=v=>v==='parent'?'Parent / Guardian':v==='admin'?'GuruVidya Admin':'Student';
+  const bookUrl=String(process.env.PUBLIC_BOOKING_URL||'https://guruvidya-backend.onrender.com/booking').split('#')[0];
+  const base=String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'');
+  const esc=bookingEmailEsc;
+  const rows=[['Booking Reference',b.booking_ref],['Student Name',b.student_name],['Course',b.course],['Booked By',who(b.booked_by)],['Cancelled By',who(b.cancelled_by)],['Cancellation Reason',b.cancellation_reason||'Not specified']];
+  const html=`<div style="margin:0;padding:24px 10px;background:#f2f7ff;font-family:Arial,sans-serif;color:#203b61"><table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:620px;margin:auto;background:#fff;border:1px solid #dbe8f6;border-radius:16px"><tr><td style="padding:22px 24px;border-bottom:3px solid #1469db"><img src="${base}/api/public/booking/email-logo.png" alt="GuruVidya Academy" width="150" style="max-width:150px;height:auto"><div style="font-size:13px;color:#426b9e">GuruVidya Academy Pvt. Ltd.</div></td></tr><tr><td style="padding:25px"><div style="padding:16px;border-radius:12px;background:#ecf9f2;color:#167c45;font-weight:bold;font-size:21px">✓ Appointment Cancelled Successfully</div><p style="font-size:15px;line-height:1.7">Your admission counselling appointment has been cancelled.</p><div style="padding:15px;background:#eef6ff;border:1px solid #d5e8fa;border-radius:12px"><div style="font-weight:bold;color:#0d4f9d;margin-bottom:12px">Cancellation Details</div><table role="presentation" width="100%" cellpadding="8" cellspacing="0">${rows.map(([k,v])=>`<tr><td style="color:#426b9e;border-bottom:1px solid #d7e6f6">${esc(k)}</td><td style="font-weight:bold;border-bottom:1px solid #d7e6f6">${esc(v)}</td></tr>`).join('')}</table></div><div style="padding:18px;background:#eef6ff;border-radius:12px;margin-top:18px"><div style="font-weight:bold;color:#0b4ca8;font-size:18px">Need Admission Counselling Again?</div><p>Choose a convenient available date and time.</p><a href="${esc(bookUrl)}" style="display:inline-block;background:#0866d9;color:#fff;text-decoration:none;font-weight:bold;padding:14px 20px;border-radius:9px">Book New Appointment →</a></div><p style="color:#536f92;font-size:13px;margin-top:25px">Warm Regards,<br>Team GuruVidya Academy</p></td></tr><tr><td style="background:#0b4ca8;color:#fff;padding:16px;text-align:center;font-size:12px">GuruVidya Academy Pvt. Ltd. · Real Education, Real Results</td></tr></table></div>`;
+  for(const email of emails){if(!/^\S+@\S+\.\S+$/.test(email)||seen.has(email.toLowerCase()))continue;seen.add(email.toLowerCase());
+    try{await sendEmailWithFailover({to:email,subject:`Appointment Cancelled – GuruVidya Academy | ${b.booking_ref}`,text:`Appointment Cancelled\nBooking: ${b.booking_ref}\nBooked By: ${who(b.booked_by)}\nCancelled By: ${who(b.cancelled_by)}\nReason: ${b.cancellation_reason||'Not specified'}\nBook New Appointment: ${bookUrl}`,html});}
+    catch(e){console.error('Cancellation email failed',e?.message||e);}
+  }
 }
 async function onBookingCancelledRebook({booking_ref}){
   const b=await loadBookingWhatsAppContext(booking_ref);
   if(!b||String(b.status).toLowerCase()!=='cancelled')return {success:false};
-  const target=String(b.recipient||'').toLowerCase()==='parent'&&b.parent_mobile?b.parent_mobile:b.student_mobile;
-  const mobile=String(target||'').replace(/\D/g,'').replace(/^91(?=\d{10}$)/,'');
-  if(!/^\d{10}$/.test(mobile))return {success:false};
-  // Honor the Admin's effective 24h test state; production uses real status when no override exists.
-  const window=await pool.query(`SELECT MAX(received_at) AS last_incoming FROM whatsapp_window_events WHERE mobile IN ($1,$2)`,['91'+mobile,mobile]);
-  const lead=await pool.query(`SELECT MAX(last_customer_message_at) AS last_incoming FROM leads WHERE regexp_replace(COALESCE(mobile,''),'[^0-9]','','g') IN ($1,$2)`,['91'+mobile,mobile]);
-  const last=Math.max(new Date(window.rows[0]?.last_incoming||0).getTime(),new Date(lead.rows[0]?.last_incoming||0).getTime());
-  const override=await pool.query('SELECT forced_open FROM booking_whatsapp_window_test_overrides WHERE mobile=$1',[mobile]);
-  const effectiveOpen=override.rowCount?Boolean(override.rows[0].forced_open):(last>Date.now()-86400000&&last<=Date.now());
-  if(!effectiveOpen)return {success:false,status:'window_closed'};
-  const claimed=await pool.query(`INSERT INTO booking_rebook_link_deliveries(booking_id,mobile,status)
-    SELECT id,$2,'pending' FROM student_bookings WHERE booking_ref=$1 AND status='cancelled'
-    ON CONFLICT DO NOTHING RETURNING booking_id`,[booking_ref,mobile]);
-  if(!claimed.rowCount)return {success:true,status:'already_claimed'};
-  let result={success:false};
-  try{result=await sendGuruVidyaRebookingCard({mobile:target},booking_ref);}
-  finally{await pool.query(`UPDATE booking_rebook_link_deliveries SET status=$3,updated_at=NOW() WHERE booking_id=$1 AND mobile=$2`,[claimed.rows[0].booking_id,mobile,result.success?'sent':'failed']);}
-  return result;
+  // Email does not depend on the 24-hour WhatsApp window. Avoid repeated dispatch.
+  const emailClaim=await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail)
+    VALUES($1,'booking_cancellation','all','email','queued','Cancellation email attempt')
+    ON CONFLICT(booking_id,event,recipient,channel) DO NOTHING RETURNING booking_id`,[b.id]);
+  if(emailClaim.rowCount)await sendBookingCancellationEmails(b);
+  const numbers=[b.student_mobile,b.parent_mobile].map(x=>String(x||'').replace(/\D/g,'').replace(/^91(?=\d{10}$)/,''));
+  const results=[];
+  for(const mobile of [...new Set(numbers)].filter(x=>/^\d{10}$/.test(x))){
+    const window=await pool.query('SELECT MAX(received_at) AS last_incoming FROM whatsapp_window_events WHERE mobile IN ($1,$2)',['91'+mobile,mobile]);
+    const lead=await pool.query(`SELECT MAX(last_customer_message_at) AS last_incoming FROM leads WHERE regexp_replace(COALESCE(mobile,''),'[^0-9]','','g') IN ($1,$2)`,['91'+mobile,mobile]);
+    const last=Math.max(new Date(window.rows[0]?.last_incoming||0).getTime(),new Date(lead.rows[0]?.last_incoming||0).getTime());
+    const override=await pool.query('SELECT forced_open FROM booking_whatsapp_window_test_overrides WHERE mobile=$1',[mobile]);
+    const effectiveOpen=override.rowCount?Boolean(override.rows[0].forced_open):(last>Date.now()-86400000&&last<=Date.now());
+    if(!effectiveOpen)continue;
+    const claimed=await pool.query(`INSERT INTO booking_rebook_link_deliveries(booking_id,mobile,status)
+      VALUES($1,$2,'pending') ON CONFLICT DO NOTHING RETURNING booking_id`,[b.id,mobile]);
+    if(!claimed.rowCount)continue;
+    let result={success:false};
+    try{result=await sendGuruVidyaRebookingCard({mobile},booking_ref);}
+    catch(e){console.error('Cancellation WhatsApp delivery failed',e?.message||e);}
+    finally{await pool.query(`UPDATE booking_rebook_link_deliveries SET status=$3,updated_at=NOW() WHERE booking_id=$1 AND mobile=$2`,[b.id,mobile,result?.success?'sent':'failed']);}
+    results.push(result);
+  }
+  return {success:results.some(x=>x?.success),results};
 }
 installBookingRoutes(app, pool, { onBookingCreated: onBookingCreatedWhatsApp, onBookingRescheduled: onBookingRescheduledWhatsApp, onBookingCancelled: onBookingCancelledRebook, onRebookLinkRequested: ({booking_ref,mobile})=>sendGuruVidyaRebookingCard({mobile},booking_ref) });
 
