@@ -4770,15 +4770,14 @@ async function sendWhatsAppMessage(phone, message) {
 }
 
 async function sendGuruVidyaRebookingCard(recipient,bookingRef){
-  const url=String(process.env.PUBLIC_BOOKING_URL||'https://guruvidya-backend.onrender.com/booking').split('#')[0];
-  const graphic=await sendBookingActionGraphicText(recipient,'rebook',
-    `\n\nYour previous appointment has been cancelled successfully.\n\nNeed admission counselling again? Choose a convenient available date and time.`,
-    'booking_rebook_graphic');
-  if(!graphic.success)return graphic;
-  // Existing BotSailor integration supports reply buttons. A reply delivers the
-  // booking URL; do not pretend this is a native WhatsApp URL CTA.
-  return sendBotSailorReplyButtons(recipient,'Book your next appointment',
-    [{id:'booking_new_appointment',title:'Book New Appointment'}],'booking_rebook_button');
+  // Keep the approved graphic and copy, but deliver the native reply button in
+  // the same interactive media message. A separate button message requires its
+  // own body and previously displayed the unwanted extra sentence.
+  const body='Your previous appointment has been cancelled successfully.\n\nNeed admission counselling again? Choose a convenient available date and time.';
+  return sendBotSailorReplyButtons(recipient,body,
+    [{id:'booking_new_appointment',title:'Book New Appointment'}],
+    'booking_rebook_button',
+    {mediaUrl:bookingActionGraphicUrl('rebook'),mediaType:'image'});
 }
 async function onBookingCancelledRebook({booking_ref}){
   const b=await loadBookingWhatsAppContext(booking_ref);
