@@ -56,7 +56,7 @@ export async function initBooking(pool) {
     CREATE TABLE IF NOT EXISTS booking_delivery_logs(id BIGSERIAL PRIMARY KEY, booking_id BIGINT REFERENCES student_bookings(id), event TEXT NOT NULL, recipient TEXT NOT NULL, channel TEXT NOT NULL, status TEXT NOT NULL, detail TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(booking_id,event,recipient,channel));`);
   // One outbound rebooking invitation per cancelled booking and WhatsApp recipient.
   await pool.query(`CREATE TABLE IF NOT EXISTS booking_rebook_link_deliveries (
-    booking_id BIGINT NOT NULL REFERENCES student_bookings(id) ON DELETE CASCADE,
+    booking_id BIGINT NOT NULL,
     mobile TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
