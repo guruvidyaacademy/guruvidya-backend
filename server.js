@@ -4778,10 +4778,13 @@ async function onBookingCancelledRebook({booking_ref}){
   const target=String(b.recipient||'').toLowerCase()==='parent'&&b.parent_mobile?b.parent_mobile:b.student_mobile;
   const mobile=String(target||'').replace(/\D/g,'').replace(/^91(?=\d{10}$)/,'');
   if(!/^\d{10}$/.test(mobile))return {success:false};
+  // Honor the Admin's effective 24h test state; production uses real status when no override exists.
   const window=await pool.query(`SELECT MAX(received_at) AS last_incoming FROM whatsapp_window_events WHERE mobile IN ($1,$2)`,['91'+mobile,mobile]);
   const lead=await pool.query(`SELECT MAX(last_customer_message_at) AS last_incoming FROM leads WHERE regexp_replace(COALESCE(mobile,''),'[^0-9]','','g') IN ($1,$2)`,['91'+mobile,mobile]);
   const last=Math.max(new Date(window.rows[0]?.last_incoming||0).getTime(),new Date(lead.rows[0]?.last_incoming||0).getTime());
-  if(!(last>Date.now()-86400000&&last<=Date.now()))return {success:false,status:'window_closed'};
+  const override=await pool.query('SELECT forced_open FROM booking_whatsapp_window_test_overrides WHERE mobile=$1',[mobile]);
+  const effectiveOpen=override.rowCount?Boolean(override.rows[0].forced_open):(last>Date.now()-86400000&&last<=Date.now());
+  if(!effectiveOpen)return {success:false,status:'window_closed'};
   const claimed=await pool.query(`INSERT INTO booking_rebook_link_deliveries(booking_id,mobile,status)
     SELECT id,$2,'pending' FROM student_bookings WHERE booking_ref=$1 AND status='cancelled'
     ON CONFLICT DO NOTHING RETURNING booking_id`,[booking_ref,mobile]);

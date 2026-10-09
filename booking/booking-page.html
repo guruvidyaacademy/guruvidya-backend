@@ -317,7 +317,7 @@ async function checkRebookingWhatsApp(){
     if(!document.contains(btn))return;
     if(data.window_open){btn.style.display='none';note.textContent=data.status==='sent'?'✓ Booking link sent on WhatsApp.':'Your WhatsApp window is open. We are sending your booking link.';}
     else{btn.style.display='inline-flex';btn.href=data.whatsapp_url;btn.target='_blank';btn.rel='noopener noreferrer';note.textContent='Get the booking link on WhatsApp by sending the prefilled message.';}
-  }catch{if(document.contains(btn)){btn.style.display='none';note.textContent='WhatsApp status is temporarily unavailable. You can still book directly.';}}
+  }catch{if(document.contains(btn)){btn.style.display='inline-flex';btn.href='https://wa.me/919821627725?text='+encodeURIComponent('VERIFY GV-BOOK-LINK '+ref);btn.target='_blank';btn.rel='noopener noreferrer';note.textContent='WhatsApp status is temporarily unavailable. You can request the link or book directly.';}}
   if(gvRebookTimer)clearTimeout(gvRebookTimer);
   gvRebookTimer=setTimeout(()=>{if(document.getElementById('gvRebookWhatsApp'))checkRebookingWhatsApp()},10000);
 }

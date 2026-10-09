@@ -413,7 +413,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
       res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer','Pragma':'no-cache'}).json({success:true,data:{...r.rows[0],offline_address:String(cfg.offline_address||'')}});
     }catch(e){fail(res,500,'Unable to load booking');}
   });
-  // Authenticated booking owner only: expose the REAL 24-hour status (never a test override).
+  // Authenticated booking owner: use effective window for the existing Admin test controls.
   app.post('/api/public/booking/manage/:ref/rebook-whatsapp',async(req,res)=>{
     res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer'});
     const token=String(req.body?.token||'');
@@ -429,13 +429,21 @@ export function installBookingRoutes(app,pool,hooks={}) {
       const target=String(b.recipient||'').toLowerCase()==='parent'&&validBookingPhone(bookingPhone(b.parent_mobile))?b.parent_mobile:b.student_mobile;
       const mobile=bookingPhone(target);
       if(!/^\d{10}$/.test(mobile))return fail(res,400,'Booking WhatsApp number unavailable');
-      const real=await whatsappWindowState(mobile);
-      const prior=await pool.query('SELECT status FROM booking_rebook_link_deliveries WHERE booking_id=$1 AND mobile=$2',[b.id,mobile]);
-      let sent=prior.rows[0]?.status==='sent';
-      if(real.real_open&&!sent&&prior.rows[0]?.status!=='failed'&&typeof hooks.onRebookLinkRequested==='function'){
-        // Unique insert prevents refresh/polling from dispatching multiple messages.
-        const claimed=await pool.query(`INSERT INTO booking_rebook_link_deliveries(booking_id,mobile,status)
-          VALUES($1,$2,'pending') ON CONFLICT DO NOTHING RETURNING booking_id`,[b.id,mobile]);
+      const window=await whatsappWindowState(mobile);
+      const effectiveOpen=Boolean(window.effective_open);
+      const prior=await pool.query('SELECT status,updated_at FROM booking_rebook_link_deliveries WHERE booking_id=$1 AND mobile=$2',[b.id,mobile]);
+      const current=prior.rows[0];
+      const sent=current?.status==='sent';
+      const stalePending=current?.status==='pending'&&Date.now()-new Date(current.updated_at).getTime()>120000;
+      // Retry failed/stale sends at most once per 60 seconds. Atomic claim prevents duplicate polling sends.
+      if(effectiveOpen&&!sent&&typeof hooks.onRebookLinkRequested==='function'){
+        const claimed=await pool.query(`INSERT INTO booking_rebook_link_deliveries(booking_id,mobile,status,updated_at)
+          VALUES($1,$2,'pending',NOW()) ON CONFLICT(booking_id,mobile) DO UPDATE SET
+          status='pending',updated_at=NOW() WHERE
+          (booking_rebook_link_deliveries.status='failed' OR
+           (booking_rebook_link_deliveries.status='pending' AND booking_rebook_link_deliveries.updated_at<NOW()-INTERVAL '2 minutes'))
+          AND booking_rebook_link_deliveries.updated_at<NOW()-INTERVAL '60 seconds'
+          RETURNING booking_id`,[b.id,mobile]);
         if(claimed.rowCount){
           Promise.resolve().then(()=>hooks.onRebookLinkRequested({booking_ref:b.booking_ref,mobile:target}))
             .then(async result=>pool.query(`UPDATE booking_rebook_link_deliveries SET status=$3,updated_at=NOW()
@@ -443,7 +451,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
             .catch(async e=>{console.error('Rebooking WhatsApp failed',e?.message||e);await pool.query(`UPDATE booking_rebook_link_deliveries SET status='failed',updated_at=NOW() WHERE booking_id=$1 AND mobile=$2`,[b.id,mobile]).catch(()=>{});});
         }
       }
-      res.json({success:true,data:{window_open:real.real_open&&prior.rows[0]?.status!=='failed',status:sent?'sent':prior.rows[0]?.status||'pending',mobile,whatsapp_url:'https://wa.me/919821627725?text='+encodeURIComponent('VERIFY GV-BOOK-LINK '+b.booking_ref)}});
+      res.json({success:true,data:{window_open:effectiveOpen,status:sent?'sent':current?.status||'pending',mobile,whatsapp_url:'https://wa.me/919821627725?text='+encodeURIComponent('VERIFY GV-BOOK-LINK '+b.booking_ref)}});
     }catch(e){console.error('Rebooking window status error',e?.message||e);fail(res,500,'Unable to check WhatsApp status');}
   });
   app.post('/api/public/booking/manage/:ref/action',async(req,res)=>{
