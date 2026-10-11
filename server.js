@@ -4730,7 +4730,7 @@ function bookingEmailHtml(b,token,{rescheduled=false}={}) {
 app.get('/api/public/booking/email-icon/:name', async (req,res)=>{
   try{
     const name=String(req.params.name||'');
-    if(!/^[a-z-]+\.png$/.test(name)) return res.status(404).end();
+    if(!/^[a-z0-9-]+\.png$/.test(name)) return res.status(404).end();
     const icon=await readFile(new URL(`./booking/email-icons/${name}`,import.meta.url));
     res.set({'Content-Type':'image/png','Cache-Control':'public, max-age=604800','X-Content-Type-Options':'nosniff'}).send(icon);
   }catch(e){res.status(404).end();}
