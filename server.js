@@ -673,10 +673,10 @@ async function bookingActionGraphicPng(kind, rebookRoles={}){
       <defs><linearGradient id="rebookG" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0756c7"/><stop offset="1" stop-color="#1687f0"/></linearGradient></defs>
       <rect width="1080" height="420" fill="#ffffff"/>
       <rect x="12" y="12" width="1056" height="154" rx="23" fill="url(#rebookG)"/>
-      <circle cx="87" cy="89" r="49" fill="#ffffff"/>
-      <g transform="translate(51 53) scale(.75)"><rect x="18" y="24" width="60" height="58" rx="7" fill="none" stroke="#0756c7" stroke-width="7"/><path d="M18 42h60M33 16v17M63 16v17" stroke="#0756c7" stroke-width="7" stroke-linecap="round"/><path d="M34 69l8-2 25-25 7 7-25 25-12 4z" fill="#ffffff" stroke="#0756c7" stroke-width="5" stroke-linejoin="round"/><path d="M62 47l7 7" stroke="#0756c7" stroke-width="4"/></g>
-      <text x="160" y="88" font-family="Arial,sans-serif" font-size="49" font-weight="700" fill="#ffffff">Book Your Next Appointment</text>
-      <text x="161" y="132" font-family="Arial,sans-serif" font-size="29" fill="#ffffff">Admission Counselling</text>
+      <circle cx="187" cy="89" r="49" fill="#ffffff"/>
+      <g transform="translate(151 53) scale(.75)"><rect x="18" y="24" width="60" height="58" rx="7" fill="none" stroke="#0756c7" stroke-width="7"/><path d="M18 42h60M33 16v17M63 16v17" stroke="#0756c7" stroke-width="7" stroke-linecap="round"/><path d="M34 69l8-2 25-25 7 7-25 25-12 4z" fill="#ffffff" stroke="#0756c7" stroke-width="5" stroke-linejoin="round"/><path d="M62 47l7 7" stroke="#0756c7" stroke-width="4"/></g>
+      <text x="260" y="88" font-family="Arial,sans-serif" font-size="49" font-weight="700" fill="#ffffff">Book Your Next Appointment</text>
+      <text x="261" y="132" font-family="Arial,sans-serif" font-size="29" fill="#ffffff">Admission Counselling</text>
       <rect x="12" y="178" width="1056" height="61" rx="17" fill="#fff0f0"/>
       <circle cx="48" cy="208" r="22" fill="#e53935"/>
       <path d="M40 200l16 16m0-16l-16 16" stroke="#ffffff" stroke-width="5" stroke-linecap="round"/>
@@ -707,7 +707,7 @@ app.get('/api/public/booking/action-graphic/:kind.png',async(req,res)=>{
 });
 function bookingActionGraphicUrl(kind, rebookRoles){
   const roles=kind==='rebook'&&rebookRoles?`&bookedBy=${encodeURIComponent(rebookRoles.bookedBy||'Student')}&cancelledBy=${encodeURIComponent(rebookRoles.cancelledBy||'Student')}`:'';
-  return `${String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/action-graphic/${kind}.png?v=${kind==='rebook'?'11oct-rebook-heading49-v6':kind==='reschedule'?'8oct-reschedule-icon-visible':'8oct4-design3-safe'}${roles}`;
+  return `${String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/action-graphic/${kind}.png?v=${kind==='rebook'?'11oct-rebook-center-align-v7':kind==='reschedule'?'8oct-reschedule-icon-visible':'8oct4-design3-safe'}${roles}`;
 }
 async function sendBookingActionGraphicText(record,kind,body,action){
   // BotSailor's documented Send File endpoint supports a caption. On a media
