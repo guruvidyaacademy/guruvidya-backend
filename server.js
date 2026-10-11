@@ -4808,9 +4808,54 @@ async function sendGuruVidyaRebookingCard(recipient,bookingRef){
     'booking_rebook_button',
     {mediaUrl:bookingActionGraphicUrl('rebook',{bookedBy,cancelledBy}),mediaType:'image'});
 }
+// Cancellation email: independent of WhatsApp's 24-hour customer-service window.
+// Preserve booking/reschedule email templates and all existing WhatsApp graphics.
+function bookingCancellationEmailHtml(b) {
+  const base=String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'');
+  const icon=(name,tone='blue',size=24)=>bookingEmailIcon(name,tone,size);
+  const esc=bookingEmailEsc;
+  const cancelledBy=String(b.cancelled_by||'').trim() || (String(b.cancelled_via||'').toLowerCase()==='admin'?'GuruVidya Admin':String(b.booked_by||'student').toLowerCase()==='parent'?'Parent / Guardian':'Student');
+  const bookedBy=String(b.booked_by||'student').toLowerCase()==='parent'?'Parent / Guardian':'Student';
+  const cancelledDate=b.cancelled_at||b.response_at||b.updated_at;
+  const cancelledOn=cancelledDate?new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Kolkata',day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:true}).format(new Date(cancelledDate))+' IST':'—';
+  const reason=String(b.cancellation_reason||'—')+(b.cancellation_note?' — '+String(b.cancellation_note):'');
+  const bookingUrl=String(process.env.PUBLIC_BOOKING_URL||'https://guruvidya-backend.onrender.com/booking').split('#')[0];
+  const rows=[['calendar','Booking Reference',b.booking_ref],['user','Student Name',b.student_name],['course','Course',b.course],['user','Booked By',bookedBy],['users','Cancelled By',cancelledBy],['calendar','Cancelled On',cancelledOn],['document','Reason',reason]].map(([i,k,v])=>`<tr><td style="padding:5px 8px;width:31px;vertical-align:top">${icon(i,'blue',20)}</td><td style="padding:5px 8px;color:#405570;width:165px;vertical-align:top">${esc(k)}</td><td style="padding:5px 8px;color:#203554;font-weight:600;vertical-align:top">${esc(v||'—')}</td></tr>`).join('');
+  return `<!doctype html><html><body style="margin:0;background:#eef3f9;font-family:Arial,Helvetica,sans-serif;color:#273a55"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#eef3f9"><tr><td align="center" style="padding:22px 8px"><table role="presentation" width="620" cellspacing="0" cellpadding="0" style="width:620px;max-width:100%;background:#fff;border-radius:14px"><tr><td style="padding:20px 22px"><table role="presentation" width="100%"><tr><td style="width:62px"><img src="${base}/api/public/booking/email-icon/g-mark.png?v=2" width="56" alt="GuruVidya" style="display:block;border:0"></td><td><strong style="color:#12366b;font-size:19px">GuruVidya Academy Pvt. Ltd.</strong><div style="font-size:11px;color:#66768c;letter-spacing:1px">REAL EDUCATION - REAL RESULTS</div></td><td align="right" style="color:#bc3b35;font-weight:bold;font-size:14px">Appointment Cancelled</td></tr></table><p style="margin:24px 0 7px">Dear ${esc(b.student_name||'Student')},</p><p style="margin:0 0 16px">Your admission counselling appointment has been cancelled as requested.</p><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#edf8ff;border-radius:12px"><tr><td style="padding:14px"><div style="font-size:17px;font-weight:bold;color:#1257a4;margin-bottom:9px">${icon('calendar','blue',24)} Cancellation Details</div><table role="presentation" width="100%" cellspacing="0" cellpadding="0">${rows}</table></td></tr></table><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:16px;background:#eff8ff;border-radius:12px"><tr><td width="52" style="padding:15px 8px 15px 14px">${icon('calendar','blue',38)}</td><td style="padding:15px 12px 15px 0"><strong style="color:#14599d;font-size:17px">Need Admission Counselling Again?</strong><div style="font-size:14px;margin-top:5px">You can book a new appointment at a convenient available date and time.</div></td></tr></table><table role="presentation" cellspacing="0" cellpadding="0" style="margin:12px auto 20px"><tr><td align="center" style="background:#1479db;border-radius:25px;padding:13px 30px"><a href="${esc(bookingUrl)}" style="color:white;font-size:17px;font-weight:bold;text-decoration:none">Book New Appointment &nbsp; →</a></td></tr></table><p style="font-size:14px">If you have any queries, feel free to contact us.</p><p style="font-size:14px"><a href="tel:+919821627725" style="color:#1262ba;text-decoration:none">+91 9821627725</a> &nbsp; | &nbsp; <a href="https://wa.me/919821627725" style="color:#178b4e;text-decoration:none">Chat on WhatsApp</a></p><p style="font-size:13px;line-height:1.5;margin-bottom:0">Warm Regards,<br><strong>Team GuruVidya Academy</strong><br>Real Education - Real Results</p></td></tr></table></td></tr></table></body></html>`;
+}
+
+async function sendBookingCancellationEmails(b){
+  await loadPersistedConfig();
+  if(config.emailEnabled===false||!String(config.emailFrom||'').trim())return {success:false,status:'email_disabled'};
+  const cfg=await pool.query('SELECT settings FROM booking_settings WHERE id=1');
+  const settings=cfg.rows[0]?.settings||{};
+  if(settings.email_notifications_enabled===false)return {success:false,status:'booking_email_disabled'};
+  const mode=['student','parent'].includes(settings.email_recipient_mode)?settings.email_recipient_mode:'both';
+  const recipients=[];
+  if(mode!=='parent'&&b.student_email)recipients.push({kind:'student',email:String(b.student_email).trim()});
+  if(mode!=='student'&&b.parent_email)recipients.push({kind:'parent',email:String(b.parent_email).trim()});
+  const seen=new Set(),results=[];
+  for(const r of recipients){
+    const key=r.email.toLowerCase();
+    if(!/^\S+@\S+\.\S+$/.test(key)||seen.has(key))continue;
+    seen.add(key);
+    try{
+      const result=await sendEmailWithFailover({to:r.email,subject:`Appointment Cancelled – GuruVidya Academy | ${b.booking_ref}`,text:`Dear ${b.student_name||'Student'},\nYour admission counselling appointment has been cancelled as requested.\nBooking Reference: ${b.booking_ref}\nStudent: ${b.student_name}\nCourse: ${b.course}\nBooked By: ${b.booked_by||'Student'}\nCancelled By: ${b.cancelled_by||b.cancelled_via||'Student'}\nReason: ${b.cancellation_reason||'—'}\nBook New Appointment: ${String(process.env.PUBLIC_BOOKING_URL||'https://guruvidya-backend.onrender.com/booking').split('#')[0]}`,html:bookingCancellationEmailHtml(b)});
+      results.push({recipient:r.kind,success:true,provider:result.provider});
+      await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail) VALUES($1,'booking_cancellation',$2,'email','sent',$3) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status='sent',detail=EXCLUDED.detail,created_at=NOW()`,[b.id,r.kind,`Sent via ${result.provider}`]).catch(()=>{});
+    }catch(e){
+      console.error('BOOKING CANCELLATION EMAIL',r.kind,e?.message||e);
+      results.push({recipient:r.kind,success:false,error:String(e?.message||e)});
+      await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail) VALUES($1,'booking_cancellation',$2,'email','failed',$3) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status='failed',detail=EXCLUDED.detail,created_at=NOW()`,[b.id,r.kind,String(e?.message||'Email failed').slice(0,500)]).catch(()=>{});
+    }
+  }
+  return {success:results.some(x=>x.success),status:results.length?'recipient_results':'no_email_recipient',results};
+}
+
 async function onBookingCancelledRebook({booking_ref}){
   const b=await loadBookingWhatsAppContext(booking_ref);
   if(!b||String(b.status).toLowerCase()!=='cancelled')return {success:false,status:'booking_not_cancelled'};
+  const cancellationEmailJob=sendBookingCancellationEmails(b).catch(err=>{console.error('BOOKING CANCELLATION EMAIL',err?.message||err);return {success:false,status:'send_error'};});
   // A cancelled booking can have two independently open WhatsApp windows.
   // Keep the approved card unchanged, but send it to each eligible number once.
   const recipients=[
@@ -4846,6 +4891,7 @@ async function onBookingCancelledRebook({booking_ref}){
       results.push({recipient:recipient.kind,success:false,status:'send_error',error:String(err?.message||err)});
     }
   }
+  await cancellationEmailJob;
   return {success:results.some(r=>r.success),status:results.length?'recipient_results':'no_valid_recipient',results};
 }
 installBookingRoutes(app, pool, { onBookingCreated: onBookingCreatedWhatsApp, onBookingRescheduled: onBookingRescheduledWhatsApp, onBookingCancelled: onBookingCancelledRebook, onRebookLinkRequested: ({booking_ref,mobile})=>sendGuruVidyaRebookingCard({mobile},booking_ref) });
