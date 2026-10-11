@@ -674,7 +674,7 @@ async function bookingActionGraphicPng(kind, rebookRoles={}){
       <rect width="1080" height="420" fill="#ffffff"/>
       <rect x="12" y="12" width="1056" height="154" rx="23" fill="url(#rebookG)"/>
       <circle cx="87" cy="89" r="49" fill="#ffffff"/>
-      <g transform="translate(51 53) scale(.75)"><rect x="18" y="24" width="60" height="58" rx="7" fill="none" stroke="#0756c7" stroke-width="7"/><path d="M18 42h60M33 16v17M63 16v17" stroke="#0756c7" stroke-width="7"/></g>
+      <g transform="translate(51 53) scale(.75)"><rect x="18" y="24" width="60" height="58" rx="7" fill="none" stroke="#0756c7" stroke-width="7"/><path d="M18 42h60M33 16v17M63 16v17" stroke="#0756c7" stroke-width="7" stroke-linecap="round"/><path d="M34 69l8-2 25-25 7 7-25 25-12 4z" fill="#ffffff" stroke="#0756c7" stroke-width="5" stroke-linejoin="round"/><path d="M62 47l7 7" stroke="#0756c7" stroke-width="4"/></g>
       <text x="160" y="88" font-family="Arial,sans-serif" font-size="40" font-weight="700" fill="#ffffff">Book Your Next Appointment</text>
       <text x="161" y="132" font-family="Arial,sans-serif" font-size="29" fill="#ffffff">Admission Counselling</text>
       <text x="26" y="224" font-family="Arial,sans-serif" font-size="28" fill="#253343" textLength="1028" lengthAdjust="spacingAndGlyphs">Your previous appointment has been cancelled successfully.</text>
@@ -704,7 +704,7 @@ app.get('/api/public/booking/action-graphic/:kind.png',async(req,res)=>{
 });
 function bookingActionGraphicUrl(kind, rebookRoles){
   const roles=kind==='rebook'&&rebookRoles?`&bookedBy=${encodeURIComponent(rebookRoles.bookedBy||'Student')}&cancelledBy=${encodeURIComponent(rebookRoles.cancelledBy||'Student')}`:'';
-  return `${String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/action-graphic/${kind}.png?v=${kind==='rebook'?'11oct-rebook-fullwidth-v3':kind==='reschedule'?'8oct-reschedule-icon-visible':'8oct4-design3-safe'}${roles}`;
+  return `${String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/action-graphic/${kind}.png?v=${kind==='rebook'?'11oct-rebook-icon-v4':kind==='reschedule'?'8oct-reschedule-icon-visible':'8oct4-design3-safe'}${roles}`;
 }
 async function sendBookingActionGraphicText(record,kind,body,action){
   // BotSailor's documented Send File endpoint supports a caption. On a media
