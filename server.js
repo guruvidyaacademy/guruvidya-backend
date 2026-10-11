@@ -707,7 +707,7 @@ app.get('/api/public/booking/action-graphic/:kind.png',async(req,res)=>{
 });
 function bookingActionGraphicUrl(kind, rebookRoles){
   const roles=kind==='rebook'&&rebookRoles?`&bookedBy=${encodeURIComponent(rebookRoles.bookedBy||'Student')}&cancelledBy=${encodeURIComponent(rebookRoles.cancelledBy||'Student')}`:'';
-  return `${String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/action-graphic/${kind}.png?v=${kind==='rebook'?'11oct-rebook-icon-v4':kind==='reschedule'?'8oct-reschedule-icon-visible':'8oct4-design3-safe'}${roles}`;
+  return `${String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/action-graphic/${kind}.png?v=${kind==='rebook'?'11oct-rebook-red-status-v5':kind==='reschedule'?'8oct-reschedule-icon-visible':'8oct4-design3-safe'}${roles}`;
 }
 async function sendBookingActionGraphicText(record,kind,body,action){
   // BotSailor's documented Send File endpoint supports a caption. On a media
@@ -4802,7 +4802,7 @@ async function sendGuruVidyaRebookingCard(recipient,bookingRef){
   // Keep the approved graphic and copy, but deliver the native reply button in
   // the same interactive media message. A separate button message requires its
   // own body and previously displayed the unwanted extra sentence.
-  const body='Need admission counselling again? Choose a convenient available date and time.';
+  const body='Need admission counselling again? Choose a new date.';
   return sendBotSailorReplyButtons(recipient,body,
     [{id:'booking_new_appointment',title:'Book New Appointment'}],
     'booking_rebook_button',
