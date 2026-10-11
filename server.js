@@ -4802,7 +4802,7 @@ async function sendGuruVidyaRebookingCard(recipient,bookingRef){
   // Keep the approved graphic and copy, but deliver the native reply button in
   // the same interactive media message. A separate button message requires its
   // own body and previously displayed the unwanted extra sentence.
-  const body='Need admission counselling again? Choose a new date.';
+  const body='Need counselling again? Choose a new date.';
   return sendBotSailorReplyButtons(recipient,body,
     [{id:'booking_new_appointment',title:'Book New Appointment'}],
     'booking_rebook_button',
