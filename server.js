@@ -3479,14 +3479,22 @@ app.post("/api/webhook/botsailor", async (req, res) => {
 
     // A user-initiated rebooking-link request opens the real WhatsApp service window.
     // Match the cancelled booking AND its booked-by phone; never send to an arbitrary sender.
-    const rebookMatch=String(webhookUserMessageRaw||'').trim().match(/^(?:VERIFY\s+)?GV-BOOK-LINK\s+(GV-[A-Z0-9]+)$/i);
+    const rebookMatch=String(webhookUserMessageRaw||'').trim().match(/^(?:VERIFY[\s-]+)?GV[\s-]+BOOK[\s-]+LINK[\s-]+GV[\s-]+([A-Z0-9]+)$/i);
     if(isCustomerEvent&&rebookMatch){
-      const ref=rebookMatch[1].toUpperCase();
+      const ref='GV-'+rebookMatch[1].toUpperCase();
       const match=await pool.query(`SELECT booking_ref,student_mobile,parent_mobile,recipient,status FROM student_bookings WHERE booking_ref=$1`,[ref]);
       const b=match.rows[0];
       const intended=b&&(String(b.recipient||'').toLowerCase()==='parent'&&b.parent_mobile?b.parent_mobile:b.student_mobile);
       if(b?.status==='cancelled'&&botSailorPhone(intended)===botSailorPhone(mobile)){
-        const result=await sendGuruVidyaRebookingCard({mobile:intended},ref);
+        // Claim this booking/recipient atomically: webhook retries and window-status polling
+        // must not send the same rebooking card twice.
+        const claimed=await pool.query(`INSERT INTO booking_rebook_link_deliveries(booking_id,mobile,status,updated_at)
+          SELECT id,$2,'pending',NOW() FROM student_bookings WHERE booking_ref=$1 AND status='cancelled'
+          ON CONFLICT(booking_id,mobile) DO NOTHING RETURNING booking_id`,[ref,botSailorPhone(intended).replace(/^91/,'')]);
+        if(!claimed.rowCount)return res.status(200).json({status:'ok',action:'booking_rebook_link_already_requested'});
+        let result={success:false};
+        try{result=await sendGuruVidyaRebookingCard({mobile:intended},ref);}
+        finally{await pool.query(`UPDATE booking_rebook_link_deliveries SET status=$3,updated_at=NOW() WHERE booking_id=$1 AND mobile=$2`,[claimed.rows[0].booking_id,botSailorPhone(intended).replace(/^91/,''),result.success?'sent':'failed']);}
         return res.status(200).json({status:result.success?'ok':'failed',action:'booking_rebook_link_requested'});
       }
       return res.status(200).json({status:'ignored',action:'booking_rebook_link_invalid'});
@@ -4761,40 +4769,66 @@ async function sendWhatsAppMessage(phone, message) {
   return sendBotSailorText({ mobile: phone, name: "Student", course: "" }, message, "legacy_send");
 }
 
-async function sendGuruVidyaRebookingCard(recipient,bookingRef){
-  const url=String(process.env.PUBLIC_BOOKING_URL||'https://guruvidya-backend.onrender.com/booking').split('#')[0];
-  const graphic=await sendBookingActionGraphicText(recipient,'rebook',
-    `\n\nYour previous appointment has been cancelled successfully.\n\nNeed admission counselling again? Choose a convenient available date and time.`,
-    'booking_rebook_graphic');
-  if(!graphic.success)return graphic;
-  // Existing BotSailor integration supports reply buttons. A reply delivers the
-  // booking URL; do not pretend this is a native WhatsApp URL CTA.
-  return sendBotSailorReplyButtons(recipient,'Choose your course, date and time to book again.',
-    [{id:'booking_new_appointment',title:'Book New Appointment'}],'booking_rebook_button');
+// Cancellation rebooking card: render the approved light-blue Booked By / Cancelled By
+// panel as part of the media graphic (WhatsApp native message bodies cannot have
+// a colored background). No other booking graphics or confirmation flows change.
+function gvRebookRoleLabel(value){
+  const v=String(value||'').trim().toLowerCase();
+  if(v==='parent'||v==='parent / guardian'||v==='guardian')return 'Parent / Guardian';
+  if(v==='admin'||v.includes('admin'))return 'GuruVidya Admin';
+  return 'Student';
 }
-async function sendBookingCancellationEmails(bookingRef){
- if(config.emailEnabled===false||!String(config.emailFrom||'').trim())return {status:'email_disabled'};
- const cfg=await pool.query('SELECT settings FROM booking_settings WHERE id=1');
- const settings=cfg.rows[0]?.settings||{};
- if(settings.email_notifications_enabled===false)return {status:'booking_email_disabled'};
- const mode=['student','parent'].includes(settings.email_recipient_mode)?settings.email_recipient_mode:'both';
- const q=await pool.query(`SELECT id,booking_ref,student_name,student_email,parent_name,parent_email,course,booked_by,cancelled_by,cancelled_at,cancellation_reason FROM student_bookings WHERE booking_ref=$1 AND status='cancelled'`,[bookingRef]);
- if(!q.rowCount)return {status:'not_cancelled'};
- const b=q.rows[0], recipients=[];
- if(mode!=='parent'&&b.student_email)recipients.push(['student',b.student_email]);
- if(mode!=='student'&&b.parent_email)recipients.push(['parent',b.parent_email]);
- const seen=new Set(),results=[];
- const esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
- const rows=[['Booking Reference',b.booking_ref],['Student Name',b.student_name],['Course',b.course],['Booked By',b.booked_by||'Student'],['Cancelled By',b.cancelled_by||'GuruVidya'],['Cancelled On',b.cancelled_at?new Date(b.cancelled_at).toLocaleString('en-IN',{timeZone:'Asia/Kolkata'}):'—'],['Reason',b.cancellation_reason]];
- const html='<div style="font-family:Arial,sans-serif;max-width:620px;margin:auto;border:1px solid #dce7f4;border-radius:14px;overflow:hidden"><div style="background:#eaf8ef;padding:22px;color:#167a42"><h2>✓ Appointment Cancelled Successfully!</h2><p>Your appointment has been cancelled as requested.</p></div><div style="background:#eef8ff;margin:18px;padding:15px;border-radius:10px">'+rows.map(([k,v])=>'<div style="padding:8px;border-bottom:1px solid #dce8f4"><b>'+esc(k)+'</b>: '+esc(v)+'</div>').join('')+'</div><div style="padding:15px 20px"><h3 style="color:#0855b4">Need admission counselling again?</h3><p>You can book a new appointment for a convenient available date and time.</p><a href="'+esc(String(process.env.PUBLIC_BOOKING_URL||'https://guruvidya-backend.onrender.com/booking').split('#')[0])+'" style="display:inline-block;padding:13px 19px;border-radius:8px;background:#0865db;color:white;text-decoration:none">Book New Appointment</a></div><div style="padding:18px;background:#f4f8fd;color:#48617c">GuruVidya Academy Pvt. Ltd.<br>REAL EDUCATION · REAL RESULTS</div></div>';
- for(const [kind,address] of recipients){const email=String(address||'').trim().toLowerCase();if(!/^\S+@\S+\.\S+$/.test(email)||seen.has(email))continue;seen.add(email);
- try{const r=await sendEmailWithFailover({to:email,subject:'Appointment Cancelled – GuruVidya Academy | '+b.booking_ref,text:'Your appointment has been cancelled as requested.\nBooking Reference: '+b.booking_ref+'\nReason: '+(b.cancellation_reason||'—'),html});results.push({kind,success:true});await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail) VALUES($1,'booking_cancellation',$2,'email','sent',$3) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status='sent',detail=EXCLUDED.detail,created_at=NOW()`,[b.id,kind,'Sent via '+r.provider]).catch(()=>{});}
- catch(e){results.push({kind,success:false});console.error('BOOKING CANCELLATION EMAIL',kind,e?.message||e);await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail) VALUES($1,'booking_cancellation',$2,'email','failed',$3) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status='failed',detail=EXCLUDED.detail,created_at=NOW()`,[b.id,kind,String(e?.message||e).slice(0,500)]).catch(()=>{});}
- }
- return {status:'done',results};
+function gvRebookEscape(value){return String(value).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+async function gvRebookApprovedGraphic(bookedBy,cancelledBy){
+  const blue='#116dd0',dark='#24364d';
+  const person=`<circle cx="0" cy="-10" r="9" fill="${blue}"/><path d="M-16 15c0-13 32-13 32 0v4h-32z" fill="${blue}"/>`;
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="690" viewBox="0 0 1080 690">
+  <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#0955c4"/><stop offset="1" stop-color="#1589ee"/></linearGradient></defs>
+  <rect width="1080" height="690" rx="25" fill="white"/>
+  <rect x="12" y="12" width="1056" height="162" rx="21" fill="url(#g)"/>
+  <circle cx="96" cy="94" r="57" fill="white"/>
+  <g stroke="#0756c7" stroke-width="8" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="68" y="73" width="56" height="52" rx="5"/><path d="M68 87h56M82 61v22M110 61v22M87 105l8 8 14-18"/></g>
+  <text x="177" y="85" font-family="Arial,sans-serif" font-size="49" font-weight="700" fill="white">Book Your Next Appointment</text>
+  <text x="179" y="139" font-family="Arial,sans-serif" font-size="35" fill="white">Admission Counselling</text>
+  <text x="38" y="244" font-family="Arial,sans-serif" font-size="37" fill="${dark}">Your previous appointment has been</text>
+  <text x="38" y="290" font-family="Arial,sans-serif" font-size="37" fill="${dark}">cancelled successfully.</text>
+  <rect x="32" y="325" width="1016" height="158" rx="17" fill="#e9f6ff"/>
+  <g transform="translate(77 369)">${person}</g><g transform="translate(77 436)">${person}</g>
+  <text x="126" y="382" font-family="Arial,sans-serif" font-size="36" fill="${dark}">Booked By</text>
+  <text x="126" y="449" font-family="Arial,sans-serif" font-size="36" fill="${dark}">Cancelled By</text>
+  <text x="540" y="382" font-family="Arial,sans-serif" font-size="36" font-weight="700" fill="${dark}">${gvRebookEscape(bookedBy)}</text>
+  <text x="540" y="449" font-family="Arial,sans-serif" font-size="36" font-weight="700" fill="${dark}">${gvRebookEscape(cancelledBy)}</text>
+  <text x="38" y="555" font-family="Arial,sans-serif" font-size="37" fill="${dark}">Need admission counselling again?</text>
+  <text x="38" y="602" font-family="Arial,sans-serif" font-size="37" fill="${dark}">Choose a convenient available date</text>
+  <text x="38" y="649" font-family="Arial,sans-serif" font-size="37" fill="${dark}">and time.</text>
+  </svg>`;
+  return sharp(Buffer.from(svg)).png().toBuffer();
+}
+app.get('/api/public/booking/rebook-approved.png',async(req,res)=>{
+  try{
+    const bookedBy=gvRebookRoleLabel(req.query.booked);
+    const cancelledBy=gvRebookRoleLabel(req.query.cancelled);
+    res.set({'Content-Type':'image/png','Cache-Control':'public,max-age=86400','X-Content-Type-Options':'nosniff'})
+      .send(await gvRebookApprovedGraphic(bookedBy,cancelledBy));
+  }catch(e){console.error('Rebooking approved graphic error:',e.message);res.status(500).end();}
+});
+async function sendGuruVidyaRebookingCard(recipient,bookingRef){
+  const b=await loadBookingWhatsAppContext(bookingRef);
+  const bookedBy=gvRebookRoleLabel(b?.booked_by);
+  // If the actor is recorded, use it. Older browser cancellations only recorded
+  // 'Browser', so retain the booked-by role as the legacy fallback.
+  const via=String(b?.cancelled_via||'');
+  const actor=via.match(/(?:student|parent|guardian|admin)/i)?.[0];
+  const cancelledBy=gvRebookRoleLabel(actor||b?.booked_by);
+  const base=String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'');
+  const mediaUrl=`${base}/api/public/booking/rebook-approved.png?booked=${encodeURIComponent(bookedBy)}&cancelled=${encodeURIComponent(cancelledBy)}&v=11oct-approved`;
+  // The graphic contains all the approved copy, roles and light-blue panel.
+  // BotSailor requires a message body for its interactive media reply button.
+  return sendBotSailorReplyButtons(recipient,'Book your next appointment using the button below.',
+    [{id:'booking_new_appointment',title:'Book New Appointment'}],
+    'booking_rebook_button',{mediaUrl,mediaType:'image'});
 }
 async function onBookingCancelledRebook({booking_ref}){
-  await sendBookingCancellationEmails(booking_ref).catch(e=>console.error('Cancellation email processing failed',e?.message||e));
   const b=await loadBookingWhatsAppContext(booking_ref);
   if(!b||String(b.status).toLowerCase()!=='cancelled')return {success:false};
   const target=String(b.recipient||'').toLowerCase()==='parent'&&b.parent_mobile?b.parent_mobile:b.student_mobile;
