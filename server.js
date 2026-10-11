@@ -648,7 +648,7 @@ const BOOKING_ACTION_GRAPHICS = Object.freeze({
   already_cancelled: {title:'This appointment is already cancelled.',theme:'info'},
   rebook: {title:'Book Your Next Appointment',theme:'blue'},
 });
-async function bookingActionGraphicPng(kind){
+async function bookingActionGraphicPng(kind, rebookRoles={}){
   const item=BOOKING_ACTION_GRAPHICS[kind];
   if(!item)throw new Error('Unknown booking action graphic');
   const palette={
@@ -663,6 +663,27 @@ async function bookingActionGraphicPng(kind){
   // Match the already-approved bookingDesign3ChangePng graphic geometry exactly:
   // 1080x210 canvas, inset x=105..975, safe icon/text region. WhatsApp crops
   // the outside canvas in its preview, not the banner content.
+  if(kind==='rebook'){
+    const safeRole=v=>xmlEsc(String(v||'Student').slice(0,40));
+    const booked=safeRole(rebookRoles.bookedBy);
+    const cancelled=safeRole(rebookRoles.cancelledBy);
+    // Only the header and the two light-blue identity rows belong to the image.
+    // Cancellation confirmation and counselling instructions stay native WhatsApp text.
+    const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="390" viewBox="0 0 1080 390">
+      <defs><linearGradient id="rebookG" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0756c7"/><stop offset="1" stop-color="#1687f0"/></linearGradient></defs>
+      <rect width="1080" height="390" fill="#ffffff"/>
+      <rect x="105" y="22" width="870" height="172" rx="23" fill="url(#rebookG)"/>
+      <circle cx="179" cy="104" r="49" fill="#ffffff"/>
+      <g transform="translate(143 68) scale(.75)"><rect x="18" y="24" width="60" height="58" rx="7" fill="none" stroke="#0756c7" stroke-width="7"/><path d="M18 42h60M33 16v17M63 16v17" stroke="#0756c7" stroke-width="7"/></g>
+      <text x="250" y="101" font-family="Arial,sans-serif" font-size="40" font-weight="700" fill="#ffffff">Book Your Next Appointment</text>
+      <text x="251" y="148" font-family="Arial,sans-serif" font-size="29" fill="#ffffff">Admission Counselling</text>
+      <rect x="105" y="208" width="870" height="153" rx="19" fill="#e9f6ff"/>
+      <g fill="#1675d1"><circle cx="151" cy="259" r="11"/><path d="M130 291q0-21 21-21t21 21z"/><circle cx="151" cy="324" r="11"/><path d="M130 356q0-21 21-21t21 21z"/></g>
+      <g font-family="Arial,sans-serif" font-size="30" fill="#43556c"><text x="198" y="287">Booked By</text><text x="198" y="351">Cancelled By</text></g>
+      <g font-family="Arial,sans-serif" font-size="30" font-weight="700" fill="#172b45"><text x="550" y="287">${booked}</text><text x="550" y="351">${cancelled}</text></g>
+    </svg>`;
+    return sharp(Buffer.from(svg)).png().toBuffer();
+  }
   const fontSize=kind==='already_cancelled'?30:kind==='cancel'?39:42;
   const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="210" viewBox="0 0 1080 210">
     <defs><linearGradient id="actionG" x1="0" y1="0" x2="1" y2="1"><stop stop-color="${bg1}"/><stop offset="1" stop-color="${bg2}"/></linearGradient></defs>
@@ -677,11 +698,12 @@ async function bookingActionGraphicPng(kind){
 app.get('/api/public/booking/action-graphic/:kind.png',async(req,res)=>{
   try{
     if(!Object.prototype.hasOwnProperty.call(BOOKING_ACTION_GRAPHICS,req.params.kind))return res.status(404).end();
-    res.set({'Content-Type':'image/png','Cache-Control':'public,max-age=86400','X-Content-Type-Options':'nosniff'}).send(await bookingActionGraphicPng(req.params.kind));
+    res.set({'Content-Type':'image/png','Cache-Control':req.params.kind==='rebook'?'private,no-store':'public,max-age=86400','X-Content-Type-Options':'nosniff'}).send(await bookingActionGraphicPng(req.params.kind,{bookedBy:req.query.bookedBy,cancelledBy:req.query.cancelledBy}));
   }catch(e){console.error('Booking action graphic error:',e.message);res.status(500).end();}
 });
-function bookingActionGraphicUrl(kind){
-  return `${String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/action-graphic/${kind}.png?v=${kind==='reschedule'?'8oct-reschedule-icon-visible':'8oct4-design3-safe'}`;
+function bookingActionGraphicUrl(kind, rebookRoles){
+  const roles=kind==='rebook'&&rebookRoles?`&bookedBy=${encodeURIComponent(rebookRoles.bookedBy||'Student')}&cancelledBy=${encodeURIComponent(rebookRoles.cancelledBy||'Student')}`:'';
+  return `${String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/action-graphic/${kind}.png?v=${kind==='rebook'?'11oct-rebook-roles-v1':kind==='reschedule'?'8oct-reschedule-icon-visible':'8oct4-design3-safe'}${roles}`;
 }
 async function sendBookingActionGraphicText(record,kind,body,action){
   // BotSailor's documented Send File endpoint supports a caption. On a media
@@ -4769,64 +4791,18 @@ async function sendWhatsAppMessage(phone, message) {
   return sendBotSailorText({ mobile: phone, name: "Student", course: "" }, message, "legacy_send");
 }
 
-// Cancellation rebooking card: render the approved light-blue Booked By / Cancelled By
-// panel as part of the media graphic (WhatsApp native message bodies cannot have
-// a colored background). No other booking graphics or confirmation flows change.
-function gvRebookRoleLabel(value){
-  const v=String(value||'').trim().toLowerCase();
-  if(v==='parent'||v==='parent / guardian'||v==='guardian')return 'Parent / Guardian';
-  if(v==='admin'||v.includes('admin'))return 'GuruVidya Admin';
-  return 'Student';
-}
-function gvRebookEscape(value){return String(value).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
-async function gvRebookApprovedGraphic(bookedBy,cancelledBy){
-  const blue='#116dd0',dark='#24364d';
-  const person=`<circle cx="0" cy="-10" r="9" fill="${blue}"/><path d="M-16 15c0-13 32-13 32 0v4h-32z" fill="${blue}"/>`;
-  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="690" viewBox="0 0 1080 690">
-  <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#0955c4"/><stop offset="1" stop-color="#1589ee"/></linearGradient></defs>
-  <rect width="1080" height="690" rx="25" fill="white"/>
-  <rect x="12" y="12" width="1056" height="162" rx="21" fill="url(#g)"/>
-  <circle cx="96" cy="94" r="57" fill="white"/>
-  <g stroke="#0756c7" stroke-width="8" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="68" y="73" width="56" height="52" rx="5"/><path d="M68 87h56M82 61v22M110 61v22M87 105l8 8 14-18"/></g>
-  <text x="177" y="85" font-family="Arial,sans-serif" font-size="49" font-weight="700" fill="white">Book Your Next Appointment</text>
-  <text x="179" y="139" font-family="Arial,sans-serif" font-size="35" fill="white">Admission Counselling</text>
-  <text x="38" y="244" font-family="Arial,sans-serif" font-size="37" fill="${dark}">Your previous appointment has been</text>
-  <text x="38" y="290" font-family="Arial,sans-serif" font-size="37" fill="${dark}">cancelled successfully.</text>
-  <rect x="32" y="325" width="1016" height="158" rx="17" fill="#e9f6ff"/>
-  <g transform="translate(77 369)">${person}</g><g transform="translate(77 436)">${person}</g>
-  <text x="126" y="382" font-family="Arial,sans-serif" font-size="36" fill="${dark}">Booked By</text>
-  <text x="126" y="449" font-family="Arial,sans-serif" font-size="36" fill="${dark}">Cancelled By</text>
-  <text x="540" y="382" font-family="Arial,sans-serif" font-size="36" font-weight="700" fill="${dark}">${gvRebookEscape(bookedBy)}</text>
-  <text x="540" y="449" font-family="Arial,sans-serif" font-size="36" font-weight="700" fill="${dark}">${gvRebookEscape(cancelledBy)}</text>
-  <text x="38" y="555" font-family="Arial,sans-serif" font-size="37" fill="${dark}">Need admission counselling again?</text>
-  <text x="38" y="602" font-family="Arial,sans-serif" font-size="37" fill="${dark}">Choose a convenient available date</text>
-  <text x="38" y="649" font-family="Arial,sans-serif" font-size="37" fill="${dark}">and time.</text>
-  </svg>`;
-  return sharp(Buffer.from(svg)).png().toBuffer();
-}
-app.get('/api/public/booking/rebook-approved.png',async(req,res)=>{
-  try{
-    const bookedBy=gvRebookRoleLabel(req.query.booked);
-    const cancelledBy=gvRebookRoleLabel(req.query.cancelled);
-    res.set({'Content-Type':'image/png','Cache-Control':'public,max-age=86400','X-Content-Type-Options':'nosniff'})
-      .send(await gvRebookApprovedGraphic(bookedBy,cancelledBy));
-  }catch(e){console.error('Rebooking approved graphic error:',e.message);res.status(500).end();}
-});
 async function sendGuruVidyaRebookingCard(recipient,bookingRef){
-  const b=await loadBookingWhatsAppContext(bookingRef);
-  const bookedBy=gvRebookRoleLabel(b?.booked_by);
-  // If the actor is recorded, use it. Older browser cancellations only recorded
-  // 'Browser', so retain the booked-by role as the legacy fallback.
-  const via=String(b?.cancelled_via||'');
-  const actor=via.match(/(?:student|parent|guardian|admin)/i)?.[0];
-  const cancelledBy=gvRebookRoleLabel(actor||b?.booked_by);
-  const base=String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'');
-  const mediaUrl=`${base}/api/public/booking/rebook-approved.png?booked=${encodeURIComponent(bookedBy)}&cancelled=${encodeURIComponent(cancelledBy)}&v=11oct-approved`;
-  // The graphic contains all the approved copy, roles and light-blue panel.
-  // BotSailor requires a message body for its interactive media reply button.
-  return sendBotSailorReplyButtons(recipient,'Book your next appointment using the button below.',
+  const booking=await loadBookingWhatsAppContext(bookingRef);
+  const bookedBy=String(booking?.booked_by||'student').toLowerCase()==='parent'?'Parent / Guardian':'Student';
+  const cancelledBy=String(booking?.cancelled_via||'').toLowerCase()==='admin'?'GuruVidya Admin':bookedBy;
+  // Keep the approved graphic and copy, but deliver the native reply button in
+  // the same interactive media message. A separate button message requires its
+  // own body and previously displayed the unwanted extra sentence.
+  const body='Your previous appointment has been cancelled successfully.\n\nNeed admission counselling again? Choose a convenient available date and time.';
+  return sendBotSailorReplyButtons(recipient,body,
     [{id:'booking_new_appointment',title:'Book New Appointment'}],
-    'booking_rebook_button',{mediaUrl,mediaType:'image'});
+    'booking_rebook_button',
+    {mediaUrl:bookingActionGraphicUrl('rebook',{bookedBy,cancelledBy}),mediaType:'image'});
 }
 async function onBookingCancelledRebook({booking_ref}){
   const b=await loadBookingWhatsAppContext(booking_ref);
