@@ -669,22 +669,19 @@ async function bookingActionGraphicPng(kind, rebookRoles={}){
     const cancelled=safeRole(rebookRoles.cancelledBy);
     // Approved second-image layout: header, cancellation confirmation, then
     // full-width light-blue role rows. Counselling stays native WhatsApp text.
-    const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="495" viewBox="0 0 1080 495">
+    const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="420" viewBox="0 0 1080 420">
       <defs><linearGradient id="rebookG" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0756c7"/><stop offset="1" stop-color="#1687f0"/></linearGradient></defs>
-      <rect width="1080" height="495" fill="#ffffff"/>
-      <rect x="105" y="22" width="870" height="172" rx="23" fill="url(#rebookG)"/>
-      <circle cx="179" cy="104" r="49" fill="#ffffff"/>
-      <g transform="translate(143 68) scale(.75)"><rect x="18" y="24" width="60" height="58" rx="7" fill="none" stroke="#0756c7" stroke-width="7"/><path d="M18 42h60M33 16v17M63 16v17" stroke="#0756c7" stroke-width="7"/></g>
-      <text x="250" y="101" font-family="Arial,sans-serif" font-size="40" font-weight="700" fill="#ffffff">Book Your Next Appointment</text>
-      <text x="251" y="148" font-family="Arial,sans-serif" font-size="29" fill="#ffffff">Admission Counselling</text>
-      <g font-family="Arial,sans-serif" font-size="29" fill="#253343">
-        <text x="109" y="252">Your previous appointment has been</text>
-        <text x="109" y="292">cancelled successfully.</text>
-      </g>
-      <rect x="105" y="318" width="870" height="153" rx="19" fill="#e9f6ff"/>
-      <g fill="#1675d1"><circle cx="151" cy="359" r="11"/><path d="M130 391q0-21 21-21t21 21z"/><circle cx="151" cy="424" r="11"/><path d="M130 456q0-21 21-21t21 21z"/></g>
-      <g font-family="Arial,sans-serif" font-size="30" fill="#43556c"><text x="198" y="387">Booked By</text><text x="198" y="451">Cancelled By</text></g>
-      <g font-family="Arial,sans-serif" font-size="30" font-weight="700" fill="#172b45"><text x="550" y="387">${booked}</text><text x="550" y="451">${cancelled}</text></g>
+      <rect width="1080" height="420" fill="#ffffff"/>
+      <rect x="12" y="12" width="1056" height="154" rx="23" fill="url(#rebookG)"/>
+      <circle cx="87" cy="89" r="49" fill="#ffffff"/>
+      <g transform="translate(51 53) scale(.75)"><rect x="18" y="24" width="60" height="58" rx="7" fill="none" stroke="#0756c7" stroke-width="7"/><path d="M18 42h60M33 16v17M63 16v17" stroke="#0756c7" stroke-width="7"/></g>
+      <text x="160" y="88" font-family="Arial,sans-serif" font-size="40" font-weight="700" fill="#ffffff">Book Your Next Appointment</text>
+      <text x="161" y="132" font-family="Arial,sans-serif" font-size="29" fill="#ffffff">Admission Counselling</text>
+      <text x="26" y="224" font-family="Arial,sans-serif" font-size="28" fill="#253343" textLength="1028" lengthAdjust="spacingAndGlyphs">Your previous appointment has been cancelled successfully.</text>
+      <rect x="12" y="248" width="1056" height="154" rx="19" fill="#e9f6ff"/>
+      <g fill="#1675d1"><circle cx="63" cy="290" r="11"/><path d="M42 322q0-21 21-21t21 21z"/><circle cx="63" cy="355" r="11"/><path d="M42 387q0-21 21-21t21 21z"/></g>
+      <g font-family="Arial,sans-serif" font-size="30" fill="#43556c"><text x="113" y="318">Booked By</text><text x="113" y="383">Cancelled By</text></g>
+      <g font-family="Arial,sans-serif" font-size="30" font-weight="700" fill="#172b45"><text x="550" y="318">${booked}</text><text x="550" y="383">${cancelled}</text></g>
     </svg>`;
     return sharp(Buffer.from(svg)).png().toBuffer();
   }
@@ -707,7 +704,7 @@ app.get('/api/public/booking/action-graphic/:kind.png',async(req,res)=>{
 });
 function bookingActionGraphicUrl(kind, rebookRoles){
   const roles=kind==='rebook'&&rebookRoles?`&bookedBy=${encodeURIComponent(rebookRoles.bookedBy||'Student')}&cancelledBy=${encodeURIComponent(rebookRoles.cancelledBy||'Student')}`:'';
-  return `${String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/action-graphic/${kind}.png?v=${kind==='rebook'?'11oct-rebook-approved-v2':kind==='reschedule'?'8oct-reschedule-icon-visible':'8oct4-design3-safe'}${roles}`;
+  return `${String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/action-graphic/${kind}.png?v=${kind==='rebook'?'11oct-rebook-fullwidth-v3':kind==='reschedule'?'8oct-reschedule-icon-visible':'8oct4-design3-safe'}${roles}`;
 }
 async function sendBookingActionGraphicText(record,kind,body,action){
   // BotSailor's documented Send File endpoint supports a caption. On a media
