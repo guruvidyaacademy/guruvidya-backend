@@ -667,20 +667,24 @@ async function bookingActionGraphicPng(kind, rebookRoles={}){
     const safeRole=v=>xmlEsc(String(v||'Student').slice(0,40));
     const booked=safeRole(rebookRoles.bookedBy);
     const cancelled=safeRole(rebookRoles.cancelledBy);
-    // Only the header and the two light-blue identity rows belong to the image.
-    // Cancellation confirmation and counselling instructions stay native WhatsApp text.
-    const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="390" viewBox="0 0 1080 390">
+    // Approved second-image layout: header, cancellation confirmation, then
+    // full-width light-blue role rows. Counselling stays native WhatsApp text.
+    const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="495" viewBox="0 0 1080 495">
       <defs><linearGradient id="rebookG" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0756c7"/><stop offset="1" stop-color="#1687f0"/></linearGradient></defs>
-      <rect width="1080" height="390" fill="#ffffff"/>
+      <rect width="1080" height="495" fill="#ffffff"/>
       <rect x="105" y="22" width="870" height="172" rx="23" fill="url(#rebookG)"/>
       <circle cx="179" cy="104" r="49" fill="#ffffff"/>
       <g transform="translate(143 68) scale(.75)"><rect x="18" y="24" width="60" height="58" rx="7" fill="none" stroke="#0756c7" stroke-width="7"/><path d="M18 42h60M33 16v17M63 16v17" stroke="#0756c7" stroke-width="7"/></g>
       <text x="250" y="101" font-family="Arial,sans-serif" font-size="40" font-weight="700" fill="#ffffff">Book Your Next Appointment</text>
       <text x="251" y="148" font-family="Arial,sans-serif" font-size="29" fill="#ffffff">Admission Counselling</text>
-      <rect x="105" y="208" width="870" height="153" rx="19" fill="#e9f6ff"/>
-      <g fill="#1675d1"><circle cx="151" cy="259" r="11"/><path d="M130 291q0-21 21-21t21 21z"/><circle cx="151" cy="324" r="11"/><path d="M130 356q0-21 21-21t21 21z"/></g>
-      <g font-family="Arial,sans-serif" font-size="30" fill="#43556c"><text x="198" y="287">Booked By</text><text x="198" y="351">Cancelled By</text></g>
-      <g font-family="Arial,sans-serif" font-size="30" font-weight="700" fill="#172b45"><text x="550" y="287">${booked}</text><text x="550" y="351">${cancelled}</text></g>
+      <g font-family="Arial,sans-serif" font-size="29" fill="#253343">
+        <text x="109" y="252">Your previous appointment has been</text>
+        <text x="109" y="292">cancelled successfully.</text>
+      </g>
+      <rect x="105" y="318" width="870" height="153" rx="19" fill="#e9f6ff"/>
+      <g fill="#1675d1"><circle cx="151" cy="359" r="11"/><path d="M130 391q0-21 21-21t21 21z"/><circle cx="151" cy="424" r="11"/><path d="M130 456q0-21 21-21t21 21z"/></g>
+      <g font-family="Arial,sans-serif" font-size="30" fill="#43556c"><text x="198" y="387">Booked By</text><text x="198" y="451">Cancelled By</text></g>
+      <g font-family="Arial,sans-serif" font-size="30" font-weight="700" fill="#172b45"><text x="550" y="387">${booked}</text><text x="550" y="451">${cancelled}</text></g>
     </svg>`;
     return sharp(Buffer.from(svg)).png().toBuffer();
   }
@@ -703,7 +707,7 @@ app.get('/api/public/booking/action-graphic/:kind.png',async(req,res)=>{
 });
 function bookingActionGraphicUrl(kind, rebookRoles){
   const roles=kind==='rebook'&&rebookRoles?`&bookedBy=${encodeURIComponent(rebookRoles.bookedBy||'Student')}&cancelledBy=${encodeURIComponent(rebookRoles.cancelledBy||'Student')}`:'';
-  return `${String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/action-graphic/${kind}.png?v=${kind==='rebook'?'11oct-rebook-roles-v1':kind==='reschedule'?'8oct-reschedule-icon-visible':'8oct4-design3-safe'}${roles}`;
+  return `${String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'')}/api/public/booking/action-graphic/${kind}.png?v=${kind==='rebook'?'11oct-rebook-approved-v2':kind==='reschedule'?'8oct-reschedule-icon-visible':'8oct4-design3-safe'}${roles}`;
 }
 async function sendBookingActionGraphicText(record,kind,body,action){
   // BotSailor's documented Send File endpoint supports a caption. On a media
@@ -4798,7 +4802,7 @@ async function sendGuruVidyaRebookingCard(recipient,bookingRef){
   // Keep the approved graphic and copy, but deliver the native reply button in
   // the same interactive media message. A separate button message requires its
   // own body and previously displayed the unwanted extra sentence.
-  const body='Your previous appointment has been cancelled successfully.\n\nNeed admission counselling again? Choose a convenient available date and time.';
+  const body='Need admission counselling again? Choose a convenient available date and time.';
   return sendBotSailorReplyButtons(recipient,body,
     [{id:'booking_new_appointment',title:'Book New Appointment'}],
     'booking_rebook_button',
