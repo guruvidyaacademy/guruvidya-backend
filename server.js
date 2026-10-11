@@ -4810,25 +4810,43 @@ async function sendGuruVidyaRebookingCard(recipient,bookingRef){
 }
 async function onBookingCancelledRebook({booking_ref}){
   const b=await loadBookingWhatsAppContext(booking_ref);
-  if(!b||String(b.status).toLowerCase()!=='cancelled')return {success:false};
-  const target=String(b.recipient||'').toLowerCase()==='parent'&&b.parent_mobile?b.parent_mobile:b.student_mobile;
-  const mobile=String(target||'').replace(/\D/g,'').replace(/^91(?=\d{10}$)/,'');
-  if(!/^\d{10}$/.test(mobile))return {success:false};
-  // Honor the Admin's effective 24h test state; production uses real status when no override exists.
-  const window=await pool.query(`SELECT MAX(received_at) AS last_incoming FROM whatsapp_window_events WHERE mobile IN ($1,$2)`,['91'+mobile,mobile]);
-  const lead=await pool.query(`SELECT MAX(last_customer_message_at) AS last_incoming FROM leads WHERE regexp_replace(COALESCE(mobile,''),'[^0-9]','','g') IN ($1,$2)`,['91'+mobile,mobile]);
-  const last=Math.max(new Date(window.rows[0]?.last_incoming||0).getTime(),new Date(lead.rows[0]?.last_incoming||0).getTime());
-  const override=await pool.query('SELECT forced_open FROM booking_whatsapp_window_test_overrides WHERE mobile=$1',[mobile]);
-  const effectiveOpen=override.rowCount?Boolean(override.rows[0].forced_open):(last>Date.now()-86400000&&last<=Date.now());
-  if(!effectiveOpen)return {success:false,status:'window_closed'};
-  const claimed=await pool.query(`INSERT INTO booking_rebook_link_deliveries(booking_id,mobile,status)
-    SELECT id,$2,'pending' FROM student_bookings WHERE booking_ref=$1 AND status='cancelled'
-    ON CONFLICT DO NOTHING RETURNING booking_id`,[booking_ref,mobile]);
-  if(!claimed.rowCount)return {success:true,status:'already_claimed'};
-  let result={success:false};
-  try{result=await sendGuruVidyaRebookingCard({mobile:target},booking_ref);}
-  finally{await pool.query(`UPDATE booking_rebook_link_deliveries SET status=$3,updated_at=NOW() WHERE booking_id=$1 AND mobile=$2`,[claimed.rows[0].booking_id,mobile,result.success?'sent':'failed']);}
-  return result;
+  if(!b||String(b.status).toLowerCase()!=='cancelled')return {success:false,status:'booking_not_cancelled'};
+  // A cancelled booking can have two independently open WhatsApp windows.
+  // Keep the approved card unchanged, but send it to each eligible number once.
+  const recipients=[
+    {kind:'student',mobile:b.student_mobile},
+    {kind:'parent',mobile:b.parent_mobile}
+  ];
+  const seen=new Set(),results=[];
+  for(const recipient of recipients){
+    const mobile=String(recipient.mobile||'').replace(/\D/g,'').replace(/^91(?=\d{10}$)/,'');
+    if(!/^\d{10}$/.test(mobile)||seen.has(mobile))continue;
+    seen.add(mobile);
+    try{
+      // Admin test overrides take precedence; otherwise use each number's own real inbound window.
+      const window=await pool.query(`SELECT MAX(received_at) AS last_incoming FROM whatsapp_window_events WHERE mobile IN ($1,$2)`,['91'+mobile,mobile]);
+      const lead=await pool.query(`SELECT MAX(last_customer_message_at) AS last_incoming FROM leads WHERE regexp_replace(COALESCE(mobile,''),'[^0-9]','','g') IN ($1,$2)`,['91'+mobile,mobile]);
+      const last=Math.max(new Date(window.rows[0]?.last_incoming||0).getTime(),new Date(lead.rows[0]?.last_incoming||0).getTime());
+      const override=await pool.query('SELECT forced_open FROM booking_whatsapp_window_test_overrides WHERE mobile=$1',[mobile]);
+      const effectiveOpen=override.rowCount?Boolean(override.rows[0].forced_open):(last>Date.now()-86400000&&last<=Date.now());
+      if(!effectiveOpen){results.push({recipient:recipient.kind,success:false,status:'window_closed'});continue;}
+      const claimed=await pool.query(`INSERT INTO booking_rebook_link_deliveries(booking_id,mobile,status)
+        SELECT id,$2,'pending' FROM student_bookings WHERE booking_ref=$1 AND status='cancelled'
+        ON CONFLICT DO NOTHING RETURNING booking_id`,[booking_ref,mobile]);
+      if(!claimed.rowCount){results.push({recipient:recipient.kind,success:true,status:'already_claimed'});continue;}
+      let result={success:false};
+      try{
+        result=await sendGuruVidyaRebookingCard({mobile:recipient.mobile},booking_ref);
+      }finally{
+        await pool.query(`UPDATE booking_rebook_link_deliveries SET status=$3,updated_at=NOW() WHERE booking_id=$1 AND mobile=$2`,[claimed.rows[0].booking_id,mobile,result.success?'sent':'failed']);
+      }
+      results.push({recipient:recipient.kind,...result});
+    }catch(err){
+      console.error('BOOKING REBOOK WHATSAPP',recipient.kind,err?.message||err);
+      results.push({recipient:recipient.kind,success:false,status:'send_error',error:String(err?.message||err)});
+    }
+  }
+  return {success:results.some(r=>r.success),status:results.length?'recipient_results':'no_valid_recipient',results};
 }
 installBookingRoutes(app, pool, { onBookingCreated: onBookingCreatedWhatsApp, onBookingRescheduled: onBookingRescheduledWhatsApp, onBookingCancelled: onBookingCancelledRebook, onRebookLinkRequested: ({booking_ref,mobile})=>sendGuruVidyaRebookingCard({mobile},booking_ref) });
 
