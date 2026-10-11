@@ -677,7 +677,10 @@ async function bookingActionGraphicPng(kind, rebookRoles={}){
       <g transform="translate(51 53) scale(.75)"><rect x="18" y="24" width="60" height="58" rx="7" fill="none" stroke="#0756c7" stroke-width="7"/><path d="M18 42h60M33 16v17M63 16v17" stroke="#0756c7" stroke-width="7" stroke-linecap="round"/><path d="M34 69l8-2 25-25 7 7-25 25-12 4z" fill="#ffffff" stroke="#0756c7" stroke-width="5" stroke-linejoin="round"/><path d="M62 47l7 7" stroke="#0756c7" stroke-width="4"/></g>
       <text x="160" y="88" font-family="Arial,sans-serif" font-size="40" font-weight="700" fill="#ffffff">Book Your Next Appointment</text>
       <text x="161" y="132" font-family="Arial,sans-serif" font-size="29" fill="#ffffff">Admission Counselling</text>
-      <text x="26" y="224" font-family="Arial,sans-serif" font-size="28" fill="#253343" textLength="1028" lengthAdjust="spacingAndGlyphs">Your previous appointment has been cancelled successfully.</text>
+      <rect x="12" y="178" width="1056" height="61" rx="17" fill="#fff0f0"/>
+      <circle cx="48" cy="208" r="22" fill="#e53935"/>
+      <path d="M40 200l16 16m0-16l-16 16" stroke="#ffffff" stroke-width="5" stroke-linecap="round"/>
+      <text x="86" y="218" font-family="Arial,sans-serif" font-size="32" font-weight="600" fill="#b4232c" textLength="956" lengthAdjust="spacingAndGlyphs">Your previous appointment has been cancelled successfully.</text>
       <rect x="12" y="248" width="1056" height="154" rx="19" fill="#e9f6ff"/>
       <g fill="#1675d1"><circle cx="63" cy="290" r="11"/><path d="M42 322q0-21 21-21t21 21z"/><circle cx="63" cy="355" r="11"/><path d="M42 387q0-21 21-21t21 21z"/></g>
       <g font-family="Arial,sans-serif" font-size="30" fill="#43556c"><text x="113" y="318">Booked By</text><text x="113" y="383">Cancelled By</text></g>
