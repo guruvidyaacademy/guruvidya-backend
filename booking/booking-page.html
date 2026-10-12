@@ -370,6 +370,23 @@ async function checkRebookingWhatsApp(){
 }
 
 // Booking confirmation PDF: client-side only; no WhatsApp API call or Admin setting change.
+function gvPrintBookingPdf(b,dateText,timeText){
+  const safe=v=>String(v??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const q=new URLSearchParams(location.search),h=new URLSearchParams(location.hash.slice(1));
+  const token=q.get('token')||h.get('token')||b.manage_token||'';
+  const url=location.origin+location.pathname+'?ref='+encodeURIComponent(b.booking_ref)+'&token='+encodeURIComponent(token);
+  const map=b.mode==='offline'?(b.offline_map_url||'https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(b.offline_address||b.offline_location_name||'')):(b.meeting_link||url);
+  const row=(a,v)=>'<tr><th>'+safe(a)+'</th><td>'+safe(v)+'</td></tr>';
+  const res=b.status==='rescheduled'||!!b.rescheduled_at;
+  const rows=[['Booking Reference',b.booking_ref],['Student Name',b.student_name],['Student WhatsApp',b.student_mobile],['Student Email ID',b.student_email],['Parent / Guardian',b.parent_name],['Parent WhatsApp',b.parent_mobile],['Parent Email ID',b.parent_email],['Course',b.course],['Date',dateText],['Time (IST)',timeText],['Counsellor',b.counsellor_name],['Mode',b.mode==='offline'?'Offline (At Centre)':'Online'],['Location / Meeting',b.mode==='offline'?(b.offline_address||b.offline_location_name):b.meeting_link]];
+  const link=(title,href)=>'<a href="'+safe(href)+'">'+safe(title)+'</a>';
+  const markup='<!doctype html><html><head><meta charset="utf-8"><title>Guruvidya Appointment '+safe(b.booking_ref)+'</title><style>@page{size:A4;margin:14mm}body{font:14px Arial,sans-serif;color:#193453;background:white}main{max-width:760px;margin:auto;border:1px solid #d9e6f4;border-radius:14px;padding:24px}header{color:#0b438f;font-size:22px;font-weight:800;border-bottom:2px solid #e6edf8;padding-bottom:18px}.sub{font-size:11px;color:#61728b}.banner{background:#1262c9;color:white;padding:22px;border-radius:9px;margin:22px 0;font-size:21px;font-weight:bold}table{width:100%;border-collapse:collapse}th,td{padding:10px;text-align:left;border-bottom:1px solid #e6eef8;vertical-align:top;overflow-wrap:anywhere}th{width:37%;color:#3b5a7d;background:#f5faff}.links{margin-top:24px;display:flex;gap:9px;flex-wrap:wrap}.links a{padding:10px;background:#eaf3ff;color:#0751a9;text-decoration:none;border-radius:6px;font-weight:bold}footer{margin-top:28px;color:#667b92;font-size:11px;text-align:center}.hint{margin-top:14px;font-size:12px;color:#536a82}@media print{.hint{display:none}a{color:#0751a9}}</style></head><body><main><header>Guruvidya Academy Pvt. Ltd.<div class="sub">REAL EDUCATION · REAL RESULTS</div></header><div class="banner">'+(res?'Appointment Rescheduled Successfully!':'Appointment Booked Successfully!')+'</div><table>'+rows.map(r=>row(...r)).join('')+'</table><div class="links">'+link('Manage Appointment',url)+link('Cancel Appointment',url+'&action=cancel')+link('Reschedule Appointment',url+'&action=reschedule')+link(b.mode==='offline'?'View on Google Maps':'Join Online Meeting',map)+link('Call / WhatsApp Us','https://wa.me/919821627725')+'</div><footer>Guruvidya Academy Pvt. Ltd. · www.guruvidya.in</footer><p class="hint">Choose Print → Save as PDF. All links remain clickable in the saved PDF.</p></main></body></html>';
+  const win=window.open('','_blank');
+  if(!win){alert('Please allow pop-ups for this website to save your appointment PDF.');return;}
+  win.document.open();win.document.write(markup);win.document.close();win.focus();
+  setTimeout(()=>{try{win.print()}catch(e){console.warn('Print dialog unavailable',e)}},450);
+}
+
 async function downloadBookingEmailStylePdf(b,dateText,timeText){
   if(!window.jspdf?.jsPDF){
     let loaded=false;
@@ -472,9 +489,7 @@ const text=['Appointment '+(booking.rescheduled_at?'Rescheduled':'Booked')+' Suc
 'Reschedule Appointment: '+manageUrl+'&action=reschedule',
 booking.mode==='offline'?'View on Google Maps: '+(booking.offline_map_url||''):'Join Online Meeting: '+(booking.meeting_link||''),
 'Call / WhatsApp Us: https://wa.me/919821627725'].join('\n');
-if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
- await navigator.share({files:[file],title:'Guruvidya Appointment',text});return;
-}
+// Always use the dedicated WhatsApp manual-share dialog. Native sharing opens AirDrop/Mail on desktop.
 // WhatsApp Web does not accept a pre-attached image via wa.me. Offer a manual copy-and-paste flow.
 const prior=document.getElementById('gvManualShareDialog');if(prior)prior.remove();
 const overlay=document.createElement('div');overlay.id='gvManualShareDialog';
@@ -494,7 +509,7 @@ make('Save Image','#64748b',()=>{const link=document.createElement('a');link.hre
 make('Close','#a33142',()=>overlay.remove());
 panel.append(heading,instructions,preview,buttons,status);overlay.append(panel);document.body.append(overlay);
 overlay.addEventListener('click',e=>{if(e.target===overlay)overlay.remove()});
-}catch(e){if(e?.name==='AbortError')return;console.error('WhatsApp manual share failed',e);alert('Booking image is temporarily unavailable. Please try again.')}});mk('download','Download Details','<svg viewBox="0 0 24 24"><path d="M6 2h9l5 5v15H6V2zm8 2v4h4l-4-4zm-3 7v4.17l-1.59-1.58L8 15l4 4 4-4-1.41-1.41L13 15.17V11h-2z"/></svg>',async()=>{try{await downloadBookingEmailStylePdf(booking,dateText,timeText)}catch(e){console.error('Booking PDF download failed',e);alert('PDF download is temporarily unavailable. Please try again.')}});$('manageActions').classList.toggle('hidden',['cancelled','completed','no_show'].includes(booking.status));
+}catch(e){if(e?.name==='AbortError')return;console.error('WhatsApp manual share failed',e);alert('Booking image is temporarily unavailable. Please try again.')}});mk('download','Download Details','<svg viewBox="0 0 24 24"><path d="M6 2h9l5 5v15H6V2zm8 2v4h4l-4-4zm-3 7v4.17l-1.59-1.58L8 15l4 4 4-4-1.41-1.41L13 15.17V11h-2z"/></svg>',async()=>{try{await downloadBookingEmailStylePdf(booking,dateText,timeText)}catch(e){console.warn('PDF library failed; using browser Save as PDF',e);gvPrintBookingPdf(booking,dateText,timeText)}});$('manageActions').classList.toggle('hidden',['cancelled','completed','no_show'].includes(booking.status));
 const actionParams=new URLSearchParams(location.hash.slice(1)).get('action')||new URLSearchParams(location.search).get('action');
 if(actionParams==='cancel'&&!['cancelled','completed','no_show'].includes(String(booking.status||'').toLowerCase())&&!cancelAutoOpened){
   cancelAutoOpened=true;
