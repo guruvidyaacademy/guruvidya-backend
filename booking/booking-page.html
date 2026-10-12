@@ -366,7 +366,7 @@ async function gvCancelShare(){
  const image=location.origin+'/api/public/booking/cancellation-image/'+ref+'.png?token='+token;
  const text=['*Appointment Cancelled*','','Booking Reference: '+(b.booking_ref||'—'),'Student: '+(b.student_name||'—'),'Course: '+(b.course||'—'),'Cancelled On: '+date,'Reason: '+(b.cancellation_reason||'—'),'','*Book New Appointment:* '+gvCancelLink(),'','View Cancellation Details: '+view].join('\n');
  // On supported mobile browsers share the actual image file plus links through the OS share sheet.
- if(navigator.share&&navigator.canShare){
+ if(/Android|iPhone|iPad|iPod/i.test(navigator.userAgent)&&navigator.share&&navigator.canShare){
    try{
      const response=await fetch(image,{cache:'no-store'});
      if(response.ok){const file=new File([await response.blob()],'Guruvidya-Cancellation-'+(b.booking_ref||'Details')+'.png',{type:'image/png'});
