@@ -370,23 +370,6 @@ async function checkRebookingWhatsApp(){
 }
 
 // Booking confirmation PDF: client-side only; no WhatsApp API call or Admin setting change.
-function gvPrintBookingPdf(b,dateText,timeText){
-  const safe=v=>String(v??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const q=new URLSearchParams(location.search),h=new URLSearchParams(location.hash.slice(1));
-  const token=q.get('token')||h.get('token')||b.manage_token||'';
-  const url=location.origin+location.pathname+'?ref='+encodeURIComponent(b.booking_ref)+'&token='+encodeURIComponent(token);
-  const map=b.mode==='offline'?(b.offline_map_url||'https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(b.offline_address||b.offline_location_name||'')):(b.meeting_link||url);
-  const row=(a,v)=>'<tr><th>'+safe(a)+'</th><td>'+safe(v)+'</td></tr>';
-  const res=b.status==='rescheduled'||!!b.rescheduled_at;
-  const rows=[['Booking Reference',b.booking_ref],['Student Name',b.student_name],['Student WhatsApp',b.student_mobile],['Student Email ID',b.student_email],['Parent / Guardian',b.parent_name],['Parent WhatsApp',b.parent_mobile],['Parent Email ID',b.parent_email],['Course',b.course],['Date',dateText],['Time (IST)',timeText],['Counsellor',b.counsellor_name],['Mode',b.mode==='offline'?'Offline (At Centre)':'Online'],['Location / Meeting',b.mode==='offline'?(b.offline_address||b.offline_location_name):b.meeting_link]];
-  const link=(title,href)=>'<a href="'+safe(href)+'">'+safe(title)+'</a>';
-  const markup='<!doctype html><html><head><meta charset="utf-8"><title>Guruvidya Appointment '+safe(b.booking_ref)+'</title><style>@page{size:A4;margin:14mm}body{font:14px Arial,sans-serif;color:#193453;background:white}main{max-width:760px;margin:auto;border:1px solid #d9e6f4;border-radius:14px;padding:24px}header{color:#0b438f;font-size:22px;font-weight:800;border-bottom:2px solid #e6edf8;padding-bottom:18px}.sub{font-size:11px;color:#61728b}.banner{background:#1262c9;color:white;padding:22px;border-radius:9px;margin:22px 0;font-size:21px;font-weight:bold}table{width:100%;border-collapse:collapse}th,td{padding:10px;text-align:left;border-bottom:1px solid #e6eef8;vertical-align:top;overflow-wrap:anywhere}th{width:37%;color:#3b5a7d;background:#f5faff}.links{margin-top:24px;display:flex;gap:9px;flex-wrap:wrap}.links a{padding:10px;background:#eaf3ff;color:#0751a9;text-decoration:none;border-radius:6px;font-weight:bold}footer{margin-top:28px;color:#667b92;font-size:11px;text-align:center}.hint{margin-top:14px;font-size:12px;color:#536a82}@media print{.hint{display:none}a{color:#0751a9}}</style></head><body><main><header>Guruvidya Academy Pvt. Ltd.<div class="sub">REAL EDUCATION · REAL RESULTS</div></header><div class="banner">'+(res?'Appointment Rescheduled Successfully!':'Appointment Booked Successfully!')+'</div><table>'+rows.map(r=>row(...r)).join('')+'</table><div class="links">'+link('Manage Appointment',url)+link('Cancel Appointment',url+'&action=cancel')+link('Reschedule Appointment',url+'&action=reschedule')+link(b.mode==='offline'?'View on Google Maps':'Join Online Meeting',map)+link('Call / WhatsApp Us','https://wa.me/919821627725')+'</div><footer>Guruvidya Academy Pvt. Ltd. · www.guruvidya.in</footer><p class="hint">Choose Print → Save as PDF. All links remain clickable in the saved PDF.</p></main></body></html>';
-  const win=window.open('','_blank');
-  if(!win){alert('Please allow pop-ups for this website to save your appointment PDF.');return;}
-  win.document.open();win.document.write(markup);win.document.close();win.focus();
-  setTimeout(()=>{try{win.print()}catch(e){console.warn('Print dialog unavailable',e)}},450);
-}
-
 async function downloadBookingEmailStylePdf(b,dateText,timeText){
   if(!window.jspdf?.jsPDF){
     let loaded=false;
@@ -421,11 +404,22 @@ async function downloadBookingEmailStylePdf(b,dateText,timeText){
       pdf.addImage(data,'PNG',17,14,65,19,undefined,'FAST');
     }
   }catch(e){/* Brand text below is always rendered. */}
+  let approvedHeader=false;
+  try{
+    const headerResponse=await fetch('/api/public/booking/email-icon/'+(isRescheduled?'header-rescheduled-exact.png':'header-booked-exact.png'));
+    if(headerResponse.ok){
+      const headerBlob=await headerResponse.blob();
+      const headerData=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=reject;reader.readAsDataURL(headerBlob)});
+      pdf.addImage(headerData,'PNG',14,14,182,85.5,undefined,'FAST');approvedHeader=true;
+    }
+  }catch(e){console.warn('Approved PDF header unavailable',e)}
+  if(!approvedHeader){
   label('Guruvidya Academy Pvt. Ltd.',105,23,12,true,blue);
   label('REAL EDUCATION - REAL RESULTS',105,29,7,true,[120,137,161]);
   rounded(14,39,182,26,isRescheduled?[10,109,216]:blue,3);
   label(isRescheduled?'Appointment Rescheduled Successfully!':'Appointment Booked Successfully!',21,51,16,true,[255,255,255]);
   label('Your counselling appointment details',21,59,9,false,[255,255,255]);
+  }
   const section=(name,y)=>{rounded(14,y,182,9,pale,2);label(name,19,y+6.2,11,true,blue)};
   const row=(name,value,y)=>{
     label(name,19,y,9,true,[67,87,112]);
@@ -434,8 +428,8 @@ async function downloadBookingEmailStylePdf(b,dateText,timeText){
     pdf.text(lines,80,y);
     return y+Math.max(7,lines.length*5.1);
   };
-  section('Student Details',70);
-  let y=87;
+  section('Student Details',approvedHeader?105:70);
+  let y=approvedHeader?122:87;
   y=row('Booking Reference',b.booking_ref,y);
   y=row('Student Name',b.student_name,y);
   y=row('Student WhatsApp',b.student_mobile||'—',y);
@@ -444,6 +438,7 @@ async function downloadBookingEmailStylePdf(b,dateText,timeText){
   y=row('Parent / Guardian',(b.parent_name||'—')+(b.parent_relation?' ('+b.parent_relation+')':''),y);
   y=row('Parent WhatsApp',b.parent_mobile||'—',y);
   y=row('Parent Email ID',b.parent_email||'—',y);
+  if(y>170){pdf.addPage();pdf.setFillColor(247,251,255);pdf.rect(0,0,210,297,'F');rounded(9,9,192,279,[255,255,255],5);y=25;}
   section('Appointment Details',y+1);y+=14;
   y=row('Course',b.course,y);
   y=row('Date',dateText,y);
@@ -476,7 +471,7 @@ const qs=new URLSearchParams(location.search),hs=new URLSearchParams(location.ha
 const token=qs.get('token')||hs.get('token')||booking.manage_token||'';
 const ref=booking.booking_ref;
 const imageUrl='/api/public/booking/whatsapp-card/'+encodeURIComponent(ref)+'.png?token='+encodeURIComponent(token);
-const response=await fetch(imageUrl,{cache:'no-store'});
+const busy=document.createElement('div');busy.id='gvShareLoading';busy.setAttribute('role','status');busy.textContent='Preparing approved booking graphic…';busy.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:99998;background:#0b4ca8;color:white;padding:14px 22px;border-radius:12px;box-shadow:0 8px 24px #0003;font-weight:700';document.body.append(busy);let response;try{response=await fetch(imageUrl,{cache:'no-store'});}finally{busy.remove()}
 if(!response.ok)throw new Error('Approved WhatsApp card unavailable ('+response.status+')');
 const blob=await response.blob();
 const file=new File([blob],'Guruvidya-Appointment-'+ref+'.png',{type:'image/png'});
@@ -489,7 +484,9 @@ const text=['Appointment '+(booking.rescheduled_at?'Rescheduled':'Booked')+' Suc
 'Reschedule Appointment: '+manageUrl+'&action=reschedule',
 booking.mode==='offline'?'View on Google Maps: '+(booking.offline_map_url||''):'Join Online Meeting: '+(booking.meeting_link||''),
 'Call / WhatsApp Us: https://wa.me/919821627725'].join('\n');
-// Always use the dedicated WhatsApp manual-share dialog. Native sharing opens AirDrop/Mail on desktop.
+if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
+ await navigator.share({files:[file],title:'Guruvidya Appointment',text});return;
+}
 // WhatsApp Web does not accept a pre-attached image via wa.me. Offer a manual copy-and-paste flow.
 const prior=document.getElementById('gvManualShareDialog');if(prior)prior.remove();
 const overlay=document.createElement('div');overlay.id='gvManualShareDialog';
@@ -509,7 +506,7 @@ make('Save Image','#64748b',()=>{const link=document.createElement('a');link.hre
 make('Close','#a33142',()=>overlay.remove());
 panel.append(heading,instructions,preview,buttons,status);overlay.append(panel);document.body.append(overlay);
 overlay.addEventListener('click',e=>{if(e.target===overlay)overlay.remove()});
-}catch(e){if(e?.name==='AbortError')return;console.error('WhatsApp manual share failed',e);alert('Booking image is temporarily unavailable. Please try again.')}});mk('download','Download Details','<svg viewBox="0 0 24 24"><path d="M6 2h9l5 5v15H6V2zm8 2v4h4l-4-4zm-3 7v4.17l-1.59-1.58L8 15l4 4 4-4-1.41-1.41L13 15.17V11h-2z"/></svg>',async()=>{try{await downloadBookingEmailStylePdf(booking,dateText,timeText)}catch(e){console.warn('PDF library failed; using browser Save as PDF',e);gvPrintBookingPdf(booking,dateText,timeText)}});$('manageActions').classList.toggle('hidden',['cancelled','completed','no_show'].includes(booking.status));
+}catch(e){if(e?.name==='AbortError')return;console.error('WhatsApp manual share failed',e);alert('Booking image is temporarily unavailable. Please try again.')}});mk('download','Download Details','<svg viewBox="0 0 24 24"><path d="M6 2h9l5 5v15H6V2zm8 2v4h4l-4-4zm-3 7v4.17l-1.59-1.58L8 15l4 4 4-4-1.41-1.41L13 15.17V11h-2z"/></svg>',async()=>{try{await downloadBookingEmailStylePdf(booking,dateText,timeText)}catch(e){console.error('Booking PDF download failed',e);alert('PDF download is temporarily unavailable. Please try again.')}});$('manageActions').classList.toggle('hidden',['cancelled','completed','no_show'].includes(booking.status));
 const actionParams=new URLSearchParams(location.hash.slice(1)).get('action')||new URLSearchParams(location.search).get('action');
 if(actionParams==='cancel'&&!['cancelled','completed','no_show'].includes(String(booking.status||'').toLowerCase())&&!cancelAutoOpened){
   cancelAutoOpened=true;
