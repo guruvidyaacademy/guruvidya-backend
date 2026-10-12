@@ -358,7 +358,11 @@ function gvCancelPrint(){
  '</style></head><body><div class="print"><button class="save" onclick="window.print()">Save as PDF / Print</button></div><div class="sheet"><img class="banner" src="'+head+'" alt="Guruvidya Appointment Cancelled"><div class="content"><p class="hello">Dear '+esc(b.student_name)+',</p><p class="desc">Your admission counselling appointment has been cancelled as requested.</p><h3><span class="sectionicon">'+ico[0]+'</span>Cancellation Details</h3><div class="details"><div>'+left+'</div><div>'+right+'</div></div><div class="rebook"><h3><span class="sectionicon">'+ico[5]+'</span>Need Admission Counselling Again?</h3><p>You can book a new appointment at a convenient available date and time.</p><a class="btn" href="'+book+'">Book New Appointment →</a></div><p class="contact">If you have any queries, feel free to contact us.<br><br><a href="tel:+919821627725">'+icon('<path d="M6 3c-2 0-3 2-3 4 0 7 7 14 14 14 2 0 4-1 4-3v-2l-5-2-2 3c-3-1-6-4-7-7l3-2-2-5z"/>')+' +91 9821627725</a> &nbsp; | &nbsp; <a class="wa-contact" href="https://wa.me/919821627725">'+gvCancelWhatsApp()+' Chat on WhatsApp</a></p><p class="sign">Warm Regards,<br><b>Team - Guruvidya Academy Pvt. Ltd.</b></p></div><img class="footer" src="'+foot+'" alt="Guruvidya Academy footer"></div></body></html>');w.document.close();w.focus();
  w.addEventListener('load',()=>{Promise.all(Array.from(w.document.images).map(img=>img.complete?Promise.resolve():new Promise(resolve=>{img.onload=resolve;img.onerror=resolve;setTimeout(resolve,3500)}))).then(()=>setTimeout(()=>w.print(),250))},{once:true});
 }
+let gvCancelShareBusy=false;
 async function gvCancelShare(){
+ if(gvCancelShareBusy)return;
+ gvCancelShareBusy=true;
+ setTimeout(()=>{gvCancelShareBusy=false},1800);
  const b=booking||{},date=b.cancelled_at?new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Kolkata',day:'2-digit',month:'short',year:'numeric',hour:'numeric',minute:'2-digit',hour12:true}).format(new Date(b.cancelled_at))+' IST':'—';
  const qs=new URLSearchParams(location.search),hs=new URLSearchParams(location.hash.slice(1)),p=hs.get('ref')?hs:qs;
  const ref=encodeURIComponent(p.get('ref')||b.booking_ref||''),token=encodeURIComponent(p.get('token')||'');
@@ -375,7 +379,7 @@ async function gvCancelShare(){
    }catch(e){if(e&&e.name==='AbortError')return;console.warn('Image share fallback:',e)}
  }
  // WhatsApp Web does not support attaching an image through a prefilled URL. The details link has an image preview.
- const url='https://api.whatsapp.com/send?text='+encodeURIComponent(text);const win=window.open(url,'_blank','noopener');if(!win)location.href=url;
+ const url='https://web.whatsapp.com/send?text='+encodeURIComponent(text);window.open(url,'gvCancellationWhatsApp','noopener');
 }
 
 let cancelAutoOpened=false;
