@@ -4736,6 +4736,46 @@ app.get('/api/public/booking/email-icon/:name', async (req,res)=>{
   }catch(e){res.status(404).end();}
 });
 
+// Cancellation share: authenticated read-only design, using the same HTML as the cancellation email.
+async function cancellationShareBooking(req){
+  const token=String(req.query.token||'');
+  if(!/^[a-f0-9]{64}$/i.test(token))return null;
+  const result=await pool.query(`SELECT b.* FROM student_bookings b WHERE b.booking_ref=$1 AND b.token_hash=$2 AND b.status='cancelled' LIMIT 1`,[req.params.ref,createHash('sha256').update(token).digest('hex')]);
+  return result.rows[0]||null;
+}
+const cancellationShareEsc=(value)=>String(value??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+app.get('/api/public/booking/cancellation-details/:ref',async(req,res)=>{
+  try{
+    const b=await cancellationShareBooking(req);if(!b)return res.status(404).end();
+    const base=String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'');
+    const img=`${base}/api/public/booking/cancellation-image/${encodeURIComponent(b.booking_ref)}.png?token=${encodeURIComponent(req.query.token)}`;
+    const title=`Appointment Cancelled - Guruvidya Academy | ${b.booking_ref}`;
+    const meta=`<meta property="og:type" content="website"><meta property="og:title" content="${cancellationShareEsc(title)}"><meta property="og:description" content="View your Guruvidya appointment cancellation details"><meta property="og:image" content="${cancellationShareEsc(img)}"><meta property="og:image:width" content="1000"><meta property="og:image:height" content="1510"><meta name="twitter:card" content="summary_large_image">`;
+    const html=bookingCancellationEmailHtml(b).replace('<head>','<head>'+meta).replace('</head>','<title>'+cancellationShareEsc(title)+'</title></head>');
+    res.set({'Content-Type':'text/html; charset=utf-8','Cache-Control':'private, no-store','X-Robots-Tag':'noindex, nofollow','Referrer-Policy':'no-referrer'}).send(html);
+  }catch(e){console.error('Cancellation details view error',e.message);res.status(500).end()}
+});
+app.get('/api/public/booking/cancellation-image/:ref.png',async(req,res)=>{
+  try{
+    const b=await cancellationShareBooking(req);if(!b)return res.status(404).end();
+    const [header,footer]=await Promise.all([readFile(new URL('./booking/email-icons/cancellation-header-design2.png',import.meta.url)),readFile(new URL('./booking/email-icons/cancellation-footer-design2.png',import.meta.url))]);
+    const width=1000,scale=width/620;
+    const h=await sharp(header).resize({width}).png().toBuffer();const f=await sharp(footer).resize({width}).png().toBuffer();
+    const hh=(await sharp(h).metadata()).height,fh=(await sharp(f).metadata()).height;
+    const esc=cancellationShareEsc;
+    const book=String(b.booked_by||'').toLowerCase()==='parent'?'Parent / Guardian':'Student';
+    const cancelledBy=b.cancelled_by||b.cancelled_via||book;
+    const date=b.cancelled_at?new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Kolkata',day:'2-digit',month:'short',year:'numeric',hour:'numeric',minute:'2-digit',hour12:true}).format(new Date(b.cancelled_at))+' IST':'—';
+    const fields=[['Booking Reference',b.booking_ref],['Student Name',b.student_name],['Course',b.course],['Booked By',book],['Cancelled By',cancelledBy],['Cancelled On',date],['Reason',b.cancellation_reason||'—']];
+    const line=(label,value,x,y)=>`<text x="${x}" y="${y}" font-size="20" fill="#34577b">${esc(label)}</text><text x="${x+205}" y="${y}" font-size="21" font-weight="bold" fill="#17355b">${esc(String(value).slice(0,36))}</text>`;
+    const rows=fields.slice(0,4).map(([k,v],i)=>line(k,v,54,442+i*62)).join('')+fields.slice(4).map(([k,v],i)=>line(k,v,54,733+i*62)).join('');
+    const contentHeight=1210,total=hh+contentHeight+fh;
+    const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="${contentHeight}"><rect width="1000" height="${contentHeight}" fill="#fff"/><text x="50" y="66" font-family="Arial" font-size="29" font-weight="bold" fill="#142d59">Dear ${esc(String(b.student_name||'Student').slice(0,38))},</text><text x="50" y="111" font-family="Arial" font-size="22" fill="#34516f">Your admission counselling appointment has been cancelled as requested.</text><rect x="36" y="156" width="928" height="775" rx="22" fill="#eaf6ff"/><text x="57" y="210" font-family="Arial" font-size="32" font-weight="bold" fill="#0861b9">▣  Cancellation Details</text><rect x="48" y="243" width="904" height="665" rx="15" fill="#f6fbff"/><g font-family="Arial">${rows}</g><rect x="36" y="952" width="928" height="178" rx="20" fill="#eaf6ff"/><text x="60" y="1001" font-family="Arial" font-size="28" font-weight="bold" fill="#0861b9">▣  Need Admission Counselling Again?</text><text x="60" y="1040" font-family="Arial" font-size="21" fill="#34516f">You can book a new appointment at a convenient available date and time.</text><rect x="60" y="1063" width="370" height="50" rx="25" fill="#0876ed"/><text x="82" y="1096" font-family="Arial" font-size="23" font-weight="bold" fill="#fff">Book New Appointment  →</text><text x="48" y="1175" font-family="Arial" font-size="20" fill="#17355b">Warm Regards,  Team - Guruvidya Academy Pvt. Ltd.</text></svg>`;
+    const png=await sharp({create:{width,height:total,channels:4,background:'#ffffff'}}).composite([{input:h,top:0,left:0},{input:Buffer.from(svg),top:hh,left:0},{input:f,top:hh+contentHeight,left:0}]).png().toBuffer();
+    res.set({'Content-Type':'image/png','Cache-Control':'private, max-age=60','X-Robots-Tag':'noindex, nofollow','X-Content-Type-Options':'nosniff'}).send(png);
+  }catch(e){console.error('Cancellation image error',e.message);res.status(500).end()}
+});
+
 app.get('/api/public/booking/email-logo.png', async (_req,res)=>{
   try{
     const logo=await readFile(new URL('./booking/guruvidya-logo.png',import.meta.url));
