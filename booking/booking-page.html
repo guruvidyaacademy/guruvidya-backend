@@ -375,11 +375,9 @@ if(actionParams==='cancel'&&!['cancelled','completed','no_show'].includes(String
   setTimeout(()=>action('cancel'),180);
 }
 if(actionParams==='reschedule'&&!['cancelled','completed','no_show'].includes(String(booking.status||'').toLowerCase())){
-  $('cancel').classList.add('hidden');
   setTimeout(()=>{document.querySelector('.reschedule-title')?.scrollIntoView({behavior:'smooth',block:'start'});openBookingCalendar('newDate')},180);
-}else{
-  $('cancel').classList.remove('hidden');
 }
+$('cancel').classList.remove('hidden');
 if(cancelled)showGvCancelledSuccess();else{$('manageMessage').classList.remove('gv-cancel-success');$('manageMessage').textContent=booking.status==='requested'?'Awaiting admin approval. You may reschedule or cancel.':''}}catch(e){$('manageMessage').textContent=e.message;$('manageActions').classList.add('hidden')}}
 async function action(kind){
 let cancelReason='',cancelNote='',cancelledBy='Student';
