@@ -4626,13 +4626,39 @@ async function sendBookingGateTemplate(b,recipientKind='student') {
   return result;
 }
 
+// OPEN-window recipient controls; missing settings retain original delivery behavior.
+async function bookingOpenNotificationDecision(mobile,kind,event){
+ const national=String(mobile||'').replace(/\D/g,'').replace(/^91(?=\d{10}$)/,'');
+ if(!/^\d{10}$/.test(national))return {allowed:true,window:'unknown'};
+ try{
+  const [cfg,window,lead,override]=await Promise.all([
+   pool.query('SELECT settings FROM booking_settings WHERE id=1'),
+   pool.query('SELECT MAX(received_at) AS last_incoming FROM whatsapp_window_events WHERE mobile IN ($1,$2)',['91'+national,national]),
+   pool.query(`SELECT MAX(last_customer_message_at) AS last_incoming FROM leads WHERE regexp_replace(COALESCE(mobile,''),'[^0-9]','','g') IN ($1,$2)`,['91'+national,national]),
+   pool.query('SELECT forced_open FROM booking_whatsapp_window_test_overrides WHERE mobile=$1',[national])
+  ]);
+  const last=Math.max(new Date(window.rows[0]?.last_incoming||0).getTime(),new Date(lead.rows[0]?.last_incoming||0).getTime());
+  const open=override.rowCount?Boolean(override.rows[0].forced_open):(last>Date.now()-86400000&&last<=Date.now());
+  if(!open)return {allowed:true,window:'closed'};
+  const rule=cfg.rows[0]?.settings?.whatsapp_open_notifications?.[kind];
+  return {allowed:rule?.enabled!==false&&rule?.[event]!==false,window:'open'};
+ }catch(err){console.error('BOOKING NOTIFICATION RULE CHECK',err?.message||err);return {allowed:true,window:'unknown'};}
+}
+async function bookingNotificationSkipLog(b,event,kind){
+ await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail)
+ VALUES($1,$2,$3,'whatsapp','skipped','Skipped by Admin OPEN-window notification setting')
+ ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status='skipped',detail=EXCLUDED.detail,created_at=NOW()`,[b.id,'booking_'+event+'_notification',kind]).catch(()=>{});
+}
 async function sendBookingWhatsAppToVerifiedRecipients(b,token,action,options={}) {
   const recipients=[];
   if(b.student_whatsapp_verified&&b.student_mobile)recipients.push({kind:'student',mobile:botSailorPhone(b.student_mobile)});
   if(b.parent_whatsapp_verified&&b.parent_mobile)recipients.push({kind:'parent',mobile:botSailorPhone(b.parent_mobile)});
   const seen=new Set(),results=[];
+  const event=options.rescheduled===true?'rescheduled':'confirmed';
   for(const recipient of recipients){
     if(!recipient.mobile||seen.has(recipient.mobile))continue;
+    const decision=await bookingOpenNotificationDecision(recipient.mobile,recipient.kind,event);
+    if(!decision.allowed){await bookingNotificationSkipLog(b,event,recipient.kind);results.push({recipient:recipient.kind,success:false,status:'skipped_admin_setting'});continue;}
     seen.add(recipient.mobile);
     const result=await sendBookingSessionConfirmation(b,token,action,{...options,recipientKind:recipient.kind});
     results.push({recipient:recipient.kind,...result});
@@ -4922,6 +4948,8 @@ async function onBookingCancelledRebook({booking_ref}){
       const override=await pool.query('SELECT forced_open FROM booking_whatsapp_window_test_overrides WHERE mobile=$1',[mobile]);
       const effectiveOpen=override.rowCount?Boolean(override.rows[0].forced_open):(last>Date.now()-86400000&&last<=Date.now());
       if(!effectiveOpen){results.push({recipient:recipient.kind,success:false,status:'window_closed'});continue;}
+      const decision=await bookingOpenNotificationDecision(recipient.mobile,recipient.kind,'cancelled');
+      if(!decision.allowed){await bookingNotificationSkipLog(b,'cancelled',recipient.kind);results.push({recipient:recipient.kind,success:false,status:'skipped_admin_setting'});continue;}
       const claimed=await pool.query(`INSERT INTO booking_rebook_link_deliveries(booking_id,mobile,status)
         SELECT id,$2,'pending' FROM student_bookings WHERE booking_ref=$1 AND status='cancelled'
         ON CONFLICT DO NOTHING RETURNING booking_id`,[booking_ref,mobile]);
