@@ -149,9 +149,15 @@ export function installBookingRoutes(app,pool,hooks={}) {
   app.post('/api/admin/booking/session',(req,res)=>{
     const ip=req.ip||'unknown', now=Date.now(), prior=attempts.get(ip)||{count:0,until:0};
     if(prior.until>now)return fail(res,429,'Too many attempts; try again later');
-    const email=process.env.BOOKING_ADMIN_EMAIL, password=process.env.BOOKING_ADMIN_PASSWORD;
-    if(!email||!password)return fail(res,503,'Booking admin credentials are not configured on the server');
-    if(!equal(req.body?.email||'',email)||!equal(req.body?.password||'',password)){
+    // CRM Super Admin may use the same password for booking SSO. Both credential
+    // pairs are configured privately in Render; never trust a browser-supplied role.
+    const credentials=[
+      [process.env.BOOKING_ADMIN_EMAIL,process.env.BOOKING_ADMIN_PASSWORD],
+      [process.env.CRM_SUPER_ADMIN_EMAIL,process.env.CRM_SUPER_ADMIN_PASSWORD]
+    ].filter(([email,password])=>Boolean(email&&password));
+    if(!credentials.length)return fail(res,503,'Server login credentials are not configured');
+    const verified=credentials.some(([email,password])=>equal(req.body?.email||'',email)&&equal(req.body?.password||'',password));
+    if(!verified){
       const count=prior.count+1;attempts.set(ip,{count:count>=5?0:count,until:count>=5?now+15*60*1000:0});return fail(res,401,'Invalid booking admin credentials');
     }
     attempts.delete(ip);const token=randomBytes(32).toString('hex');sessions.set(hash(token),now+8*60*60*1000);
