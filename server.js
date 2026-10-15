@@ -4982,6 +4982,10 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
   if(event==='rescheduled' && !['rescheduled','confirmed','requested'].includes(booking.status))return;
   if(event==='cancelled' && booking.status!=='cancelled')return;
   const eventKey=`internal:${booking.id}:${event}:${new Date(booking.updated_at).toISOString()}`;
+  const ruleResult=await pool.query("SELECT value FROM booking_internal_alert_settings WHERE key='rules'");
+  const rules=ruleResult.rows[0]?.value;
+  if(rules && rules.master===false)return;
+  const eventIndex={confirmed:0,rescheduled:1,cancelled:2}[event];
   const recipients=await pool.query(`SELECT r.id,r.name,r.phone,r.email FROM booking_internal_recipients r
     JOIN booking_internal_departments d ON d.id=r.department_id
     WHERE r.active=TRUE AND d.${event}=TRUE ORDER BY r.id`);
@@ -4993,6 +4997,8 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
   for(const r of recipients.rows){
     for(const channel of ['email','whatsapp']){
       const destination=channel==='email'?String(r.email||'').trim():String(r.phone||'').replace(/\D/g,'').replace(/^91(?=\d{10}$)/,'');
+      if(rules && channel==='email' && !rules.email)continue;
+      if(rules && channel==='whatsapp' && !rules.open[eventIndex])continue;
       if(channel==='email' && !/^\S+@\S+\.\S+$/.test(destination))continue;
       if(channel==='whatsapp' && !/^\d{10}$/.test(destination))continue;
       const inserted=await pool.query(`INSERT INTO booking_internal_alert_deliveries

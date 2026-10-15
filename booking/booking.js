@@ -131,6 +131,7 @@ export async function initBooking(pool) {
     CREATE UNIQUE INDEX IF NOT EXISTS booking_internal_recipients_phone_uq ON booking_internal_recipients(phone) WHERE phone IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS booking_internal_recipients_email_uq ON booking_internal_recipients(lower(email)) WHERE email IS NOT NULL;`);
 
+  await pool.query(`CREATE TABLE IF NOT EXISTS booking_internal_alert_settings (key TEXT PRIMARY KEY,value JSONB NOT NULL);`);
   await pool.query(`CREATE TABLE IF NOT EXISTS booking_internal_alert_deliveries (
     id BIGSERIAL PRIMARY KEY, booking_id BIGINT NOT NULL,
     event TEXT NOT NULL CHECK(event IN ('confirmed','rescheduled','cancelled')),
@@ -225,6 +226,17 @@ export function installBookingRoutes(app,pool,hooks={}) {
   app.post('/api/admin/booking/internal-alerts/recipients',admin,async(req,res)=>{const v=cleanRecipient(req.body);if(!v)return fail(res,400,'Invalid recipient details');try{const r=await pool.query(`INSERT INTO booking_internal_recipients(name,department_id,phone,email) SELECT $1,id,$3,$4 FROM booking_internal_departments WHERE name=$2 RETURNING id`,[v.name,v.department,v.phone,v.email]);if(!r.rowCount)return fail(res,400,'Select an existing department');res.status(201).json({success:true,data:{id:r.rows[0].id}});}catch(e){internalError(res,e)}});
   app.patch('/api/admin/booking/internal-alerts/recipients/:id',admin,async(req,res)=>{if(!validId(req.params.id))return fail(res,400,'Invalid recipient');try{if(Object.keys(req.body||{}).length===1&&typeof req.body.active==='boolean'){const r=await pool.query('UPDATE booking_internal_recipients SET active=$1,updated_at=NOW() WHERE id=$2 RETURNING id',[req.body.active,req.params.id]);if(!r.rowCount)return fail(res,404,'Recipient not found');return res.json({success:true})}const v=cleanRecipient(req.body);if(!v)return fail(res,400,'Invalid recipient details');const r=await pool.query(`UPDATE booking_internal_recipients SET name=$1,department_id=(SELECT id FROM booking_internal_departments WHERE name=$2),phone=$3,email=$4,updated_at=NOW() WHERE id=$5 AND EXISTS(SELECT 1 FROM booking_internal_departments WHERE name=$2) RETURNING id`,[v.name,v.department,v.phone,v.email,req.params.id]);if(!r.rowCount)return fail(res,404,'Recipient or department not found');res.json({success:true});}catch(e){internalError(res,e)}});
   app.delete('/api/admin/booking/internal-alerts/recipients/:id',admin,async(req,res)=>{if(!validId(req.params.id))return fail(res,400,'Invalid recipient');try{const r=await pool.query('DELETE FROM booking_internal_recipients WHERE id=$1 RETURNING id',[req.params.id]);if(!r.rowCount)return fail(res,404,'Recipient not found');res.json({success:true});}catch(e){internalError(res,e)}});
+  // Internal alerts settings: persisted independently from student booking preferences.
+  app.get('/api/admin/booking/internal-alerts/settings',admin,async(req,res)=>{try{const r=await pool.query("SELECT key,value FROM booking_internal_alert_settings WHERE key IN ('rules','schedule')");res.set('Cache-Control','no-store').json({success:true,data:Object.fromEntries(r.rows.map(x=>[x.key,x.value]))});}catch(e){internalError(res,e)}});
+  app.put('/api/admin/booking/internal-alerts/settings/:key',admin,async(req,res)=>{
+    const key=req.params.key,v=req.body?.value;
+    if(key==='rules'){
+      if(!v||typeof v!=='object'||!['master','counselor','email','closedMaster'].every(k=>typeof v[k]==='boolean')||!['open','closed'].every(k=>Array.isArray(v[k])&&v[k].length===3&&v[k].every(x=>typeof x==='boolean')))return fail(res,400,'Invalid notification rules');
+    }else if(key==='schedule'){
+      if(!Array.isArray(v)||v.length>12||v.some(x=>!['Email','WhatsApp'].includes(x.channel)||!Number.isInteger(x.hour)||x.hour<0||x.hour>23||![0,15,30,45].includes(x.minute)||typeof x.on!=='boolean')||new Set(v.map(x=>x.channel+':'+x.hour+':'+x.minute)).size!==v.length)return fail(res,400,'Invalid reminder schedule');
+    }else return fail(res,404,'Unknown settings');
+    try{await pool.query('INSERT INTO booking_internal_alert_settings(key,value) VALUES($1,$2::jsonb) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value',[key,JSON.stringify(v)]);res.json({success:true});}catch(e){internalError(res,e)}
+  });
   // Build 59: authenticated, read-only PostgreSQL staging inspection. No dispatch or migrations.
   app.get('/api/admin/booking/database-inspection',admin,async(req,res)=>{
     try {
