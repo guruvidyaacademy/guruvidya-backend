@@ -132,14 +132,15 @@ export async function initBooking(pool) {
     CREATE UNIQUE INDEX IF NOT EXISTS booking_internal_recipients_email_uq ON booking_internal_recipients(lower(email)) WHERE email IS NOT NULL;`);
 
   await pool.query(`CREATE TABLE IF NOT EXISTS booking_internal_alert_deliveries (
-    id BIGSERIAL PRIMARY KEY, booking_id BIGINT NOT NULL REFERENCES student_bookings(id) ON DELETE CASCADE,
+    id BIGSERIAL PRIMARY KEY, booking_id BIGINT NOT NULL,
     event TEXT NOT NULL CHECK(event IN ('confirmed','rescheduled','cancelled')),
     event_key TEXT NOT NULL, recipient_id BIGINT REFERENCES booking_internal_recipients(id) ON DELETE SET NULL,
     recipient_name TEXT NOT NULL, destination TEXT NOT NULL, channel TEXT NOT NULL CHECK(channel IN ('email','whatsapp')),
     status TEXT NOT NULL DEFAULT 'pending', provider TEXT, detail TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(event_key,recipient_id,channel)
-  ); CREATE INDEX IF NOT EXISTS booking_internal_alert_history_idx ON booking_internal_alert_deliveries(created_at DESC);`);
+  ); CREATE INDEX IF NOT EXISTS booking_internal_alert_history_idx ON booking_internal_alert_deliveries(created_at DESC);
+    CREATE INDEX IF NOT EXISTS booking_internal_alert_booking_idx ON booking_internal_alert_deliveries(booking_id);`);
 
 }
 
