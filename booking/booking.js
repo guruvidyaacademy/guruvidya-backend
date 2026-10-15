@@ -117,6 +117,20 @@ export async function initBooking(pool) {
     slot SMALLINT PRIMARY KEY CHECK(slot IN (1,2)), mobile TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );`);
 
+  // Internal alerts configuration only; no message dispatch is activated here.
+  await pool.query(`CREATE TABLE IF NOT EXISTS booking_internal_departments (
+    id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, confirmed BOOLEAN NOT NULL DEFAULT TRUE,
+    rescheduled BOOLEAN NOT NULL DEFAULT TRUE, cancelled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+    CREATE UNIQUE INDEX IF NOT EXISTS booking_internal_departments_name_ci ON booking_internal_departments (lower(name));
+    CREATE TABLE IF NOT EXISTS booking_internal_recipients (
+    id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, department_id BIGINT NOT NULL REFERENCES booking_internal_departments(id) ON DELETE RESTRICT,
+    phone TEXT, email TEXT, active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT booking_internal_recipient_contact CHECK (phone IS NOT NULL OR email IS NOT NULL));
+    CREATE UNIQUE INDEX IF NOT EXISTS booking_internal_recipients_phone_uq ON booking_internal_recipients(phone) WHERE phone IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS booking_internal_recipients_email_uq ON booking_internal_recipients(lower(email)) WHERE email IS NOT NULL;`);
+
 }
 
 export async function hasBookingSuppression(pool, leadId) {
@@ -168,6 +182,24 @@ export function installBookingRoutes(app,pool,hooks={}) {
     if(!sessionFor(req)) return fail(res,401,'Booking admin session expired or unauthorized');
     next();
   };
+  // Internal appointment alerts: configuration CRUD, isolated from student notifications.
+  const internalError=(res,e)=>{if(e.code==='23505')return fail(res,409,'Department name or recipient contact already exists');if(e.code==='23503')return fail(res,409,'Department is assigned to recipients');console.error('Internal alerts database error',e);return fail(res,500,'Unable to save internal alert configuration');};
+  const validId=v=>/^\d+$/.test(String(v))&&Number(v)>0&&Number.isSafeInteger(Number(v));
+  const cleanRecipient=body=>{
+    const name=String(body?.name||'').trim(),department=String(body?.department||'').trim();
+    const raw=String(body?.phone||'').replace(/[^0-9]/g,'');const phone=raw?(raw.length===12&&raw.startsWith('91')?raw.slice(2):raw):null;
+    const email=String(body?.email||'').trim().toLowerCase()||null;
+    if(!name||name.length>120||!department||!phone&&!email||phone&&!/^[6-9]\d{9}$/.test(phone)||email&&(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||email.length>254))return null;
+    return {name,department,phone,email};
+  };
+  const recipientQuery=`SELECT r.id,r.name,d.name AS department,r.phone,r.email,r.active FROM booking_internal_recipients r JOIN booking_internal_departments d ON d.id=r.department_id ORDER BY r.id`;
+  app.get('/api/admin/booking/internal-alerts/config',admin,async(req,res)=>{try{const [d,r]=await Promise.all([pool.query('SELECT id,name,confirmed,rescheduled,cancelled FROM booking_internal_departments ORDER BY id'),pool.query(recipientQuery)]);res.set('Cache-Control','no-store').json({success:true,data:{departments:d.rows,recipients:r.rows}});}catch(e){internalError(res,e)}});
+  app.post('/api/admin/booking/internal-alerts/departments',admin,async(req,res)=>{const name=String(req.body?.name||'').trim();if(!name||name.length>100)return fail(res,400,'Invalid department name');try{const r=await pool.query('INSERT INTO booking_internal_departments(name) VALUES($1) RETURNING id,name,confirmed,rescheduled,cancelled',[name]);res.status(201).json({success:true,data:r.rows[0]});}catch(e){internalError(res,e)}});
+  app.patch('/api/admin/booking/internal-alerts/departments/:id',admin,async(req,res)=>{if(!validId(req.params.id))return fail(res,400,'Invalid department');const fields=['name','confirmed','rescheduled','cancelled'];const keys=fields.filter(k=>Object.prototype.hasOwnProperty.call(req.body||{},k));if(!keys.length)return fail(res,400,'No changes supplied');const values=[];for(const k of keys){const v=req.body[k];if(k==='name'&&(typeof v!=='string'||!v.trim()||v.trim().length>100)||k!=='name'&&typeof v!=='boolean')return fail(res,400,'Invalid department settings');values.push(k==='name'?v.trim():v)}try{const r=await pool.query(`UPDATE booking_internal_departments SET ${keys.map((k,i)=>k+'=$'+(i+1)).join(',')} WHERE id=$${keys.length+1} RETURNING id,name,confirmed,rescheduled,cancelled`,[...values,req.params.id]);if(!r.rowCount)return fail(res,404,'Department not found');res.json({success:true,data:r.rows[0]});}catch(e){internalError(res,e)}});
+  app.delete('/api/admin/booking/internal-alerts/departments/:id',admin,async(req,res)=>{if(!validId(req.params.id))return fail(res,400,'Invalid department');try{const r=await pool.query('DELETE FROM booking_internal_departments WHERE id=$1 RETURNING id',[req.params.id]);if(!r.rowCount)return fail(res,404,'Department not found');res.json({success:true});}catch(e){internalError(res,e)}});
+  app.post('/api/admin/booking/internal-alerts/recipients',admin,async(req,res)=>{const v=cleanRecipient(req.body);if(!v)return fail(res,400,'Invalid recipient details');try{const r=await pool.query(`INSERT INTO booking_internal_recipients(name,department_id,phone,email) SELECT $1,id,$3,$4 FROM booking_internal_departments WHERE name=$2 RETURNING id`,[v.name,v.department,v.phone,v.email]);if(!r.rowCount)return fail(res,400,'Select an existing department');res.status(201).json({success:true,data:{id:r.rows[0].id}});}catch(e){internalError(res,e)}});
+  app.patch('/api/admin/booking/internal-alerts/recipients/:id',admin,async(req,res)=>{if(!validId(req.params.id))return fail(res,400,'Invalid recipient');try{if(Object.keys(req.body||{}).length===1&&typeof req.body.active==='boolean'){const r=await pool.query('UPDATE booking_internal_recipients SET active=$1,updated_at=NOW() WHERE id=$2 RETURNING id',[req.body.active,req.params.id]);if(!r.rowCount)return fail(res,404,'Recipient not found');return res.json({success:true})}const v=cleanRecipient(req.body);if(!v)return fail(res,400,'Invalid recipient details');const r=await pool.query(`UPDATE booking_internal_recipients SET name=$1,department_id=(SELECT id FROM booking_internal_departments WHERE name=$2),phone=$3,email=$4,updated_at=NOW() WHERE id=$5 AND EXISTS(SELECT 1 FROM booking_internal_departments WHERE name=$2) RETURNING id`,[v.name,v.department,v.phone,v.email,req.params.id]);if(!r.rowCount)return fail(res,404,'Recipient or department not found');res.json({success:true});}catch(e){internalError(res,e)}});
+  app.delete('/api/admin/booking/internal-alerts/recipients/:id',admin,async(req,res)=>{if(!validId(req.params.id))return fail(res,400,'Invalid recipient');try{const r=await pool.query('DELETE FROM booking_internal_recipients WHERE id=$1 RETURNING id',[req.params.id]);if(!r.rowCount)return fail(res,404,'Recipient not found');res.json({success:true});}catch(e){internalError(res,e)}});
   // Build 59: authenticated, read-only PostgreSQL staging inspection. No dispatch or migrations.
   app.get('/api/admin/booking/database-inspection',admin,async(req,res)=>{
     try {
