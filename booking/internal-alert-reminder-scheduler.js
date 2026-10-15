@@ -18,7 +18,7 @@ export async function runInternalAlertReminderScheduler(pool, {sendEmail,sendWha
   const rulesResult=await pool.query("SELECT value FROM booking_internal_alert_settings WHERE key='rules'");
   const rules=rulesResult.rows[0]?.value;
   if(rules?.master===false)return;
-  const steps=schedule.filter(x=>x?.on===true&&['Email','WhatsApp'].includes(x.channel)&&Number.isInteger(x.hour)&&x.hour>=0&&x.hour<=23&&[0,15,30,45].includes(x.minute));
+  const steps=schedule.filter(x=>x?.on===true&&['Email','WhatsApp'].includes(x.channel)&&Number.isInteger(x.hour)&&x.hour>=0&&x.hour<=23&&Array.from({length:12},(_,i)=>i*5).includes(x.minute));
   if(!steps.length)return;
   const recipients=await pool.query(`SELECT r.id,r.name,r.phone,r.email FROM booking_internal_recipients r
     JOIN booking_internal_departments d ON d.id=r.department_id WHERE r.active=TRUE ORDER BY r.id`);
