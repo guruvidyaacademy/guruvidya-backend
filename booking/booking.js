@@ -204,6 +204,19 @@ export function installBookingRoutes(app,pool,hooks={}) {
     return {name,department,phone,email};
   };
   const recipientQuery=`SELECT r.id,r.name,d.name AS department,r.phone,r.email,r.active FROM booking_internal_recipients r JOIN booking_internal_departments d ON d.id=r.department_id ORDER BY r.id`;
+  // Read-only live window monitoring for internal alert recipients. Reuse the
+  // established booking WhatsApp window evidence; never modify verification state.
+  app.get('/api/admin/booking/internal-alerts/windows',admin,async(req,res)=>{
+    try {
+      const recipients=await pool.query('SELECT id,phone FROM booking_internal_recipients WHERE phone IS NOT NULL');
+      const rows=await Promise.all(recipients.rows.map(async recipient=>{
+        const state=await whatsappWindowState(recipient.phone);
+        // Internal alerts show actual incoming-message windows, not test overrides.
+        return {id:recipient.id,last_incoming:state.last_incoming_at};
+      }));
+      res.set('Cache-Control','no-store').json({success:true,data:rows});
+    }catch(e){console.error('Internal alerts window lookup failed',e);return fail(res,500,'Unable to load WhatsApp window status');}
+  });
   app.get('/api/admin/booking/internal-alerts/history',admin,async(req,res)=>{try{const r=await pool.query(`SELECT id,event,recipient_name AS recipient,channel,status,provider,detail,created_at,booking_id FROM booking_internal_alert_deliveries ORDER BY created_at DESC,id DESC LIMIT 250`);res.set('Cache-Control','no-store').json({success:true,data:r.rows});}catch(e){internalError(res,e)}});
   app.get('/api/admin/booking/internal-alerts/config',admin,async(req,res)=>{try{const [d,r]=await Promise.all([pool.query('SELECT id,name,confirmed,rescheduled,cancelled FROM booking_internal_departments ORDER BY id'),pool.query(recipientQuery)]);res.set('Cache-Control','no-store').json({success:true,data:{departments:d.rows,recipients:r.rows}});}catch(e){internalError(res,e)}});
   app.post('/api/admin/booking/internal-alerts/departments',admin,async(req,res)=>{const name=String(req.body?.name||'').trim();if(!name||name.length>100)return fail(res,400,'Invalid department name');try{const r=await pool.query('INSERT INTO booking_internal_departments(name) VALUES($1) RETURNING id,name,confirmed,rescheduled,cancelled',[name]);res.status(201).json({success:true,data:r.rows[0]});}catch(e){internalError(res,e)}});
