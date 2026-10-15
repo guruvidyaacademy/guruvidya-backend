@@ -193,6 +193,21 @@ export function installBookingRoutes(app,pool,hooks={}) {
     return {name,department,phone,email};
   };
   const recipientQuery=`SELECT r.id,r.name,d.name AS department,r.phone,r.email,r.active FROM booking_internal_recipients r JOIN booking_internal_departments d ON d.id=r.department_id ORDER BY r.id`;
+  // Read-only recipient window status. Uses genuine incoming webhook events;
+  // never treats an active recipient or a sent message as an opened window.
+  app.get('/api/admin/booking/internal-alerts/windows',admin,async(req,res)=>{
+    try {
+      const result=await pool.query(`SELECT r.id, w.last_incoming
+        FROM booking_internal_recipients r
+        LEFT JOIN LATERAL (
+          SELECT MAX(e.received_at) AS last_incoming FROM whatsapp_window_events e
+          WHERE RIGHT(regexp_replace(e.mobile,'[^0-9]','','g'),10)=r.phone
+            AND length(regexp_replace(e.mobile,'[^0-9]','','g')) IN (10,12)
+        ) w ON TRUE
+        ORDER BY r.id`);
+      res.set('Cache-Control','no-store').json({success:true,data:result.rows});
+    } catch(e) {internalError(res,e)}
+  });
   app.get('/api/admin/booking/internal-alerts/config',admin,async(req,res)=>{try{const [d,r]=await Promise.all([pool.query('SELECT id,name,confirmed,rescheduled,cancelled FROM booking_internal_departments ORDER BY id'),pool.query(recipientQuery)]);res.set('Cache-Control','no-store').json({success:true,data:{departments:d.rows,recipients:r.rows}});}catch(e){internalError(res,e)}});
   app.post('/api/admin/booking/internal-alerts/departments',admin,async(req,res)=>{const name=String(req.body?.name||'').trim();if(!name||name.length>100)return fail(res,400,'Invalid department name');try{const r=await pool.query('INSERT INTO booking_internal_departments(name) VALUES($1) RETURNING id,name,confirmed,rescheduled,cancelled',[name]);res.status(201).json({success:true,data:r.rows[0]});}catch(e){internalError(res,e)}});
   app.patch('/api/admin/booking/internal-alerts/departments/:id',admin,async(req,res)=>{if(!validId(req.params.id))return fail(res,400,'Invalid department');const fields=['name','confirmed','rescheduled','cancelled'];const keys=fields.filter(k=>Object.prototype.hasOwnProperty.call(req.body||{},k));if(!keys.length)return fail(res,400,'No changes supplied');const values=[];for(const k of keys){const v=req.body[k];if(k==='name'&&(typeof v!=='string'||!v.trim()||v.trim().length>100)||k!=='name'&&typeof v!=='boolean')return fail(res,400,'Invalid department settings');values.push(k==='name'?v.trim():v)}try{const r=await pool.query(`UPDATE booking_internal_departments SET ${keys.map((k,i)=>k+'=$'+(i+1)).join(',')} WHERE id=$${keys.length+1} RETURNING id,name,confirmed,rescheduled,cancelled`,[...values,req.params.id]);if(!r.rowCount)return fail(res,404,'Department not found');res.json({success:true,data:r.rows[0]});}catch(e){internalError(res,e)}});
