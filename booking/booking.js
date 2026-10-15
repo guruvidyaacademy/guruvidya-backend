@@ -117,7 +117,7 @@ export async function initBooking(pool) {
     slot SMALLINT PRIMARY KEY CHECK(slot IN (1,2)), mobile TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );`);
 
-  // Internal alerts configuration only; no message dispatch is activated here.
+  // Internal alerts configuration and independently audited delivery events.
   await pool.query(`CREATE TABLE IF NOT EXISTS booking_internal_departments (
     id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, confirmed BOOLEAN NOT NULL DEFAULT TRUE,
     rescheduled BOOLEAN NOT NULL DEFAULT TRUE, cancelled BOOLEAN NOT NULL DEFAULT TRUE,
@@ -130,6 +130,16 @@ export async function initBooking(pool) {
     CONSTRAINT booking_internal_recipient_contact CHECK (phone IS NOT NULL OR email IS NOT NULL));
     CREATE UNIQUE INDEX IF NOT EXISTS booking_internal_recipients_phone_uq ON booking_internal_recipients(phone) WHERE phone IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS booking_internal_recipients_email_uq ON booking_internal_recipients(lower(email)) WHERE email IS NOT NULL;`);
+
+  await pool.query(`CREATE TABLE IF NOT EXISTS booking_internal_alert_deliveries (
+    id BIGSERIAL PRIMARY KEY, booking_id BIGINT NOT NULL REFERENCES student_bookings(id) ON DELETE CASCADE,
+    event TEXT NOT NULL CHECK(event IN ('confirmed','rescheduled','cancelled')),
+    event_key TEXT NOT NULL, recipient_id BIGINT REFERENCES booking_internal_recipients(id) ON DELETE SET NULL,
+    recipient_name TEXT NOT NULL, destination TEXT NOT NULL, channel TEXT NOT NULL CHECK(channel IN ('email','whatsapp')),
+    status TEXT NOT NULL DEFAULT 'pending', provider TEXT, detail TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(event_key,recipient_id,channel)
+  ); CREATE INDEX IF NOT EXISTS booking_internal_alert_history_idx ON booking_internal_alert_deliveries(created_at DESC);`);
 
 }
 
@@ -193,21 +203,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
     return {name,department,phone,email};
   };
   const recipientQuery=`SELECT r.id,r.name,d.name AS department,r.phone,r.email,r.active FROM booking_internal_recipients r JOIN booking_internal_departments d ON d.id=r.department_id ORDER BY r.id`;
-  // Read-only recipient window status. Uses genuine incoming webhook events;
-  // never treats an active recipient or a sent message as an opened window.
-  app.get('/api/admin/booking/internal-alerts/windows',admin,async(req,res)=>{
-    try {
-      const result=await pool.query(`SELECT r.id, w.last_incoming
-        FROM booking_internal_recipients r
-        LEFT JOIN LATERAL (
-          SELECT MAX(e.received_at) AS last_incoming FROM whatsapp_window_events e
-          WHERE RIGHT(regexp_replace(e.mobile,'[^0-9]','','g'),10)=r.phone
-            AND length(regexp_replace(e.mobile,'[^0-9]','','g')) IN (10,12)
-        ) w ON TRUE
-        ORDER BY r.id`);
-      res.set('Cache-Control','no-store').json({success:true,data:result.rows});
-    } catch(e) {internalError(res,e)}
-  });
+  app.get('/api/admin/booking/internal-alerts/history',admin,async(req,res)=>{try{const r=await pool.query(`SELECT id,event,recipient_name AS recipient,channel,status,provider,detail,created_at,booking_id FROM booking_internal_alert_deliveries ORDER BY created_at DESC,id DESC LIMIT 250`);res.set('Cache-Control','no-store').json({success:true,data:r.rows});}catch(e){internalError(res,e)}});
   app.get('/api/admin/booking/internal-alerts/config',admin,async(req,res)=>{try{const [d,r]=await Promise.all([pool.query('SELECT id,name,confirmed,rescheduled,cancelled FROM booking_internal_departments ORDER BY id'),pool.query(recipientQuery)]);res.set('Cache-Control','no-store').json({success:true,data:{departments:d.rows,recipients:r.rows}});}catch(e){internalError(res,e)}});
   app.post('/api/admin/booking/internal-alerts/departments',admin,async(req,res)=>{const name=String(req.body?.name||'').trim();if(!name||name.length>100)return fail(res,400,'Invalid department name');try{const r=await pool.query('INSERT INTO booking_internal_departments(name) VALUES($1) RETURNING id,name,confirmed,rescheduled,cancelled',[name]);res.status(201).json({success:true,data:r.rows[0]});}catch(e){internalError(res,e)}});
   app.patch('/api/admin/booking/internal-alerts/departments/:id',admin,async(req,res)=>{if(!validId(req.params.id))return fail(res,400,'Invalid department');const fields=['name','confirmed','rescheduled','cancelled'];const keys=fields.filter(k=>Object.prototype.hasOwnProperty.call(req.body||{},k));if(!keys.length)return fail(res,400,'No changes supplied');const values=[];for(const k of keys){const v=req.body[k];if(k==='name'&&(typeof v!=='string'||!v.trim()||v.trim().length>100)||k!=='name'&&typeof v!=='boolean')return fail(res,400,'Invalid department settings');values.push(k==='name'?v.trim():v)}try{const r=await pool.query(`UPDATE booking_internal_departments SET ${keys.map((k,i)=>k+'=$'+(i+1)).join(',')} WHERE id=$${keys.length+1} RETURNING id,name,confirmed,rescheduled,cancelled`,[...values,req.params.id]);if(!r.rowCount)return fail(res,404,'Department not found');res.json({success:true,data:r.rows[0]});}catch(e){internalError(res,e)}});
@@ -440,6 +436,8 @@ export function installBookingRoutes(app,pool,hooks={}) {
       // WhatsApp delivery can include media + staged action cards and must never keep
       // the booking request open long enough for the UI to show a false timeout.
       res.status(201).json({success:true,data:created});
+      if(created.status==='confirmed' && typeof hooks.onInternalAppointmentEvent==='function')
+        Promise.resolve().then(()=>hooks.onInternalAppointmentEvent({bookingId:created.id,event:'confirmed'})).catch(e=>console.error('Internal booking alert:',e?.message||e));
       if(typeof hooks.onBookingCreated==='function'){
         Promise.resolve()
           .then(()=>hooks.onBookingCreated(created))
@@ -548,6 +546,8 @@ export function installBookingRoutes(app,pool,hooks={}) {
       // WhatsApp delivery continues after the HTTP response so its media/action-card
       // delays cannot trigger a false browser timeout or a second-slot retry.
       res.json({success:true});
+      if(['reschedule','cancel'].includes(req.body.action) && typeof hooks.onInternalAppointmentEvent==='function')
+        Promise.resolve().then(()=>hooks.onInternalAppointmentEvent({bookingId:b.id,event:req.body.action==='cancel'?'cancelled':'rescheduled'})).catch(e=>console.error('Internal booking alert:',e?.message||e));
       if(req.body.action==='cancel' && typeof hooks.onBookingCancelled==='function'){
         Promise.resolve().then(()=>hooks.onBookingCancelled({booking_ref:req.params.ref,manage_token:String(req.body.token||'')}))
           .catch(e=>console.error('Rebooking invitation check failed',e?.message||e));
@@ -748,6 +748,8 @@ export function installBookingRoutes(app,pool,hooks={}) {
       await log(db,b.id,'admin',action,{previous_status:b.status,previous_counsellor_id:b.counsellor_id,previous_starts_at:b.starts_at,new_status:nextStatus,new_counsellor_id:nextCounsellor,new_starts_at:nextStart});
       if(['approve','reschedule'].includes(action)) await enqueueLifecycleBlockedIntents(db,{bookingId:Number(b.id),event:action==='approve'?'approved':'rescheduled',eventKey:action+':'+randomUUID()});
       await db.query('COMMIT');res.json({success:true,data:{id:b.id,status:nextStatus,counsellor_id:nextCounsellor,starts_at:nextStart}});
+      if(['approve','reschedule','cancel'].includes(action) && typeof hooks.onInternalAppointmentEvent==='function')
+        Promise.resolve().then(()=>hooks.onInternalAppointmentEvent({bookingId:b.id,event:action==='approve'?'confirmed':action==='cancel'?'cancelled':'rescheduled'})).catch(e=>console.error('Internal booking alert:',e?.message||e));
       if(action==='cancel' && typeof hooks.onBookingCancelled==='function')Promise.resolve().then(()=>hooks.onBookingCancelled({booking_ref:b.booking_ref})).catch(e=>console.error('Admin cancellation notification failed',e?.message||e));
     }catch(e){await db.query('ROLLBACK');fail(res,500,'Unable to update booking');}finally{db.release();}
   });

@@ -4969,7 +4969,68 @@ async function onBookingCancelledRebook({booking_ref}){
   await cancellationEmailJob;
   return {success:results.some(r=>r.success),status:results.length?'recipient_results':'no_valid_recipient',results};
 }
-installBookingRoutes(app, pool, { onBookingCreated: onBookingCreatedWhatsApp, onBookingRescheduled: onBookingRescheduledWhatsApp, onBookingCancelled: onBookingCancelledRebook, onRebookLinkRequested: ({booking_ref,mobile})=>sendGuruVidyaRebookingCard({mobile},booking_ref) });
+// Internal staff alerts are isolated from student-facing booking notifications.
+// Dispatch is recorded before contacting external providers to prevent duplicate sends.
+async function sendInternalAppointmentAlert({bookingId,event}) {
+  if (!['confirmed','rescheduled','cancelled'].includes(event)) return;
+  const found=await pool.query(`SELECT id,booking_ref,student_name,course,mode,starts_at,status,updated_at
+    FROM student_bookings WHERE id=$1`,[bookingId]);
+  const booking=found.rows[0];
+  if(!booking) return;
+  // A later booking transition must not generate a stale alert.
+  if(event==='confirmed' && booking.status!=='confirmed')return;
+  if(event==='rescheduled' && !['rescheduled','confirmed','requested'].includes(booking.status))return;
+  if(event==='cancelled' && booking.status!=='cancelled')return;
+  const eventKey=`internal:${booking.id}:${event}:${new Date(booking.updated_at).toISOString()}`;
+  const recipients=await pool.query(`SELECT r.id,r.name,r.phone,r.email FROM booking_internal_recipients r
+    JOIN booking_internal_departments d ON d.id=r.department_id
+    WHERE r.active=TRUE AND d.${event}=TRUE ORDER BY r.id`);
+  if(!recipients.rowCount)return;
+  const date=new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',dateStyle:'medium',timeStyle:'short'}).format(new Date(booking.starts_at));
+  const title=event==='confirmed'?'Confirmed':event==='rescheduled'?'Rescheduled':'Cancelled';
+  const message=`GuruVidya Internal Appointment Alert\nBooking ${title}\nReference: ${booking.booking_ref}\nStudent: ${booking.student_name}\nCourse: ${booking.course}\nMode: ${booking.mode}\nAppointment: ${date} (IST)`;
+  const subject=`GuruVidya Internal Alert: Booking ${title} | ${booking.booking_ref}`;
+  for(const r of recipients.rows){
+    for(const channel of ['email','whatsapp']){
+      const destination=channel==='email'?String(r.email||'').trim():String(r.phone||'').replace(/\D/g,'').replace(/^91(?=\d{10}$)/,'');
+      if(channel==='email' && !/^\S+@\S+\.\S+$/.test(destination))continue;
+      if(channel==='whatsapp' && !/^\d{10}$/.test(destination))continue;
+      const inserted=await pool.query(`INSERT INTO booking_internal_alert_deliveries
+        (booking_id,event,event_key,recipient_id,recipient_name,destination,channel)
+        VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING RETURNING id`,
+        [booking.id,event,eventKey,r.id,r.name,destination,channel]);
+      if(!inserted.rowCount)continue;
+      const deliveryId=inserted.rows[0].id;
+      let status='failed',provider=null,detail='';
+      try {
+        if(channel==='email'){
+          const result=await sendEmailWithFailover({to:destination,subject,text:message});
+          status='sent';provider=result.provider||'email';detail=`Accepted by ${provider}`;
+        } else {
+          // Never use the booking test overrides for actual outbound messages.
+          const window=await pool.query(`SELECT GREATEST(
+            COALESCE((SELECT MAX(received_at) FROM whatsapp_window_events WHERE mobile IN ($1,$2)),'epoch'::timestamptz),
+            COALESCE((SELECT MAX(last_customer_message_at) FROM leads WHERE regexp_replace(COALESCE(mobile,''),'[^0-9]','','g') IN ($1,$2)),'epoch'::timestamptz)
+          ) AS last_incoming`,['91'+destination,destination]);
+          const last=window.rows[0]?.last_incoming;
+          if(!last || Date.now()-new Date(last).getTime()>=24*60*60*1000){
+            // An approved internal-alert template must be configured before CLOSED-window delivery.
+            status='skipped_closed';detail='No real 24h window; approved internal alert template not configured';
+          }else{
+            await loadPersistedConfig();
+            const result=await sendBotSailorText({mobile:destination,name:r.name,course:booking.course},message,'internal_appointment_alert');
+            if(!result?.success)throw new Error(result?.message||result?.status||'BotSailor send failed');
+            status='sent';provider='botsailor';detail='Accepted by BotSailor';
+          }
+        }
+      }catch(e){detail=String(e?.message||e).slice(0,500);console.error('Internal appointment alert delivery:',channel,detail);}
+      await pool.query(`UPDATE booking_internal_alert_deliveries SET status=$2,provider=$3,detail=$4,updated_at=NOW() WHERE id=$1`,
+        [deliveryId,status,provider,detail]).catch(e=>console.error('Internal alert audit update failed',e?.message||e));
+    }
+  }
+}
+
+installBookingRoutes(app, pool, { onBookingCreated: onBookingCreatedWhatsApp, onBookingRescheduled: onBookingRescheduledWhatsApp, onBookingCancelled: onBookingCancelledRebook, onRebookLinkRequested: ({booking_ref,mobile})=>sendGuruVidyaRebookingCard({mobile},booking_ref), onInternalAppointmentEvent: sendInternalAppointmentAlert });
 
 async function bootstrap() {
   try {
