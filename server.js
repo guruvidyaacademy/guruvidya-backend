@@ -1,3 +1,4 @@
+import { initInternalAlertReminderScheduler, runInternalAlertReminderScheduler } from './booking/internal-alert-reminder-scheduler.js';
 import { reconcileStaleBookingAttempts } from './booking/booking-stale-attempts.js';
 import { dispatchBookingReminders } from './booking/booking-delivery.js';
 import { reconcileBookingQueue } from './booking/booking-queue-maintenance.js';
@@ -5044,6 +5045,7 @@ async function bootstrap() {
     console.log("✅ PostgreSQL connected successfully");
     await initDatabase();
     await initBooking(pool);
+    await initInternalAlertReminderScheduler(pool);
     await loadPersistedConfig();
     // Refresh BotSailor flow list first so exported Flow Data can attach by exact flow title.
     if (config.botsailorToken && config.botsailorInstanceId) {
@@ -5061,6 +5063,20 @@ async function bootstrap() {
     // Build 5: persist pending booking reminders and internal unanswered alerts only.
     // No outbound WhatsApp/email is sent by this scheduler.
     const queueBooking = () => reconcileStaleBookingAttempts(pool).then(() => reconcileBookingQueue(pool)).then(() => runBookingReminderQueue(pool)).then(() => dispatchBookingReminders(pool, sendBotSailorTemplate)).catch(e => console.error('Booking queue error:', e.message));
+    // Independent internal recipient reminders; never changes student booking alerts.
+    let internalReminderRunning=false;
+    const queueInternalReminders=async()=>{
+      if(internalReminderRunning)return;
+      internalReminderRunning=true;
+      try{await runInternalAlertReminderScheduler(pool,{
+        sendEmail:sendEmailWithFailover,
+        sendWhatsApp:sendBotSailorText,
+        loadConfig:loadPersistedConfig
+      });}catch(e){console.error('Internal reminder scheduler:',e?.message||e);}
+      finally{internalReminderRunning=false;}
+    };
+    setInterval(queueInternalReminders,60*1000);
+    setTimeout(queueInternalReminders,20*1000);
     setInterval(queueBooking, 60 * 1000);
     setTimeout(queueBooking, 15 * 1000);
     setTimeout(runFollowupAutomation, 30 * 1000);
