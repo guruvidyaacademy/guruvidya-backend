@@ -23,6 +23,7 @@ export async function runInternalAlertReminderScheduler(pool, {sendEmail,sendWha
   const recipients=await pool.query(`SELECT r.id,r.name,r.phone,r.email FROM booking_internal_recipients r
     JOIN booking_internal_departments d ON d.id=r.department_id WHERE r.active=TRUE ORDER BY r.id`);
   const now=Date.now();
+  const numberedSteps=[...steps].sort((a,b)=>(a.hour*60+a.minute)-(b.hour*60+b.minute));
   for(const r of recipients.rows){
     const mobile=String(r.phone||'').replace(/\D/g,'').replace(/^91(?=\d{10}$)/,'');
     if(!/^\d{10}$/.test(mobile))continue;
@@ -34,12 +35,14 @@ export async function runInternalAlertReminderScheduler(pool, {sendEmail,sendWha
     if(!incoming)continue;
     const started=new Date(incoming).getTime();
     if(!Number.isFinite(started)||started>now||now-started>=86400000)continue;
-    for(const step of steps){
+    for(const step of numberedSteps){
       const offset=step.hour*60+step.minute;
       const due=started+offset*60000;
       // Only deliver within five minutes of the configured time; never backfill stale reminders.
       if(due>now||now-due>5*60000)continue;
       const channel=step.channel.toLowerCase();
+      const reminderNumber=numberedSteps.indexOf(step)+1;
+      const reminderTotal=numberedSteps.length;
       if(channel==='email'&&(rules?.email===false||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(r.email||'')))){
         await pool.query(`INSERT INTO booking_internal_reminder_deliveries(recipient_id,incoming_at,channel,offset_minutes,status,detail)
           VALUES($1,$2,$3,$4,'skipped',$5) ON CONFLICT DO NOTHING`,[r.id,incoming,channel,offset,rules?.email===false?'Email notifications disabled':'Recipient email missing or invalid']);
@@ -58,9 +61,9 @@ export async function runInternalAlertReminderScheduler(pool, {sendEmail,sendWha
       let status='failed',provider=null,detail='';
       try{
         const remaining=Math.max(0,Math.ceil((started+86400000-now)/60000));
-        const message=`GuruVidya Internal Appointment Alert\nWhatsApp service window reminder\nRecipient: ${r.name}\nYour WhatsApp 24-hour service window expires in approximately ${Math.floor(remaining/60)}h ${remaining%60}m. Reply to the GuruVidya WhatsApp number to start a new 24-hour window.`;
+        const message=`GuruVidya Internal Appointment Alert\nWhatsApp 24-Hour Window Reminder\nReminder ${reminderNumber} of ${reminderTotal}\nRecipient: ${r.name}\nChannel: ${step.channel}\nWindow remaining: approximately ${Math.floor(remaining/60)}h ${remaining%60}m\n\nPlease reply to the GuruVidya WhatsApp number to start a new 24-hour service window.\n\nGuruVidya Academy Pvt. Ltd.`;
         if(channel==='email'){
-          const result=await sendEmail({to:r.email,subject:'GuruVidya Internal Alert: WhatsApp Window Reminder',text:message});
+          const result=await sendEmail({to:r.email,subject:`GuruVidya Alert | Reminder ${reminderNumber} of ${reminderTotal} | WhatsApp Window`,text:message});
           status='sent';provider=result?.provider||'email';detail='Accepted by email provider';
         }else{
           // Check fresh real incoming evidence again immediately before sending.
