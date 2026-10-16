@@ -40,8 +40,16 @@ export async function runInternalAlertReminderScheduler(pool, {sendEmail,sendWha
       // Only deliver within five minutes of the configured time; never backfill stale reminders.
       if(due>now||now-due>5*60000)continue;
       const channel=step.channel.toLowerCase();
-      if(channel==='email'&&(rules?.email===false||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(r.email||''))))continue;
-      if(channel==='whatsapp'&&(rules?.open?.every(x=>x===false)||now-started>=86400000))continue;
+      if(channel==='email'&&(rules?.email===false||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(r.email||'')))){
+        await pool.query(`INSERT INTO booking_internal_reminder_deliveries(recipient_id,incoming_at,channel,offset_minutes,status,detail)
+          VALUES($1,$2,$3,$4,'skipped',$5) ON CONFLICT DO NOTHING`,[r.id,incoming,channel,offset,rules?.email===false?'Email notifications disabled':'Recipient email missing or invalid']);
+        continue;
+      }
+      if(channel==='whatsapp'&&rules?.open?.every(x=>x===false)){
+        await pool.query(`INSERT INTO booking_internal_reminder_deliveries(recipient_id,incoming_at,channel,offset_minutes,status,detail)
+          VALUES($1,$2,$3,$4,'skipped',$5) ON CONFLICT DO NOTHING`,[r.id,incoming,channel,offset,'WhatsApp OPEN-window notifications disabled']);
+        continue;
+      }
       const claimed=await pool.query(`INSERT INTO booking_internal_reminder_deliveries
         (recipient_id,incoming_at,channel,offset_minutes) VALUES($1,$2,$3,$4)
         ON CONFLICT DO NOTHING RETURNING id`,[r.id,incoming,channel,offset]);
