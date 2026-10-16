@@ -227,6 +227,37 @@ export function installBookingRoutes(app,pool,hooks={}) {
     }catch(e){internalError(res,e)}
   });
   app.get('/api/admin/booking/internal-alerts/history',admin,async(req,res)=>{try{const r=await pool.query(`SELECT id,event,recipient_name AS recipient,channel,status,provider,detail,created_at,booking_id FROM booking_internal_alert_deliveries ORDER BY created_at DESC,id DESC LIMIT 250`);res.set('Cache-Control','no-store').json({success:true,data:r.rows});}catch(e){internalError(res,e)}});
+  // Paginated booking/recipient activity for Overview; legacy history endpoint remains unchanged.
+  app.get('/api/admin/booking/internal-alerts/overview-activity',admin,async(req,res)=>{
+    try{
+      const period=String(req.query.period||'today');
+      const event=String(req.query.event||'');
+      const search=String(req.query.search||'').trim().slice(0,100);
+      const page=Math.max(1,Math.min(100000,Number.parseInt(req.query.page,10)||1));
+      const pageSize=[10,25,50].includes(Number(req.query.pageSize))?Number(req.query.pageSize):10;
+      const params=[];const conditions=[];
+      const add=(value)=>{params.push(value);return '$'+params.length};
+      if(period==='today')conditions.push("d.created_at >= (date_trunc('day',NOW() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata')");
+      else if(['24h','7d','30d'].includes(period))conditions.push('d.created_at >= NOW() - '+({ '24h':"INTERVAL '24 hours'",'7d':"INTERVAL '7 days'",'30d':"INTERVAL '30 days'"})[period]);
+      else if(period==='custom'){
+        const from=String(req.query.from||''),to=String(req.query.to||'');
+        if(!/^\d{4}-\d{2}-\d{2}$/.test(from)||!/^\d{4}-\d{2}-\d{2}$/.test(to)||from>to)return fail(res,400,'Invalid date range');
+        conditions.push('d.created_at >= ('+add(from)+"::date::timestamp AT TIME ZONE 'Asia/Kolkata')");
+        conditions.push('d.created_at < (('+add(to)+"::date + 1)::timestamp AT TIME ZONE 'Asia/Kolkata')");
+      }else if(period!=='all')return fail(res,400,'Invalid period');
+      if(event){if(!['confirmed','rescheduled','cancelled'].includes(event))return fail(res,400,'Invalid event');conditions.push('d.event='+add(event));}
+      if(search){const pattern='%'+search.replace(/[\%_]/g,'\$&')+'%';const a=add(pattern);conditions.push(`(CAST(d.booking_id AS TEXT) ILIKE ${a} OR d.recipient_name ILIKE ${a} OR d.destination ILIKE ${a})`);}
+      const where=conditions.length?'WHERE '+conditions.join(' AND '):'';
+      const grouping="booking_id,recipient_name,destination";
+      const count=await pool.query(`SELECT COUNT(*)::int AS total FROM (SELECT 1 FROM booking_internal_alert_deliveries d ${where} GROUP BY ${grouping}) grouped`,params);
+      const keys=await pool.query(`SELECT d.booking_id,d.recipient_name,d.destination,MAX(d.created_at) AS latest FROM booking_internal_alert_deliveries d ${where} GROUP BY ${grouping} ORDER BY latest DESC,booking_id DESC LIMIT ${add(pageSize)} OFFSET ${add((page-1)*pageSize)}`,params);
+      if(!keys.rows.length)return res.set('Cache-Control','no-store').json({success:true,data:{items:[],total:count.rows[0].total,page,pageSize}});
+      const ids=keys.rows.map(x=>x.booking_id),names=keys.rows.map(x=>x.recipient_name),destinations=keys.rows.map(x=>x.destination);
+      const records=await pool.query(`SELECT id,booking_id,event,recipient_name AS recipient,destination,channel,status,provider,detail,created_at FROM booking_internal_alert_deliveries WHERE (booking_id,recipient_name,destination) IN (SELECT * FROM UNNEST($1::bigint[],$2::text[],$3::text[])) ORDER BY created_at DESC,id DESC`,[ids,names,destinations]);
+      const items=keys.rows.map(k=>({...k,events:records.rows.filter(r=>String(r.booking_id)===String(k.booking_id)&&r.recipient===k.recipient_name&&r.destination===k.destination)}));
+      res.set('Cache-Control','no-store').json({success:true,data:{items,total:count.rows[0].total,page,pageSize}});
+    }catch(e){internalError(res,e)}
+  });
   app.get('/api/admin/booking/internal-alerts/config',admin,async(req,res)=>{try{const [d,r]=await Promise.all([pool.query('SELECT id,name,confirmed,rescheduled,cancelled FROM booking_internal_departments ORDER BY id'),pool.query(recipientQuery)]);res.set('Cache-Control','no-store').json({success:true,data:{departments:d.rows,recipients:r.rows}});}catch(e){internalError(res,e)}});
   app.post('/api/admin/booking/internal-alerts/departments',admin,async(req,res)=>{const name=String(req.body?.name||'').trim();if(!name||name.length>100)return fail(res,400,'Invalid department name');try{const r=await pool.query('INSERT INTO booking_internal_departments(name) VALUES($1) RETURNING id,name,confirmed,rescheduled,cancelled',[name]);res.status(201).json({success:true,data:r.rows[0]});}catch(e){internalError(res,e)}});
   app.patch('/api/admin/booking/internal-alerts/departments/:id',admin,async(req,res)=>{if(!validId(req.params.id))return fail(res,400,'Invalid department');const fields=['name','confirmed','rescheduled','cancelled'];const keys=fields.filter(k=>Object.prototype.hasOwnProperty.call(req.body||{},k));if(!keys.length)return fail(res,400,'No changes supplied');const values=[];for(const k of keys){const v=req.body[k];if(k==='name'&&(typeof v!=='string'||!v.trim()||v.trim().length>100)||k!=='name'&&typeof v!=='boolean')return fail(res,400,'Invalid department settings');values.push(k==='name'?v.trim():v)}try{const r=await pool.query(`UPDATE booking_internal_departments SET ${keys.map((k,i)=>k+'=$'+(i+1)).join(',')} WHERE id=$${keys.length+1} RETURNING id,name,confirmed,rescheduled,cancelled`,[...values,req.params.id]);if(!r.rowCount)return fail(res,404,'Department not found');res.json({success:true,data:r.rows[0]});}catch(e){internalError(res,e)}});
