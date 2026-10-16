@@ -241,7 +241,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
     if(key==='rules'){
       if(!v||typeof v!=='object'||!['master','counselor','email','closedMaster'].every(k=>typeof v[k]==='boolean')||!['open','closed'].every(k=>Array.isArray(v[k])&&v[k].length===3&&v[k].every(x=>typeof x==='boolean')))return fail(res,400,'Invalid notification rules');
     }else if(key==='schedule'){
-      if(!Array.isArray(v)||v.length>12||v.some(x=>!['Email','WhatsApp'].includes(x.channel)||!Number.isInteger(x.hour)||x.hour<0||x.hour>23||!Array.from({length:12},(_,i)=>i*5).includes(x.minute)||typeof x.on!=='boolean')||new Set(v.map(x=>x.channel+':'+x.hour+':'+x.minute)).size!==v.length)return fail(res,400,'Invalid reminder schedule');
+      if(!Array.isArray(v)||v.length>12||v.some(x=>!['Email','WhatsApp'].includes(x.channel)||!Number.isInteger(x.hour)||x.hour<0||x.hour>23||!Number.isInteger(x.minute)&&x.minute>=0&&x.minute<=59||typeof x.on!=='boolean')||new Set(v.map(x=>x.channel+':'+x.hour+':'+x.minute)).size!==v.length)return fail(res,400,'Invalid reminder schedule');
     }else return fail(res,404,'Unknown settings');
     try{await pool.query('INSERT INTO booking_internal_alert_settings(key,value) VALUES($1,$2::jsonb) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value',[key,JSON.stringify(v)]);res.json({success:true});}catch(e){internalError(res,e)}
   });
