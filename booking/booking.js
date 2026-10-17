@@ -142,6 +142,8 @@ export async function initBooking(pool) {
     UNIQUE(event_key,recipient_id,channel)
   ); CREATE INDEX IF NOT EXISTS booking_internal_alert_history_idx ON booking_internal_alert_deliveries(created_at DESC);
     CREATE INDEX IF NOT EXISTS booking_internal_alert_booking_idx ON booking_internal_alert_deliveries(booking_id);`);
+  await pool.query(`ALTER TABLE booking_internal_alert_deliveries ADD COLUMN IF NOT EXISTS provider_message_id TEXT`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS booking_internal_alert_provider_message_idx ON booking_internal_alert_deliveries(provider_message_id) WHERE provider_message_id IS NOT NULL`);
 
 }
 
@@ -207,6 +209,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
   const recipientQuery=`SELECT r.id,r.name,d.name AS department,r.phone,r.email,r.active FROM booking_internal_recipients r JOIN booking_internal_departments d ON d.id=r.department_id ORDER BY r.id`;
   // Read-only live window monitoring for internal alert recipients. Reuse the
   // established booking WhatsApp window evidence; never modify verification state.
+  // Provider message IDs are stored server-side for signed webhook correlation.
   app.get('/api/admin/booking/internal-alerts/windows',admin,async(req,res)=>{
     try {
       const recipients=await pool.query('SELECT id,phone FROM booking_internal_recipients WHERE phone IS NOT NULL');

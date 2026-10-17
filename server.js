@@ -8,7 +8,7 @@ import express from "express";
 import cors from "cors";
 import axios from "axios";
 import pg from "pg";
-import { randomUUID, randomBytes, createHash } from "node:crypto";
+import { randomUUID, randomBytes, createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import sharp from "sharp";
 import nodemailer from "nodemailer";
@@ -23,7 +23,44 @@ const pool = new Pool({
 const app = express();
 app.use(cors());
 // Bulk BotSailor Flow Data imports can contain many TXT/JSON exports at once.
-app.use(express.json({ limit: "25mb" }));
+app.use(express.json({ limit: "25mb", verify: (req, res, buf) => { if (req.originalUrl?.split("?")[0] === "/api/webhook/resend") req.resendRawBody = Buffer.from(buf); } }));
+
+// Resend/Svix signed events: never trust unverified delivery receipts.
+app.post('/api/webhook/resend', async (req, res) => {
+  const secret = String(process.env.RESEND_WEBHOOK_SECRET || '').trim();
+  const id = req.get('svix-id');
+  const timestamp = req.get('svix-timestamp');
+  const signatures = String(req.get('svix-signature') || '').split(' ');
+  const raw = req.resendRawBody;
+  if (!secret || !id || !/^\d+$/.test(timestamp || '') || !raw || Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) return res.status(401).json({success:false});
+  try {
+    const key = Buffer.from(secret.replace(/^whsec_/, ''), 'base64');
+    const digest = createHmac('sha256', key).update(`${id}.${timestamp}.${raw.toString('utf8')}`).digest();
+    const valid = signatures.some(token => {
+      const parts = token.split(',');
+      if (parts[0] !== 'v1' || !parts[1]) return false;
+      const candidate = Buffer.from(parts[1], 'base64');
+      return candidate.length === digest.length && timingSafeEqual(candidate, digest);
+    });
+    if (!valid) return res.status(401).json({success:false});
+    const event = req.body || {};
+    const eventType = String(event.type || '');
+    const states = {'email.sent':'sent','email.delivered':'delivered','email.opened':'opened','email.clicked':'clicked','email.bounced':'bounced','email.failed':'failed','email.complained':'complained','email.delivery_delayed':'delivery_delayed','email.suppressed':'suppressed'};
+    const state = states[eventType];
+    const messageId = String(event.data?.email_id || '');
+    if (!state || !messageId) return res.status(200).json({success:true,ignored:true});
+    // Higher positive state wins over out-of-order events; failures remain visible.
+    const rank = {pending:0,sent:1,delivery_delayed:1,delivered:2,opened:3,clicked:4};
+    for (const table of ['booking_internal_reminder_deliveries','booking_internal_alert_deliveries']) {
+      await pool.query(`UPDATE ${table} SET status = CASE
+        WHEN $2 IN ('failed','bounced','complained','suppressed') THEN $2
+        WHEN status IN ('failed','bounced','complained','suppressed') THEN status
+        WHEN (CASE status WHEN 'clicked' THEN 4 WHEN 'opened' THEN 3 WHEN 'delivered' THEN 2 WHEN 'sent' THEN 1 ELSE 0 END) <= $3 THEN $2
+        ELSE status END, updated_at=NOW() WHERE channel='email' AND provider='resend' AND provider_message_id=$1`,[messageId,state,rank[state]??0]);
+    }
+    return res.json({success:true});
+  } catch (err) { console.error('Resend webhook processing error:', err.message); return res.status(500).json({success:false}); }
+});
 
 const PORT = process.env.PORT || 3000;
 const INDIA_TZ = "Asia/Kolkata";
@@ -5008,11 +5045,11 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
         [booking.id,event,eventKey,r.id,r.name,destination,channel]);
       if(!inserted.rowCount)continue;
       const deliveryId=inserted.rows[0].id;
-      let status='failed',provider=null,detail='';
+      let status='failed',provider=null,detail='',providerMessageId=null;
       try {
         if(channel==='email'){
           const result=await sendEmailWithFailover({to:destination,subject,text:message});
-          status='sent';provider=result.provider||'email';detail=`Accepted by ${provider}`;
+          status='sent';provider=result.provider||'email';providerMessageId=result.id||null;detail=`Accepted by ${provider}`;
         } else {
           // Never use the booking test overrides for actual outbound messages.
           const window=await pool.query(`SELECT GREATEST(
@@ -5031,8 +5068,8 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
           }
         }
       }catch(e){detail=String(e?.message||e).slice(0,500);console.error('Internal appointment alert delivery:',channel,detail);}
-      await pool.query(`UPDATE booking_internal_alert_deliveries SET status=$2,provider=$3,detail=$4,updated_at=NOW() WHERE id=$1`,
-        [deliveryId,status,provider,detail]).catch(e=>console.error('Internal alert audit update failed',e?.message||e));
+      await pool.query(`UPDATE booking_internal_alert_deliveries SET status=$2,provider=$3,detail=$4,provider_message_id=$5,updated_at=NOW() WHERE id=$1`,
+        [deliveryId,status,provider,detail,providerMessageId]).catch(e=>console.error('Internal alert audit update failed',e?.message||e));
     }
   }
 }

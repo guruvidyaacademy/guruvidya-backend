@@ -9,6 +9,8 @@ export async function initInternalAlertReminderScheduler(pool) {
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(recipient_id,incoming_at,channel,offset_minutes)
   )`);
+  await pool.query(`ALTER TABLE booking_internal_reminder_deliveries ADD COLUMN IF NOT EXISTS provider_message_id TEXT`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS booking_internal_reminder_provider_message_idx ON booking_internal_reminder_deliveries(provider_message_id) WHERE provider_message_id IS NOT NULL`);
 }
 
 export async function runInternalAlertReminderScheduler(pool, {sendEmail,sendWhatsApp,loadConfig}) {
@@ -58,13 +60,13 @@ export async function runInternalAlertReminderScheduler(pool, {sendEmail,sendWha
         ON CONFLICT DO NOTHING RETURNING id`,[r.id,incoming,channel,offset]);
       if(!claimed.rowCount)continue;
       const id=claimed.rows[0].id;
-      let status='failed',provider=null,detail='';
+      let status='failed',provider=null,detail='',providerMessageId=null;
       try{
         const remaining=Math.max(0,Math.ceil((started+86400000-now)/60000));
         const message=`GuruVidya Internal Appointment Alert\nWhatsApp 24-Hour Window Reminder\nReminder ${reminderNumber} of ${reminderTotal}\nRecipient: ${r.name}\nChannel: ${step.channel}\nWindow remaining: approximately ${Math.floor(remaining/60)}h ${remaining%60}m\n\nPlease reply to the GuruVidya WhatsApp number to start a new 24-hour service window.\n\nGuruVidya Academy Pvt. Ltd.`;
         if(channel==='email'){
           const result=await sendEmail({to:r.email,subject:`GuruVidya Alert | Reminder ${reminderNumber} of ${reminderTotal} | WhatsApp Window`,text:message});
-          status='sent';provider=result?.provider||'email';detail='Accepted by email provider';
+          status='sent';provider=result?.provider||'email';providerMessageId=result?.id||null;detail='Accepted by email provider';
         }else{
           // Check fresh real incoming evidence again immediately before sending.
           const fresh=await pool.query(`SELECT MAX(received_at) AS last_incoming FROM whatsapp_window_events WHERE mobile IN ($1,$2)`,['91'+mobile,mobile]);
@@ -79,7 +81,7 @@ export async function runInternalAlertReminderScheduler(pool, {sendEmail,sendWha
           }
         }
       }catch(err){detail=String(err?.message||err).slice(0,500);}
-      await pool.query(`UPDATE booking_internal_reminder_deliveries SET status=$2,provider=$3,detail=$4,updated_at=NOW() WHERE id=$1`,[id,status,provider,detail]);
+      await pool.query(`UPDATE booking_internal_reminder_deliveries SET status=$2,provider=$3,detail=$4,provider_message_id=$5,updated_at=NOW() WHERE id=$1`,[id,status,provider,detail,providerMessageId]);
     }
   }
 }
