@@ -14,6 +14,7 @@ export async function initInternalAlertReminderScheduler(pool) {
   await pool.query(`ALTER TABLE booking_internal_reminder_deliveries ADD COLUMN IF NOT EXISTS provider_message_id TEXT`);
   await pool.query(`ALTER TABLE booking_internal_reminder_deliveries ADD COLUMN IF NOT EXISTS acknowledgement_token_hash TEXT`);
   await pool.query(`ALTER TABLE booking_internal_reminder_deliveries ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE booking_internal_reminder_deliveries ADD COLUMN IF NOT EXISTS clicked_at TIMESTAMPTZ`);
   await pool.query(`CREATE INDEX IF NOT EXISTS booking_internal_reminder_provider_message_idx ON booking_internal_reminder_deliveries(provider_message_id) WHERE provider_message_id IS NOT NULL`);
 }
 
@@ -86,18 +87,14 @@ export async function runInternalAlertReminderScheduler(pool, {sendEmail,sendWha
           else if(Date.now()-started>=86400000){status='skipped_closed';detail='Real window expired';}
           else{
             await loadConfig();
-            // One media message (image + caption/link), never a separate text/button message.
-            const token=randomBytes(32).toString('hex');
-            const tokenHash=createHash('sha256').update(token).digest('hex');
-            await pool.query('UPDATE booking_internal_reminder_deliveries SET acknowledgement_token_hash=$2 WHERE id=$1',[id,tokenHash]);
+            // One approved utility media template with its native Acknowledge quick reply.
+            // Do not send an additional file/caption message (avoids double sends).
             const publicBase=String(process.env.PUBLIC_BACKEND_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'');
-            const acknowledgementUrl=`${publicBase}/api/public/internal-reminder/acknowledge/${id}/${token}`;
-            const caption=`*Guruvidya Academy Pvt. Ltd.*\n*WhatsApp 24-Hour Window Reminder* — ${reminderNumber} of ${reminderTotal}\n\nDear ${r.name},\nWindow remaining at dispatch: ${Math.floor(remaining/60)}h ${remaining%60}m.\n\n*Acknowledge Receipt:*\n${acknowledgementUrl}\n\nTap the link to open the secure acknowledgement page. The image button is illustrative.`;
-            const result=await sendWhatsApp({mobile,name:r.name,course:''},caption,'internal_window_reminder',{
-              mediaUrl:`${publicBase}/api/public/internal-reminder/whatsapp-card`,mediaType:'image'
+            const result=await sendWhatsApp({mobile,name:r.name,course:''},'', 'internal_window_reminder',{
+              templateId:'461036',mediaUrl:`${publicBase}/api/public/internal-reminder/whatsapp-card`
             });
             if(!result?.success)throw new Error(result?.message||result?.status||'BotSailor send failed');
-            status='sent';provider='botsailor';detail='Single image message accepted by BotSailor';
+            status='sent';provider='botsailor';providerMessageId=result.wa_message_id||result.response?.wa_message_id||null;detail='Approved media template accepted by BotSailor';
           }
         }
       }catch(err){detail=String(err?.message||err).slice(0,500);}

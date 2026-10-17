@@ -276,7 +276,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
   // Real provider-acceptance outcomes for internal 24h reminders; no inferred read receipts.
   app.get('/api/admin/booking/internal-alerts/reminder-deliveries',admin,async(req,res)=>{
     try{
-      const r=await pool.query(`SELECT id,recipient_id,incoming_at,channel,offset_minutes,status,provider,detail,created_at,updated_at,acknowledged_at
+      const r=await pool.query(`SELECT id,recipient_id,incoming_at,channel,offset_minutes,status,provider,detail,created_at,updated_at,acknowledged_at,clicked_at
         FROM booking_internal_reminder_deliveries ORDER BY created_at DESC,id DESC LIMIT 1500`);
       res.set('Cache-Control','no-store').json({success:true,data:r.rows});
     }catch(e){internalError(res,e)}

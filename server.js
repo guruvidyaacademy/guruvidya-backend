@@ -3280,6 +3280,22 @@ app.post("/api/webhook/botsailor", async (req, res) => {
 
     const buttonReplyId = normalizeLooseText(extractButtonReplyId(payload));
     const buttonReplyTitle = normalizeLooseText(extractButtonReplyTitle(payload));
+    // Correlate the real WhatsApp quick-reply with a sent internal reminder.
+    // Only a reply with a provider context message ID is accepted: an unrelated
+    // 'Acknowledge' text must never count as a click.
+    const internalAckTitle = String(buttonReplyTitle || payload.user_message || payload.userMessage || '').replace(/^#button[ _-]*reply#/i,'').trim();
+    const internalAckContext = ctaContextMessageId(payload);
+    if (mobile && internalAckContext && /^acknowledge$/i.test(internalAckTitle)) {
+      const canonicalAckMobile=botSailorPhone(mobile);
+      const ackResult=await pool.query(`UPDATE booking_internal_reminder_deliveries d
+        SET clicked_at=COALESCE(clicked_at,NOW()),acknowledged_at=COALESCE(acknowledged_at,NOW()),updated_at=NOW()
+        FROM booking_internal_recipients r WHERE d.recipient_id=r.id AND d.channel='whatsapp'
+        AND d.provider_message_id=$1 AND regexp_replace(COALESCE(r.phone,''),'[^0-9]','','g') IN ($2,$3)
+        AND d.status IN ('sent','delivered','read') RETURNING d.id`,
+        [internalAckContext,canonicalAckMobile,canonicalAckMobile.replace(/^91(?=\d{10}$)/,'')]);
+      if (ackResult.rowCount) console.log('Internal reminder WhatsApp acknowledgement recorded',ackResult.rows.map(x=>x.id));
+    }
+
 
     // BotSailor can deliver a button tap as a normal user_message.
     const webhookUserMessageRaw = normalizeLooseText(
@@ -5110,9 +5126,9 @@ async function bootstrap() {
         sendWhatsApp:async(record,caption,action,options={})=>{
           if(!config.whatsappEnabled)return {success:false,status:'disabled'};
           const payload={apiToken:config.botsailorToken,phone_number_id:config.botsailorInstanceId,
-            phone_number:botSailorPhone(record.mobile||''),media_url:options.mediaUrl,
-            media_type:'image',media_caption_text:caption};
-          const result=await botSailorPost('https://botsailor.com/api/v1/whatsapp/send/file',payload);
+            template_id:options.templateId,phone_number:botSailorPhone(record.mobile||''),
+            template_header_media_url:options.mediaUrl};
+          const result=await botSailorPost('https://botsailor.com/api/v1/whatsapp/send/template',payload);
           await addIntegrationLog('whatsapp',action,result.success?'success':'failed',
             {...payload,apiToken:'***'},result.response||{error:result.error||result.message});
           return result;
