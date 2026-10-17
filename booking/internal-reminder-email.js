@@ -1,62 +1,61 @@
-// Table-based email layout for Outlook, Apple Mail and Gmail.
-// Original logo files and acknowledgement/tracking routes are deliberately unchanged.
-const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const socials = [
-  ['Facebook', 'https://www.facebook.com/guruvidyaacademypvtltd', 'f', '#1877f2'],
-  ['Instagram', 'https://www.instagram.com/guruvidyaca/', '◎', '#cf3588'],
-  ['YouTube', 'https://www.youtube.com/c/GuruvidyaIn', '▶', '#ed3333'],
-  ['LinkedIn', 'https://www.linkedin.com/in/guruvidya-academy-pvt-ltd', 'in', '#0a78b7'],
-  ['X', 'https://x.com/guruvidya_', 'X', '#17243a']
+// Reference-matched email artwork. Original Guruvidya PNGs and acknowledgement flow are unchanged.
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const socials=[
+ ['facebook','https://www.facebook.com/guruvidyaacademypvtltd'],
+ ['instagram','https://www.instagram.com/guruvidyaca/'],
+ ['youtube','https://www.youtube.com/c/GuruvidyaIn'],
+ ['linkedin','https://www.linkedin.com/in/guruvidya-academy-pvt-ltd'],
+ ['x','https://x.com/guruvidya_']
 ];
-
-export function renderInternalReminderEmail({name, number, total, remaining, acknowledgementUrl, publicBase}) {
-  const minutesLeft = Math.max(0, Math.floor(Number(remaining) || 0));
-  const hours = Math.floor(minutesLeft / 60);
-  const minutes = minutesLeft % 60;
-  const recipient = esc(name || 'Recipient');
-  const base = String(publicBase || '').replace(/\/$/, '');
-  const logo = esc(base + '/api/public/internal-reminder/logo');
-  const footerIcon = esc(base + '/api/public/internal-reminder/g-icon');
-  const socialLinks = socials.map(([label, url, glyph, color]) =>
-    `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" title="${esc(label)}" aria-label="${esc(label)}" style="display:inline-block;vertical-align:middle;text-align:center;width:28px;line-height:28px;margin:0 2px 5px;border-radius:50%;background:${color};color:#ffffff;font:bold 13px/28px Arial,sans-serif;text-decoration:none">${glyph}</a>`
-  ).join('');
-  const row = (symbol, label, value) => `<tr><td width="44" style="padding:12px 6px 12px 15px;border-bottom:1px solid #dbe8f8"><span style="display:inline-block;border-radius:50%;background:#e9f4ff;color:#0757b9;font-size:20px;text-align:center;width:36px;line-height:36px">${symbol}</span></td><td style="padding:12px 6px;border-bottom:1px solid #dbe8f8;color:#425677;font-size:14px">${label}</td><td style="padding:12px 12px 12px 6px;border-bottom:1px solid #dbe8f8;color:#102b5b;font-size:15px;font-weight:bold">${value}</td></tr>`;
-  return `<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:18px 8px;background:#edf5fc;font-family:Arial,Helvetica,sans-serif;color:#10264d">
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden">
-<tr><td style="padding:25px 26px 18px">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
-<td width="70%" style="vertical-align:middle;padding-right:15px"><img src="${logo}" alt="Guruvidya – REAL EDUCATION • REAL RESULTS" width="380" style="display:block;width:100%;max-width:380px;height:auto;border:0"></td>
-<td width="30%" align="center" style="vertical-align:middle;border-left:1px solid #c5d9f5;padding-left:13px"><div style="background:#eef7ff;border-radius:12px;padding:13px 5px;color:#0d3472;font-size:14px;line-height:1.35;font-weight:bold">✉ &nbsp;Internal<br>Appointment<br>Alert</div></td>
+export function renderInternalReminderEmail({name,number,total,remaining,acknowledgementUrl,publicBase}){
+  const base=String(publicBase||'').replace(/\/$/,'');
+  const art=(id)=>esc(base+'/api/public/internal-reminder/art/'+id);
+  const logo=esc(base+'/api/public/internal-reminder/logo');
+  const gIcon=esc(base+'/api/public/internal-reminder/g-icon');
+  const img=(id,w,h,alt='')=>`<img src="${art(id)}" width="${w}" height="${h}" alt="${esc(alt)}" style="display:block;border:0;width:${w}px;height:${h}px">`;
+  const recipient=esc(name||'Recipient');
+  const left=Math.max(0,Math.floor(Number(remaining)||0));
+  const time=`${Math.floor(left/60)}h ${left%60}m`;
+  const row=(id,label,value)=>`<tr><td width="76" style="padding:3px 12px 3px 18px;border-bottom:1px solid #d1e2f8">${img(id,48,48)}</td><td width="35%" style="font-size:16px;color:#394d78;border-bottom:1px solid #d1e2f8">${label}</td><td style="font-size:17px;font-weight:bold;color:#071e59;border-bottom:1px solid #d1e2f8">${value}</td></tr>`;
+  const links=socials.map(([id,url])=>`<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" title="${id}" style="display:inline-block;vertical-align:middle;margin-left:4px;text-decoration:none">${img(id,36,36,id)}</a>`).join('');
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:12px 8px;background:#edf6ff;font-family:Arial,Helvetica,sans-serif">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:640px;margin:auto;background:#ffffff;border-radius:15px;overflow:hidden">
+<tr><td style="padding:22px 26px 13px">
+<table role="presentation" cellpadding="0" cellspacing="0" width="100%"><tr>
+<td width="65%" style="vertical-align:middle;padding-right:18px"><img src="${logo}" width="390" alt="Guruvidya – REAL EDUCATION • REAL RESULTS" style="display:block;border:0;width:100%;max-width:390px;height:auto"></td>
+<td width="35%" align="right" style="vertical-align:middle;border-left:1px solid #b9d5f9;padding-left:16px">${img('header-alert',168,72,'Internal Appointment Alert')}</td>
 </tr></table></td></tr>
 <tr><td style="padding:0 26px">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eaf9f1;border-left:7px solid #0dbb65;border-radius:12px"><tr>
-<td width="64" align="center" style="padding:20px 5px 20px 15px;vertical-align:middle"><span style="display:inline-block;border-radius:50%;background:#05a65a;color:white;width:56px;line-height:56px;text-align:center;font-size:30px">☎</span></td>
-<td style="padding:20px 12px;vertical-align:middle"><div style="color:#062c2a;font-size:21px;line-height:1.25;font-weight:bold">WhatsApp 24-Hour Window Reminder</div><div style="padding-top:11px"><span style="display:inline-block;background:#008e52;color:white;border-radius:24px;padding:8px 16px;font-size:15px;font-weight:bold">Reminder ${Number(number)} of ${Number(total)}</span></div></td>
-</tr></table>
-<h2 style="color:#171717;font-size:21px;margin:24px 0 8px">Dear ${recipient},</h2>
-<p style="font-size:15px;line-height:1.65;color:#34466a;margin:0 0 20px">This is an automated reminder regarding the WhatsApp service window for the student. Please take the necessary action.</p>
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #c7ddfb;border-radius:12px;border-collapse:separate;border-spacing:0">
-${row('●', 'Recipient', recipient)}
-${row('✉', 'Channel', 'Email')}
-${row('◷', 'Window Remaining', `<span style="display:inline-block;background:#e4f3ff;border-radius:20px;padding:7px 11px;white-space:nowrap">◷ ${hours}h ${minutes}m</span>`)}
+<table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background:#e8f8ef;border-left:7px solid #09ba60;border-radius:12px">
+<tr><td width="110" style="padding:14px 10px 14px 16px;vertical-align:middle">${img('whatsapp-circle',76,76,'WhatsApp')}</td>
+<td style="padding:17px 9px;vertical-align:middle"><div style="font-size:21px;line-height:1.3;font-weight:800;color:#08252b">WhatsApp 24-Hour Window Reminder</div>
+<div style="padding-top:10px"><span style="display:inline-block;background:#008d53;color:#ffffff;border-radius:28px;padding:9px 19px;font-size:17px;font-weight:bold">Reminder ${Number(number)} of ${Number(total)}</span></div></td></tr></table>
+<h2 style="margin:20px 0 5px;color:#111111;font-size:23px;font-weight:800">Dear ${recipient},</h2>
+<p style="margin:0 0 17px;color:#354777;font-size:16px;line-height:1.55">This is an automated reminder regarding the WhatsApp service window for the student. Please take the necessary action.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #b5d8ff;border-radius:12px;border-spacing:0">
+${row('recipient','Recipient',recipient)}
+${row('channel','Channel','Email')}
+${row('clock','Window Remaining',`<span style="display:inline-block;background:#e4f3ff;border-radius:15px;padding:5px 12px 5px 5px;white-space:nowrap;vertical-align:middle"><table role="presentation" cellpadding="0" cellspacing="0"><tr><td>${img('timer-clock',34,34)}</td><td style="font-size:19px;font-weight:bold;color:#092363;padding-left:6px">${time}</td></tr></table></span>`)}
 </table>
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:24px"><tr><td align="center" bgcolor="#009c59" style="border-radius:10px"><a href="${esc(acknowledgementUrl)}" target="_blank" rel="noopener noreferrer" style="display:block;padding:18px 10px;color:#ffffff;text-decoration:none;font-size:21px;line-height:1.25;font-weight:bold">✓ &nbsp;Acknowledge Receipt &nbsp;→</a></td></tr></table>
-<p style="text-align:center;color:#425576;font-size:13px;line-height:1.5;margin:10px 0 20px">Click to confirm that you have received and reviewed this email.</p>
-<div style="background:#e6f4ff;border-radius:10px;padding:16px;color:#0766d6;font-size:14px;line-height:1.55">ⓘ &nbsp;Your acknowledgement helps us keep our records updated and ensures timely follow-up.</div>
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #b6d6fa;margin-top:24px;text-align:center;color:#0b3374"><tr>
-<td width="33%" style="padding:16px 3px;font-size:13px;font-weight:bold;line-height:1.4"><span style="font-size:25px;color:#0871dd">◎</span><br>Timely<br>Follow-up</td>
-<td width="34%" style="padding:16px 3px;font-size:13px;font-weight:bold;line-height:1.4;border-left:1px solid #d6e6fa;border-right:1px solid #d6e6fa"><span style="font-size:25px;color:#0871dd">♟</span><br>Better<br>Student Support</td>
-<td width="33%" style="padding:16px 3px;font-size:13px;font-weight:bold;line-height:1.4"><span style="font-size:25px;color:#0871dd">▥</span><br>Stay<br>Organized</td>
-</tr></table>
-</td></tr>
-<tr><td bgcolor="#052c67" style="padding:23px 25px;background:#052c67;border-top:8px solid #0874dc">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
-<td width="60%" style="vertical-align:middle"><table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="vertical-align:middle;padding-right:9px"><img src="${footerIcon}" alt="Guruvidya G icon" width="55" height="54" style="display:block;border:0"></td><td style="vertical-align:middle"><div style="color:#ffffff;font-size:16px;line-height:1.25;font-weight:bold">Guruvidya Academy Pvt. Ltd.</div><div style="color:#ff5555;font-size:10px;line-height:1.5;font-weight:bold">REAL EDUCATION • REAL RESULTS</div></td></tr></table></td>
-<td width="40%" align="right" style="vertical-align:middle">${socialLinks}<div style="font-size:12px;padding-top:4px"><a href="https://www.guruvidya.in" target="_blank" rel="noopener noreferrer" style="color:#ffffff;text-decoration:none">www.guruvidya.in</a></div></td>
-</tr></table>
-<div style="border-top:1px solid #5279ad;margin-top:20px;padding-top:12px;color:#e2efff;font-size:12px;line-height:1.5">ACCA | CA | CS | CMA | B.Com | 11th &amp; 12th (Commerce)</div>
-</td></tr></table>
-</body></html>`;
+<table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin-top:19px"><tr><td align="center" bgcolor="#009f59" style="border-radius:10px;background:#009f59">
+<a href="${esc(acknowledgementUrl)}" target="_blank" rel="noopener noreferrer" style="display:block;padding:17px 8px;color:#ffffff;font-size:22px;line-height:1.35;font-weight:bold;text-decoration:none"><span style="display:inline-block;vertical-align:middle;width:36px;height:36px;line-height:36px;text-align:center;border-radius:50%;background:#ffffff;color:#008c51;font-size:27px;margin-right:12px">✓</span>Acknowledge Receipt &nbsp;❯</a></td></tr></table>
+<p style="text-align:center;margin:10px 0 16px;color:#3c4e79;font-size:14px">Click to confirm that you have received and reviewed this email.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#e3f3ff;border-radius:11px"><tr>
+<td width="57" style="padding:15px 8px 15px 16px">${img('info',38,38,'Information')}</td>
+<td style="padding:15px 14px 15px 0;color:#0874ed;font-size:16px;line-height:1.5">Your acknowledgement helps us keep our records updated and ensures timely follow-up.</td></tr></table>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:19px;border-top:1px solid #a8d3fc;text-align:center"><tr>
+<td width="33%" align="center" style="padding:11px 5px;color:#08245d;font-size:14px;font-weight:bold;line-height:1.3">${img('target',60,60,'Timely Follow-up')}<div style="padding-top:5px">Timely<br>Follow-up</div></td>
+<td width="34%" align="center" style="padding:11px 5px;color:#08245d;font-size:14px;font-weight:bold;line-height:1.3">${img('people',60,60,'Better Student Support')}<div style="padding-top:5px">Better<br>Student Support</div></td>
+<td width="33%" align="center" style="padding:11px 5px;color:#08245d;font-size:14px;font-weight:bold;line-height:1.3">${img('bars',60,60,'Stay Organized')}<div style="padding-top:5px">Stay<br>Organized</div></td>
+</tr></table></td></tr>
+<tr><td style="padding:0"><img src="${art('footer-waves')}" alt="" width="640" style="display:block;width:100%;height:auto;border:0"></td></tr>
+<tr><td bgcolor="#052e68" style="background:#052e68;padding:12px 25px 18px">
+<table role="presentation" cellpadding="0" cellspacing="0" width="100%"><tr>
+<td width="59%" style="vertical-align:middle"><table role="presentation" cellpadding="0" cellspacing="0"><tr>
+<td style="vertical-align:middle;padding-right:8px"><img src="${gIcon}" width="70" alt="Original Guruvidya G" style="display:block;border:0;width:70px;height:auto"></td>
+<td style="vertical-align:middle"><div style="color:#ffffff;font-size:16px;font-weight:bold;line-height:1.3">Guruvidya Academy Pvt. Ltd.</div><div style="color:#ff444c;font-size:11px;font-weight:bold;line-height:1.4">REAL EDUCATION • REAL RESULTS</div></td>
+</tr></table></td>
+<td align="right" style="vertical-align:middle;border-left:1px solid #8ca8cc">${links}<div style="padding-top:8px"><a href="https://www.guruvidya.in" target="_blank" rel="noopener noreferrer" style="color:#ffffff;text-decoration:none;font-size:13px">www.guruvidya.in</a></div></td>
+</tr></table></td></tr></table></body></html>`;
 }

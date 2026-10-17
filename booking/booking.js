@@ -223,6 +223,11 @@ export function installBookingRoutes(app,pool,hooks={}) {
   });
   app.get('/api/public/internal-reminder/logo',async(req,res)=>{try{const logo=await readFile(new URL('./guruvidya-logo.png',import.meta.url));res.type('png').set('Cache-Control','public, max-age=86400').send(logo)}catch(e){res.sendStatus(404)}});
   app.get('/api/public/internal-reminder/g-icon',async(req,res)=>{try{const icon=await readFile(new URL('./internal-reminder-g-icon.png',import.meta.url));res.type('png').set('Cache-Control','public, max-age=86400').send(icon)}catch(e){res.sendStatus(404)}});
+  app.get('/api/public/internal-reminder/art/:name',async(req,res)=>{
+    const name=String(req.params.name||'');
+    if(!/^(header-alert|whatsapp-circle|recipient|channel|clock|timer-clock|info|target|people|bars|footer-waves|facebook|instagram|youtube|linkedin|x)$/.test(name))return res.sendStatus(404);
+    try{const img=await readFile(new URL('./internal-reminder-assets/'+name+'.png',import.meta.url));res.type('png').set('Cache-Control','public, max-age=86400').send(img)}catch(e){res.sendStatus(404)}
+  });
   // Explicit recipient confirmation: token is random, stored hashed, and never inferred from an email open.
   app.all('/api/public/internal-reminder/acknowledge/:id/:token',async(req,res)=>{
     res.set('Cache-Control','no-store');
