@@ -5107,7 +5107,16 @@ async function bootstrap() {
       internalReminderRunning=true;
       try{await runInternalAlertReminderScheduler(pool,{
         sendEmail:sendEmailWithFailover,
-        sendWhatsApp:sendBotSailorText,
+        sendWhatsApp:async(record,caption,action,options={})=>{
+          if(!config.whatsappEnabled)return {success:false,status:'disabled'};
+          const payload={apiToken:config.botsailorToken,phone_number_id:config.botsailorInstanceId,
+            phone_number:botSailorPhone(record.mobile||''),media_url:options.mediaUrl,
+            media_type:'image',media_caption_text:caption};
+          const result=await botSailorPost('https://botsailor.com/api/v1/whatsapp/send/file',payload);
+          await addIntegrationLog('whatsapp',action,result.success?'success':'failed',
+            {...payload,apiToken:'***'},result.response||{error:result.error||result.message});
+          return result;
+        },
         loadConfig:loadPersistedConfig
       });}catch(e){console.error('Internal reminder scheduler:',e?.message||e);}
       finally{internalReminderRunning=false;}

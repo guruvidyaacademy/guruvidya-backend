@@ -222,6 +222,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
     }catch(e){console.error('Internal alerts window lookup failed',e);return fail(res,500,'Unable to load WhatsApp window status');}
   });
   app.get('/api/public/internal-reminder/logo',async(req,res)=>{try{const logo=await readFile(new URL('./guruvidya-logo.png',import.meta.url));res.type('png').set('Cache-Control','public, max-age=86400').send(logo)}catch(e){res.sendStatus(404)}});
+  app.get('/api/public/internal-reminder/whatsapp-card',async(req,res)=>{try{const img=await readFile(new URL('./internal-reminder-whatsapp-card.png',import.meta.url));res.type('png').set('Cache-Control','public, max-age=86400').send(img)}catch(e){res.sendStatus(404)}});
   app.get('/api/public/internal-reminder/g-icon',async(req,res)=>{try{const icon=await readFile(new URL('./internal-reminder-g-icon.png',import.meta.url));res.type('png').set('Cache-Control','public, max-age=86400').send(icon)}catch(e){res.sendStatus(404)}});
   app.get('/api/public/internal-reminder/art/:name',async(req,res)=>{
     const name=String(req.params.name||'');
@@ -237,7 +238,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
       const hash=createHash('sha256').update(token).digest('hex');
       const result=await pool.query(`SELECT d.incoming_at,r.phone FROM booking_internal_reminder_deliveries d
         JOIN booking_internal_recipients r ON r.id=d.recipient_id
-        WHERE d.id=$1 AND d.channel='email' AND d.acknowledgement_token_hash=$2`,[id,hash]);
+        WHERE d.id=$1 AND d.channel IN ('email','whatsapp') AND d.acknowledgement_token_hash=$2`,[id,hash]);
       if(!result.rowCount)return res.status(404).type('html').send('<h2>Countdown link unavailable</h2>');
       const phone=String(result.rows[0].phone||'').replace(/\D/g,'').replace(/^91(?=\d{10}$)/,'');
       if(!/^\d{10}$/.test(phone))return res.status(404).type('html').send('<h2>Window status unavailable</h2>');
@@ -259,14 +260,14 @@ export function installBookingRoutes(app,pool,hooks={}) {
     try{
       const tokenHash=createHash('sha256').update(token).digest('hex');
       if(req.method==='GET'){
-        const existing=await pool.query('SELECT acknowledged_at FROM booking_internal_reminder_deliveries WHERE id=$1 AND channel=\'email\' AND acknowledgement_token_hash=$2',[id,tokenHash]);
+        const existing=await pool.query('SELECT acknowledged_at FROM booking_internal_reminder_deliveries WHERE id=$1 AND channel IN (\'email\',\'whatsapp\') AND acknowledgement_token_hash=$2',[id,tokenHash]);
         if(!existing.rowCount)return res.status(404).type('html').send('<h2>Link unavailable</h2>');
         if(existing.rows[0].acknowledged_at)return res.type('html').send('<h2>Already acknowledged</h2><p>Your confirmation has already been recorded.</p>');
         return res.type('html').send('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Confirm receipt | Guruvidya</title></head><body style="font-family:Arial,sans-serif;background:#eef5ff;text-align:center;padding:70px 16px;color:#102b59"><div style="max-width:540px;margin:auto;background:white;border-radius:18px;padding:40px;box-shadow:0 8px 30px #dce5f2"><h1>Confirm Email Receipt</h1><p>Please confirm that you received and reviewed this Guruvidya reminder.</p><form method="POST"><button type="submit" style="background:#009b58;color:white;border:0;border-radius:12px;padding:17px 28px;font-size:18px;cursor:pointer">✓ Acknowledge Receipt</button></form><p>Guruvidya Academy Pvt. Ltd.</p></div></body></html>');
       }
       if(req.method!=='POST')return res.sendStatus(405);
       const result=await pool.query(`UPDATE booking_internal_reminder_deliveries SET acknowledged_at=COALESCE(acknowledged_at,NOW()),updated_at=NOW()
-        WHERE id=$1 AND channel=\'email\' AND acknowledgement_token_hash=$2 AND status NOT IN ('failed','bounced','complained','suppressed')
+        WHERE id=$1 AND channel IN (\'email\',\'whatsapp\') AND acknowledgement_token_hash=$2 AND status NOT IN ('failed','bounced','complained','suppressed')
         RETURNING acknowledged_at`,[id,tokenHash]);
       if(!result.rowCount)return res.status(404).type('html').send('<h2>Link unavailable</h2><p>Please contact Guruvidya Academy.</p>');
       return res.type('html').send('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Receipt acknowledged | Guruvidya</title></head><body style="font-family:Arial,sans-serif;background:#eef5ff;text-align:center;padding:70px 16px;color:#102b59"><div style="max-width:540px;margin:auto;background:white;border-radius:18px;padding:40px;box-shadow:0 8px 30px #dce5f2"><div style="font-size:50px;color:#009b5a">&#10003;</div><h1>Receipt Acknowledged</h1><p>Thank you. Your email receipt has been confirmed and recorded successfully.</p><p style="color:#526681">Guruvidya Academy Pvt. Ltd.</p></div></body></html>');

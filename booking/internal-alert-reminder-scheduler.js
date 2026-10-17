@@ -86,9 +86,18 @@ export async function runInternalAlertReminderScheduler(pool, {sendEmail,sendWha
           else if(Date.now()-started>=86400000){status='skipped_closed';detail='Real window expired';}
           else{
             await loadConfig();
-            const result=await sendWhatsApp({mobile,name:r.name,course:''},message,'internal_window_reminder');
+            // One media message (image + caption/link), never a separate text/button message.
+            const token=randomBytes(32).toString('hex');
+            const tokenHash=createHash('sha256').update(token).digest('hex');
+            await pool.query('UPDATE booking_internal_reminder_deliveries SET acknowledgement_token_hash=$2 WHERE id=$1',[id,tokenHash]);
+            const publicBase=String(process.env.PUBLIC_BACKEND_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'');
+            const acknowledgementUrl=`${publicBase}/api/public/internal-reminder/acknowledge/${id}/${token}`;
+            const caption=`*Guruvidya Academy Pvt. Ltd.*\n*WhatsApp 24-Hour Window Reminder* — ${reminderNumber} of ${reminderTotal}\n\nDear ${r.name},\nWindow remaining at dispatch: ${Math.floor(remaining/60)}h ${remaining%60}m.\n\n*Acknowledge Receipt:*\n${acknowledgementUrl}\n\nTap the link to open the secure acknowledgement page. The image button is illustrative.`;
+            const result=await sendWhatsApp({mobile,name:r.name,course:''},caption,'internal_window_reminder',{
+              mediaUrl:`${publicBase}/api/public/internal-reminder/whatsapp-card`,mediaType:'image'
+            });
             if(!result?.success)throw new Error(result?.message||result?.status||'BotSailor send failed');
-            status='sent';provider='botsailor';detail='Accepted by BotSailor';
+            status='sent';provider='botsailor';detail='Single image message accepted by BotSailor';
           }
         }
       }catch(err){detail=String(err?.message||err).slice(0,500);}
