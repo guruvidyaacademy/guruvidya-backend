@@ -5075,6 +5075,11 @@ async function bootstrap() {
       });}catch(e){console.error('Internal reminder scheduler:',e?.message||e);}
       finally{internalReminderRunning=false;}
     };
+    // Delete ONLY internal booking alert delivery audit rows older than 15 days.
+    // Reminder deliveries, booking records and other logs are separate tables.
+    const cleanupInternalBookingAlertHistory=()=>pool.query("DELETE FROM booking_internal_alert_deliveries WHERE created_at < NOW() - INTERVAL '15 days' AND event IN ('confirmed','rescheduled','cancelled')").catch(e=>console.error('Internal booking alert history cleanup:',e.message));
+    setInterval(cleanupInternalBookingAlertHistory,24*60*60*1000);
+    setTimeout(cleanupInternalBookingAlertHistory,45*1000);
     setInterval(queueInternalReminders,60*1000);
     setTimeout(queueInternalReminders,20*1000);
     setInterval(queueBooking, 60 * 1000);

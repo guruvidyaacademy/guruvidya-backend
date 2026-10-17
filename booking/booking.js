@@ -226,7 +226,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
       res.set('Cache-Control','no-store').json({success:true,data:r.rows});
     }catch(e){internalError(res,e)}
   });
-  app.get('/api/admin/booking/internal-alerts/history',admin,async(req,res)=>{try{const r=await pool.query(`SELECT id,event,recipient_name AS recipient,channel,status,provider,detail,created_at,booking_id FROM booking_internal_alert_deliveries ORDER BY created_at DESC,id DESC LIMIT 250`);res.set('Cache-Control','no-store').json({success:true,data:r.rows});}catch(e){internalError(res,e)}});
+  app.get('/api/admin/booking/internal-alerts/history',admin,async(req,res)=>{try{const r=await pool.query(`SELECT id,event,recipient_name AS recipient,destination,channel,status,provider,detail,created_at,booking_id FROM booking_internal_alert_deliveries WHERE created_at >= NOW() - INTERVAL '15 days' AND event IN ('confirmed','rescheduled','cancelled') ORDER BY created_at DESC,id DESC LIMIT 250`);res.set('Cache-Control','no-store').json({success:true,data:r.rows});}catch(e){internalError(res,e)}});
   // Paginated booking/recipient activity for Overview; legacy history endpoint remains unchanged.
   app.get('/api/admin/booking/internal-alerts/overview-activity',admin,async(req,res)=>{
     try{
@@ -245,6 +245,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
         conditions.push('d.created_at >= ('+add(from)+"::date::timestamp AT TIME ZONE 'Asia/Kolkata')");
         conditions.push('d.created_at < (('+add(to)+"::date + 1)::timestamp AT TIME ZONE 'Asia/Kolkata')");
       }else if(period!=='all')return fail(res,400,'Invalid period');
+      conditions.push("d.created_at >= NOW() - INTERVAL '7 days'");
       if(event){if(!['confirmed','rescheduled','cancelled'].includes(event))return fail(res,400,'Invalid event');conditions.push('d.event='+add(event));}
       if(search){const pattern='%'+search.replace(/[\%_]/g,'\$&')+'%';const a=add(pattern);conditions.push(`(CAST(d.booking_id AS TEXT) ILIKE ${a} OR d.recipient_name ILIKE ${a} OR d.destination ILIKE ${a})`);}
       const where=conditions.length?'WHERE '+conditions.join(' AND '):'';
@@ -253,7 +254,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
       const keys=await pool.query(`SELECT d.booking_id,d.recipient_name,MAX(d.created_at) AS latest FROM booking_internal_alert_deliveries d ${where} GROUP BY ${grouping} ORDER BY latest DESC,booking_id DESC LIMIT ${add(pageSize)} OFFSET ${add((page-1)*pageSize)}`,params);
       if(!keys.rows.length)return res.set('Cache-Control','no-store').json({success:true,data:{items:[],total:count.rows[0].total,page,pageSize}});
       const ids=keys.rows.map(x=>x.booking_id),names=keys.rows.map(x=>x.recipient_name);
-      const records=await pool.query(`SELECT id,booking_id,event,recipient_name AS recipient,destination,channel,status,provider,detail,created_at FROM booking_internal_alert_deliveries WHERE (booking_id,recipient_name) IN (SELECT * FROM UNNEST($1::bigint[],$2::text[])) ORDER BY created_at DESC,id DESC`,[ids,names]);
+      const records=await pool.query(`SELECT id,booking_id,event,recipient_name AS recipient,destination,channel,status,provider,detail,created_at FROM booking_internal_alert_deliveries WHERE created_at >= NOW() - INTERVAL '7 days' AND (booking_id,recipient_name) IN (SELECT * FROM UNNEST($1::bigint[],$2::text[])) ORDER BY created_at DESC,id DESC`,[ids,names]);
       const items=keys.rows.map(k=>({...k,phone:(records.rows.find(r=>String(r.booking_id)===String(k.booking_id)&&r.recipient===k.recipient_name&&r.channel==='whatsapp')||{}).destination||'',events:records.rows.filter(r=>String(r.booking_id)===String(k.booking_id)&&r.recipient===k.recipient_name)}));
       res.set('Cache-Control','no-store').json({success:true,data:{items,total:count.rows[0].total,page,pageSize}});
     }catch(e){internalError(res,e)}
