@@ -1,3 +1,5 @@
+import { randomBytes, createHash } from 'node:crypto';
+import { renderInternalReminderEmail } from './internal-reminder-email.js';
 // Internal staff 24-hour-window reminder scheduler. Independent of booking lifecycle alerts.
 // An incoming WhatsApp message starts a new cycle; unique claims make dispatch restart-safe.
 export async function initInternalAlertReminderScheduler(pool) {
@@ -10,6 +12,8 @@ export async function initInternalAlertReminderScheduler(pool) {
     UNIQUE(recipient_id,incoming_at,channel,offset_minutes)
   )`);
   await pool.query(`ALTER TABLE booking_internal_reminder_deliveries ADD COLUMN IF NOT EXISTS provider_message_id TEXT`);
+  await pool.query(`ALTER TABLE booking_internal_reminder_deliveries ADD COLUMN IF NOT EXISTS acknowledgement_token_hash TEXT`);
+  await pool.query(`ALTER TABLE booking_internal_reminder_deliveries ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ`);
   await pool.query(`CREATE INDEX IF NOT EXISTS booking_internal_reminder_provider_message_idx ON booking_internal_reminder_deliveries(provider_message_id) WHERE provider_message_id IS NOT NULL`);
 }
 
@@ -65,7 +69,13 @@ export async function runInternalAlertReminderScheduler(pool, {sendEmail,sendWha
         const remaining=Math.max(0,Math.ceil((started+86400000-now)/60000));
         const message=`GuruVidya Internal Appointment Alert\nWhatsApp 24-Hour Window Reminder\nReminder ${reminderNumber} of ${reminderTotal}\nRecipient: ${r.name}\nChannel: ${step.channel}\nWindow remaining: approximately ${Math.floor(remaining/60)}h ${remaining%60}m\n\nPlease reply to the GuruVidya WhatsApp number to start a new 24-hour service window.\n\nGuruVidya Academy Pvt. Ltd.`;
         if(channel==='email'){
-          const result=await sendEmail({to:r.email,subject:`GuruVidya Alert | Reminder ${reminderNumber} of ${reminderTotal} | WhatsApp Window`,text:message});
+          const token=randomBytes(32).toString('hex');
+          const tokenHash=createHash('sha256').update(token).digest('hex');
+          await pool.query('UPDATE booking_internal_reminder_deliveries SET acknowledgement_token_hash=$2 WHERE id=$1',[id,tokenHash]);
+          const publicBase=String(process.env.PUBLIC_BACKEND_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'');
+          const acknowledgementUrl=`${publicBase}/api/public/internal-reminder/acknowledge/${id}/${token}`;
+          const html=renderInternalReminderEmail({name:r.name,number:reminderNumber,total:reminderTotal,remaining,acknowledgementUrl,publicBase});
+          const result=await sendEmail({to:r.email,subject:`Guruvidya Alert | Reminder ${reminderNumber} of ${reminderTotal} | WhatsApp Window`,text:message+'\n\nAcknowledge receipt: '+acknowledgementUrl,html});
           status='sent';provider=result?.provider||'email';providerMessageId=result?.id||null;detail='Accepted by email provider';
         }else{
           // Check fresh real incoming evidence again immediately before sending.

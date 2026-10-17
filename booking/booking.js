@@ -221,10 +221,33 @@ export function installBookingRoutes(app,pool,hooks={}) {
       res.set('Cache-Control','no-store').json({success:true,data:rows});
     }catch(e){console.error('Internal alerts window lookup failed',e);return fail(res,500,'Unable to load WhatsApp window status');}
   });
+  app.get('/api/public/internal-reminder/logo',async(req,res)=>{try{const logo=await readFile(new URL('./guruvidya-logo.png',import.meta.url));res.type('png').set('Cache-Control','public, max-age=86400').send(logo)}catch(e){res.sendStatus(404)}});
+  app.get('/api/public/internal-reminder/g-icon',async(req,res)=>{try{const icon=await readFile(new URL('./internal-reminder-g-icon.png',import.meta.url));res.type('png').set('Cache-Control','public, max-age=86400').send(icon)}catch(e){res.sendStatus(404)}});
+  // Explicit recipient confirmation: token is random, stored hashed, and never inferred from an email open.
+  app.all('/api/public/internal-reminder/acknowledge/:id/:token',async(req,res)=>{
+    res.set('Cache-Control','no-store');
+    const id=String(req.params.id||''), token=String(req.params.token||'');
+    if(!/^\d+$/.test(id)||!/^[a-f0-9]{64}$/.test(token))return res.status(400).type('html').send('<h2>Invalid acknowledgement link</h2>');
+    try{
+      const tokenHash=createHash('sha256').update(token).digest('hex');
+      if(req.method==='GET'){
+        const existing=await pool.query('SELECT acknowledged_at FROM booking_internal_reminder_deliveries WHERE id=$1 AND channel=\'email\' AND acknowledgement_token_hash=$2',[id,tokenHash]);
+        if(!existing.rowCount)return res.status(404).type('html').send('<h2>Link unavailable</h2>');
+        if(existing.rows[0].acknowledged_at)return res.type('html').send('<h2>Already acknowledged</h2><p>Your confirmation has already been recorded.</p>');
+        return res.type('html').send('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Confirm receipt | Guruvidya</title></head><body style="font-family:Arial,sans-serif;background:#eef5ff;text-align:center;padding:70px 16px;color:#102b59"><div style="max-width:540px;margin:auto;background:white;border-radius:18px;padding:40px;box-shadow:0 8px 30px #dce5f2"><h1>Confirm Email Receipt</h1><p>Please confirm that you received and reviewed this Guruvidya reminder.</p><form method="POST"><button type="submit" style="background:#009b58;color:white;border:0;border-radius:12px;padding:17px 28px;font-size:18px;cursor:pointer">✓ Acknowledge Receipt</button></form><p>Guruvidya Academy Pvt. Ltd.</p></div></body></html>');
+      }
+      if(req.method!=='POST')return res.sendStatus(405);
+      const result=await pool.query(`UPDATE booking_internal_reminder_deliveries SET acknowledged_at=COALESCE(acknowledged_at,NOW()),updated_at=NOW()
+        WHERE id=$1 AND channel=\'email\' AND acknowledgement_token_hash=$2 AND status NOT IN ('failed','bounced','complained','suppressed')
+        RETURNING acknowledged_at`,[id,tokenHash]);
+      if(!result.rowCount)return res.status(404).type('html').send('<h2>Link unavailable</h2><p>Please contact Guruvidya Academy.</p>');
+      return res.type('html').send('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Receipt acknowledged | Guruvidya</title></head><body style="font-family:Arial,sans-serif;background:#eef5ff;text-align:center;padding:70px 16px;color:#102b59"><div style="max-width:540px;margin:auto;background:white;border-radius:18px;padding:40px;box-shadow:0 8px 30px #dce5f2"><div style="font-size:50px;color:#009b5a">&#10003;</div><h1>Receipt Acknowledged</h1><p>Thank you. Your email receipt has been confirmed and recorded successfully.</p><p style="color:#526681">Guruvidya Academy Pvt. Ltd.</p></div></body></html>');
+    }catch(err){console.error('Internal reminder acknowledgement failed',err.message);return res.status(500).type('html').send('<h2>Unable to record acknowledgement</h2>');}
+  });
   // Real provider-acceptance outcomes for internal 24h reminders; no inferred read receipts.
   app.get('/api/admin/booking/internal-alerts/reminder-deliveries',admin,async(req,res)=>{
     try{
-      const r=await pool.query(`SELECT id,recipient_id,incoming_at,channel,offset_minutes,status,provider,detail,created_at,updated_at
+      const r=await pool.query(`SELECT id,recipient_id,incoming_at,channel,offset_minutes,status,provider,detail,created_at,updated_at,acknowledged_at
         FROM booking_internal_reminder_deliveries ORDER BY created_at DESC,id DESC LIMIT 1500`);
       res.set('Cache-Control','no-store').json({success:true,data:r.rows});
     }catch(e){internalError(res,e)}
