@@ -228,6 +228,29 @@ export function installBookingRoutes(app,pool,hooks={}) {
     if(!/^(header-alert|whatsapp-circle|recipient|channel|clock|timer-clock|info|target|people|bars|footer-waves|facebook|instagram|youtube|linkedin|x)$/.test(name))return res.sendStatus(404);
     try{const img=await readFile(new URL('./internal-reminder-assets/'+name+'.png',import.meta.url));res.type('png').set('Cache-Control','public, max-age=86400').send(img)}catch(e){res.sendStatus(404)}
   });
+  // Read-only, token-protected live countdown. Reuses real incoming evidence, not test overrides.
+  app.get('/api/public/internal-reminder/live/:id/:token',async(req,res)=>{
+    res.set('Cache-Control','private, no-store');
+    const id=String(req.params.id||''),token=String(req.params.token||'');
+    if(!/^\d+$/.test(id)||!/^[a-f0-9]{64}$/.test(token))return res.status(400).type('html').send('<h2>Invalid countdown link</h2>');
+    try{
+      const hash=createHash('sha256').update(token).digest('hex');
+      const result=await pool.query(`SELECT d.incoming_at,r.phone FROM booking_internal_reminder_deliveries d
+        JOIN booking_internal_recipients r ON r.id=d.recipient_id
+        WHERE d.id=$1 AND d.channel='email' AND d.acknowledgement_token_hash=$2`,[id,hash]);
+      if(!result.rowCount)return res.status(404).type('html').send('<h2>Countdown link unavailable</h2>');
+      const phone=String(result.rows[0].phone||'').replace(/\D/g,'').replace(/^91(?=\d{10}$)/,'');
+      if(!/^\d{10}$/.test(phone))return res.status(404).type('html').send('<h2>Window status unavailable</h2>');
+      const state=await whatsappWindowState(phone);
+      const incoming=state.last_incoming_at?new Date(state.last_incoming_at).getTime():NaN;
+      const original=new Date(result.rows[0].incoming_at).getTime();
+      // Do not disclose or track other message cycles through an old emailed link.
+      const expiry=Number.isFinite(incoming)&&incoming>=original-1000?incoming+86400000:original+86400000;
+      const expiryJson=JSON.stringify(new Date(expiry).toISOString());
+      return res.type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Live WhatsApp Window | Guruvidya</title>
+<style>body{margin:0;background:#edf6ff;color:#0c2452;font-family:Arial,Helvetica,sans-serif;padding:30px 14px}.card{max-width:520px;margin:30px auto;background:#fff;border-radius:20px;box-shadow:0 12px 35px #cfdef2;padding:32px 24px;text-align:center}.brand{font-size:20px;font-weight:800}.sub{color:#5c6d88;font-size:13px;margin:8px 0 28px}.icon{font-size:40px;color:#0754bb}.timer{background:#e4f3ff;color:#0754bb;border-radius:15px;padding:20px 10px;font-size:clamp(32px,8vw,54px);font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:2px}.units{font-size:12px;color:#5277a9;margin:10px 0 22px}.status{display:inline-block;background:#dcf8e9;color:#097447;border-radius:20px;padding:8px 18px;font-weight:bold}.closed{background:#fce9e9;color:#a52b2b}.note{font-size:13px;line-height:1.6;color:#596e8e;margin-top:25px}</style></head><body><main class="card"><div class="brand">Guruvidya Academy Pvt. Ltd.</div><div class="sub">Internal Appointment Alert</div><div class="icon">&#9716;</div><h2>WhatsApp 24-Hour Window</h2><div id="timer" class="timer" role="timer" aria-label="Time remaining">-- : -- : --</div><div class="units">Hours : Minutes : Seconds</div><div id="status" class="status">Checking</div><p class="note">Live countdown based on the last incoming WhatsApp message recorded by Guruvidya CRM. This page does not acknowledge the email or send any message.</p></main><script>const expiry=Date.parse(${expiryJson});function update(){const ms=Math.max(0,expiry-Date.now()),sec=Math.ceil(ms/1000),h=Math.floor(sec/3600),m=Math.floor(sec%3600/60),s=sec%60;document.getElementById('timer').textContent=[h,m,s].map(v=>String(v).padStart(2,'0')).join(' : ');const el=document.getElementById('status');el.textContent=sec>0?'WINDOW OPEN':'WINDOW EXPIRED';el.className='status'+(sec>0?'':' closed');}update();setInterval(update,1000);</script></body></html>`);
+    }catch(e){console.error('Internal reminder live countdown failed',e.message);return res.status(500).type('html').send('<h2>Unable to load window status</h2>');}
+  });
   // Explicit recipient confirmation: token is random, stored hashed, and never inferred from an email open.
   app.all('/api/public/internal-reminder/acknowledge/:id/:token',async(req,res)=>{
     res.set('Cache-Control','no-store');

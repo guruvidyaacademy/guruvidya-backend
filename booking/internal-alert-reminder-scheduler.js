@@ -74,7 +74,8 @@ export async function runInternalAlertReminderScheduler(pool, {sendEmail,sendWha
           await pool.query('UPDATE booking_internal_reminder_deliveries SET acknowledgement_token_hash=$2 WHERE id=$1',[id,tokenHash]);
           const publicBase=String(process.env.PUBLIC_BACKEND_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'');
           const acknowledgementUrl=`${publicBase}/api/public/internal-reminder/acknowledge/${id}/${token}`;
-          const html=renderInternalReminderEmail({name:r.name,number:reminderNumber,total:reminderTotal,remaining,acknowledgementUrl,publicBase});
+          const liveCountdownUrl=`${publicBase}/api/public/internal-reminder/live/${id}/${token}`;
+          const html=renderInternalReminderEmail({name:r.name,number:reminderNumber,total:reminderTotal,remaining,acknowledgementUrl,liveCountdownUrl,publicBase});
           const result=await sendEmail({to:r.email,subject:`Guruvidya Alert | Reminder ${reminderNumber} of ${reminderTotal} | WhatsApp Window`,text:message+'\n\nAcknowledge receipt: '+acknowledgementUrl,html});
           status='sent';provider=result?.provider||'email';providerMessageId=result?.id||null;detail='Accepted by email provider';
         }else{

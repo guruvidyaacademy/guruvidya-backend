@@ -7,7 +7,7 @@ const socials=[
  ['linkedin','https://www.linkedin.com/in/guruvidya-academy-pvt-ltd'],
  ['x','https://x.com/guruvidya_']
 ];
-export function renderInternalReminderEmail({name,number,total,remaining,acknowledgementUrl,publicBase}){
+export function renderInternalReminderEmail({name,number,total,remaining,acknowledgementUrl,liveCountdownUrl,publicBase}){
   const base=String(publicBase||'').replace(/\/$/,'');
   const art=(id)=>esc(base+'/api/public/internal-reminder/art/'+id);
   const logo=esc(base+'/api/public/internal-reminder/logo');
@@ -38,6 +38,8 @@ ${row('recipient','Recipient',recipient)}
 ${row('channel','Channel','Email')}
 ${row('clock','Window Remaining',`<span style="display:inline-block;background:#e4f3ff;border-radius:15px;padding:5px 12px 5px 5px;white-space:nowrap;vertical-align:middle"><table role="presentation" cellpadding="0" cellspacing="0"><tr><td>${img('timer-clock',34,34)}</td><td style="font-size:19px;font-weight:bold;color:#092363;padding-left:6px">${time}</td></tr></table></span>`)}
 </table>
+<p style="margin:10px 0 0;text-align:center;color:#3c4e79;font-size:13px;line-height:1.5">The time above is a snapshot taken when this reminder was sent.</p>
+<p style="margin:9px 0 0;text-align:center"><a href="${esc(liveCountdownUrl)}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:11px 20px;border-radius:10px;background:#e4f3ff;border:1px solid #b5d8ff;color:#0754bb;font-size:15px;font-weight:bold;text-decoration:none">&#9716; View Live Countdown &rarr;</a></p>
 <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin-top:19px"><tr><td align="center" bgcolor="#009f59" style="border-radius:10px;background:#009f59">
 <a href="${esc(acknowledgementUrl)}" target="_blank" rel="noopener noreferrer" style="display:block;padding:17px 8px;color:#ffffff;font-size:22px;line-height:1.35;font-weight:bold;text-decoration:none"><span style="display:inline-block;vertical-align:middle;width:36px;height:36px;line-height:36px;text-align:center;border-radius:50%;background:#ffffff;color:#008c51;font-size:27px;margin-right:12px">✓</span>Acknowledge Receipt &nbsp;❯</a></td></tr></table>
 <p style="text-align:center;margin:10px 0 16px;color:#3c4e79;font-size:14px">Click to confirm that you have received and reviewed this email.</p>
