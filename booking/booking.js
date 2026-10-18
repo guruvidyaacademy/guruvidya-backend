@@ -692,32 +692,36 @@ export function installBookingRoutes(app,pool,hooks={}) {
       ORDER BY l.created_at DESC,l.id DESC LIMIT 300`);res.set('Cache-Control','no-store').json({success:true,data:r.rows}); }
     catch(e){fail(res,500,'Unable to load notification queue');}
   });
-  // Read-only student/parent booking notification tracking; independent from internal staff alerts.
+  // Booking lifecycle is the source of truth; notification logs are optional evidence.
+  // Do not equate an appointment event with a successfully sent notification.
   app.get('/api/admin/booking/notification-tracking',admin,async(req,res)=>{
     try {
-      const r=await pool.query(`SELECT b.id AS booking_id,b.booking_ref,b.student_name,b.student_mobile,
+      const result=await pool.query(`WITH lifecycle AS (
+        SELECT e.id AS lifecycle_id,e.booking_id,
+          CASE WHEN e.action IN ('booked','confirm','approve') THEN 'confirmed'
+               WHEN e.action IN ('reschedule','cancel') THEN
+                 CASE WHEN e.action='cancel' THEN 'cancelled' ELSE 'rescheduled' END END AS event,
+          e.actor AS performed_by,e.details AS event_details,e.created_at AS event_at
+        FROM booking_events e
+        WHERE e.action IN ('booked','confirm','approve','reschedule','cancel')
+          AND e.created_at >= NOW()-INTERVAL '16 days'
+      ), lifecycle_numbered AS (
+        SELECT l.*,LEAD(l.event_at) OVER(PARTITION BY l.booking_id ORDER BY l.event_at,l.lifecycle_id) AS next_event_at
+        FROM lifecycle l WHERE l.event IS NOT NULL
+      )
+      SELECT b.id AS booking_id,b.booking_ref,b.student_name,b.student_mobile,
         b.parent_name,b.parent_mobile,b.parent_relation,b.booked_by,b.cancelled_by,b.course,
-        l.id,l.event,l.recipient AS recipient_role,l.channel,l.status,l.detail,
-        COALESCE(l.created_at,b.created_at) AS created_at,
-        CASE WHEN l.id IS NULL THEN
-          CASE WHEN b.status='cancelled' THEN 'cancelled'
-               WHEN b.status='rescheduled' THEN 'rescheduled'
-               ELSE 'confirmed' END
-          ELSE l.event END AS tracking_event
-        FROM student_bookings b
-        LEFT JOIN booking_delivery_logs l ON l.booking_id=b.id
-          AND l.event IN ('confirmed','rescheduled','cancelled')
-        WHERE b.created_at >= NOW()-INTERVAL '16 days'
-           OR l.created_at >= NOW()-INTERVAL '16 days'
-        ORDER BY COALESCE(l.created_at,b.created_at) DESC,l.id DESC NULLS LAST LIMIT 600`);
-      const data=r.rows.map(row=>({
-        ...row,event:row.tracking_event,
-        status:row.id===null?'not_tracked':row.status,
-        // No delivery log means booking exists, not that a notification was sent.
-        recipient_role:row.recipient_role==='parent'?'parent':row.recipient_role==='student'?'student':null
-      }));
-      res.set('Cache-Control','no-store').json({success:true,data});
-    } catch(e){console.error('Booking notification tracking read failed:',e.message);fail(res,500,'Unable to load booking notification tracking');}
+        e.lifecycle_id,e.event,e.performed_by,e.event_details,e.event_at,
+        d.id,d.recipient AS recipient_role,d.channel,d.status,d.detail,
+        COALESCE(d.created_at,e.event_at) AS created_at
+      FROM lifecycle_numbered e JOIN student_bookings b ON b.id=e.booking_id
+      LEFT JOIN booking_delivery_logs d ON d.booking_id=e.booking_id AND d.event=e.event AND d.created_at>=e.event_at - INTERVAL '2 minutes' AND (e.next_event_at IS NULL OR d.created_at<e.next_event_at)
+      ORDER BY e.event_at DESC,e.lifecycle_id DESC,d.id DESC NULLS LAST LIMIT 600`);
+      res.set('Cache-Control','no-store').json({success:true,data:result.rows.map(r=>({
+        ...r,status:r.id==null?'not_tracked':r.status,
+        recipient_role:r.recipient_role==='parent'?'parent':r.recipient_role==='student'?'student':null
+      }))});
+    }catch(e){console.error('Booking tracking:',e);fail(res,500,'Unable to load booking notification tracking');}
   });
   // Human reconciliation queue: read-only, no phone numbers, no automatic retry.
   // Unknown provider outcomes must be checked against BotSailor records by staff.
