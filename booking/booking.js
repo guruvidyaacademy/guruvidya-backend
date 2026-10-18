@@ -281,7 +281,18 @@ export function installBookingRoutes(app,pool,hooks={}) {
       res.set('Cache-Control','no-store').json({success:true,data:r.rows});
     }catch(e){internalError(res,e)}
   });
-  app.get('/api/admin/booking/internal-alerts/history',admin,async(req,res)=>{try{const r=await pool.query(`SELECT id,event,recipient_name AS recipient,destination,channel,status,provider,detail,created_at,booking_id FROM booking_internal_alert_deliveries WHERE created_at >= NOW() - INTERVAL '15 days' AND event IN ('confirmed','rescheduled','cancelled') ORDER BY created_at DESC,id DESC LIMIT 250`);res.set('Cache-Control','no-store').json({success:true,data:r.rows});}catch(e){internalError(res,e)}});
+  app.get('/api/admin/booking/internal-alerts/history',admin,async(req,res)=>{try{
+    const r=await pool.query(`SELECT d.id,d.event,d.recipient,d.channel,d.status,d.detail,d.created_at,d.booking_id,
+      b.booking_ref,b.student_name,b.student_mobile,b.student_email,b.parent_name,b.parent_mobile,b.parent_email,b.parent_relation,b.booked_by,b.cancelled_by,b.course,
+      CASE WHEN lower(d.recipient) LIKE '%parent%' OR lower(d.recipient) LIKE '%guardian%' THEN 'parent' ELSE 'student' END AS recipient_role,
+      CASE WHEN lower(d.recipient) LIKE '%parent%' OR lower(d.recipient) LIKE '%guardian%' THEN b.parent_name ELSE b.student_name END AS recipient_name,
+      CASE WHEN lower(d.recipient) LIKE '%parent%' OR lower(d.recipient) LIKE '%guardian%' THEN CASE WHEN d.channel='email' THEN b.parent_email ELSE b.parent_mobile END ELSE CASE WHEN d.channel='email' THEN b.student_email ELSE b.student_mobile END END AS destination,
+      CASE WHEN d.channel='email' THEN 'email' ELSE 'botsailor' END AS provider
+      FROM booking_delivery_logs d JOIN student_bookings b ON b.id=d.booking_id
+      WHERE d.created_at >= NOW() - INTERVAL '15 days' AND d.event IN ('confirmed','rescheduled','cancelled')
+      ORDER BY d.created_at DESC,d.id DESC LIMIT 500`);
+    res.set('Cache-Control','no-store').json({success:true,data:r.rows});
+  }catch(e){internalError(res,e)}});
   // Paginated booking/recipient activity for Overview; legacy history endpoint remains unchanged.
   app.get('/api/admin/booking/internal-alerts/overview-activity',admin,async(req,res)=>{
     try{
