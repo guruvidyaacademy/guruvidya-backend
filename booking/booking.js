@@ -89,6 +89,9 @@ export async function initBooking(pool) {
     UNIQUE(booking_id,kind,event_key)
   );`);
   await pool.query(`ALTER TABLE booking_delivery_logs ADD COLUMN IF NOT EXISTS sending_claimed_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE booking_delivery_logs ADD COLUMN IF NOT EXISTS provider_message_id TEXT`);
+  await pool.query(`ALTER TABLE booking_delivery_logs ADD COLUMN IF NOT EXISTS provider TEXT`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS booking_delivery_provider_message_idx ON booking_delivery_logs(provider_message_id) WHERE provider_message_id IS NOT NULL`);
   await pool.query('ALTER TABLE booking_counsellors ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ');
   // Booking locations are persisted separately so branch/address/map settings survive deploys and restarts.
   await pool.query(`CREATE TABLE IF NOT EXISTS booking_locations (
