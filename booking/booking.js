@@ -281,18 +281,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
       res.set('Cache-Control','no-store').json({success:true,data:r.rows});
     }catch(e){internalError(res,e)}
   });
-  app.get('/api/admin/booking/internal-alerts/history',admin,async(req,res)=>{try{
-    const r=await pool.query(`SELECT d.id,d.event,d.recipient,d.channel,d.status,d.detail,d.created_at,d.booking_id,
-      b.booking_ref,b.student_name,b.student_mobile,b.student_email,b.parent_name,b.parent_mobile,b.parent_email,b.parent_relation,b.booked_by,b.cancelled_by,b.course,
-      CASE WHEN lower(d.recipient) LIKE '%parent%' OR lower(d.recipient) LIKE '%guardian%' THEN 'parent' ELSE 'student' END AS recipient_role,
-      CASE WHEN lower(d.recipient) LIKE '%parent%' OR lower(d.recipient) LIKE '%guardian%' THEN b.parent_name ELSE b.student_name END AS recipient_name,
-      CASE WHEN lower(d.recipient) LIKE '%parent%' OR lower(d.recipient) LIKE '%guardian%' THEN CASE WHEN d.channel='email' THEN b.parent_email ELSE b.parent_mobile END ELSE CASE WHEN d.channel='email' THEN b.student_email ELSE b.student_mobile END END AS destination,
-      CASE WHEN d.channel='email' THEN 'email' ELSE 'botsailor' END AS provider
-      FROM booking_delivery_logs d JOIN student_bookings b ON b.id=d.booking_id
-      WHERE d.created_at >= NOW() - INTERVAL '15 days' AND d.event IN ('confirmed','rescheduled','cancelled')
-      ORDER BY d.created_at DESC,d.id DESC LIMIT 500`);
-    res.set('Cache-Control','no-store').json({success:true,data:r.rows});
-  }catch(e){internalError(res,e)}});
+  app.get('/api/admin/booking/internal-alerts/history',admin,async(req,res)=>{try{const r=await pool.query(`SELECT id,event,recipient_name AS recipient,destination,channel,status,provider,detail,created_at,booking_id FROM booking_internal_alert_deliveries WHERE created_at >= NOW() - INTERVAL '15 days' AND event IN ('confirmed','rescheduled','cancelled') ORDER BY created_at DESC,id DESC LIMIT 250`);res.set('Cache-Control','no-store').json({success:true,data:r.rows});}catch(e){internalError(res,e)}});
   // Paginated booking/recipient activity for Overview; legacy history endpoint remains unchanged.
   app.get('/api/admin/booking/internal-alerts/overview-activity',admin,async(req,res)=>{
     try{
@@ -702,6 +691,33 @@ export function installBookingRoutes(app,pool,hooks={}) {
       FROM booking_delivery_logs l JOIN student_bookings b ON b.id=l.booking_id
       ORDER BY l.created_at DESC,l.id DESC LIMIT 300`);res.set('Cache-Control','no-store').json({success:true,data:r.rows}); }
     catch(e){fail(res,500,'Unable to load notification queue');}
+  });
+  // Read-only student/parent booking notification tracking; independent from internal staff alerts.
+  app.get('/api/admin/booking/notification-tracking',admin,async(req,res)=>{
+    try {
+      const r=await pool.query(`SELECT b.id AS booking_id,b.booking_ref,b.student_name,b.student_mobile,
+        b.parent_name,b.parent_mobile,b.parent_relation,b.booked_by,b.cancelled_by,b.course,
+        l.id,l.event,l.recipient AS recipient_role,l.channel,l.status,l.detail,
+        COALESCE(l.created_at,b.created_at) AS created_at,
+        CASE WHEN l.id IS NULL THEN
+          CASE WHEN b.status='cancelled' THEN 'cancelled'
+               WHEN b.status='rescheduled' THEN 'rescheduled'
+               ELSE 'confirmed' END
+          ELSE l.event END AS tracking_event
+        FROM student_bookings b
+        LEFT JOIN booking_delivery_logs l ON l.booking_id=b.id
+          AND l.event IN ('confirmed','rescheduled','cancelled')
+        WHERE b.created_at >= NOW()-INTERVAL '16 days'
+           OR l.created_at >= NOW()-INTERVAL '16 days'
+        ORDER BY COALESCE(l.created_at,b.created_at) DESC,l.id DESC NULLS LAST LIMIT 600`);
+      const data=r.rows.map(row=>({
+        ...row,event:row.tracking_event,
+        status:row.id===null?'not_tracked':row.status,
+        // No delivery log means booking exists, not that a notification was sent.
+        recipient_role:row.recipient_role==='parent'?'parent':row.recipient_role==='student'?'student':null
+      }));
+      res.set('Cache-Control','no-store').json({success:true,data});
+    } catch(e){console.error('Booking notification tracking read failed:',e.message);fail(res,500,'Unable to load booking notification tracking');}
   });
   // Human reconciliation queue: read-only, no phone numbers, no automatic retry.
   // Unknown provider outcomes must be checked against BotSailor records by staff.
