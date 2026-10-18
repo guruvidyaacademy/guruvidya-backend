@@ -5017,11 +5017,13 @@ async function sendBookingCancellationEmails(b){
     try{
       const result=await sendEmailWithFailover({to:r.email,subject:`Appointment Cancelled – GuruVidya Academy | ${b.booking_ref}`,text:`Dear ${b.student_name||'Student'},\nYour admission counselling appointment has been cancelled as requested.\nBooking Reference: ${b.booking_ref}\nStudent: ${b.student_name}\nCourse: ${b.course}\nBooked By: ${b.booked_by||'Student'}\nCancelled By: ${b.cancelled_by||b.cancelled_via||'Student'}\nReason: ${b.cancellation_reason||'—'}\nBook New Appointment: ${String(process.env.PUBLIC_BOOKING_URL||'https://guruvidya-backend.onrender.com/booking').split('#')[0]}`,html:bookingCancellationEmailHtml(b)});
       results.push({recipient:r.kind,success:true,provider:result.provider});
-      await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail,provider,provider_message_id) VALUES($1,'booking_cancellation',$2,'email','sent',$3,$4,$5) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status='sent',detail=EXCLUDED.detail,provider=EXCLUDED.provider,provider_message_id=EXCLUDED.provider_message_id,created_at=NOW()`,[b.id,r.kind,`Sent via ${result.provider}`,result.provider,result.id||null]).catch(()=>{});
+      try {
+        await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail,provider,provider_message_id) VALUES($1,'booking_cancellation',$2,'email','sent',$3,$4,$5) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status='sent',detail=EXCLUDED.detail,provider=EXCLUDED.provider,provider_message_id=EXCLUDED.provider_message_id,created_at=NOW()`,[b.id,r.kind,`Sent via ${result.provider}`,result.provider,result.id||null]);
+      } catch (logErr) { console.error('BOOKING CANCELLATION EMAIL TRACKING SAVE FAILED',r.kind,b.booking_ref,logErr?.message||logErr); }
     }catch(e){
       console.error('BOOKING CANCELLATION EMAIL',r.kind,e?.message||e);
       results.push({recipient:r.kind,success:false,error:String(e?.message||e)});
-      await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail) VALUES($1,'booking_cancellation',$2,'email','failed',$3) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status='failed',detail=EXCLUDED.detail,created_at=NOW()`,[b.id,r.kind,String(e?.message||'Email failed').slice(0,500)]).catch(()=>{});
+      await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail) VALUES($1,'booking_cancellation',$2,'email','failed',$3) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status='failed',detail=EXCLUDED.detail,created_at=NOW()`,[b.id,r.kind,String(e?.message||'Email failed').slice(0,500)]).catch(logErr=>console.error('BOOKING CANCELLATION EMAIL FAILURE LOG SAVE FAILED',r.kind,b.booking_ref,logErr?.message||logErr));
     }
   }
   return {success:results.some(x=>x.success),status:results.length?'recipient_results':'no_email_recipient',results};
@@ -5062,6 +5064,16 @@ async function onBookingCancelledRebook({booking_ref}){
       }finally{
         await pool.query(`UPDATE booking_rebook_link_deliveries SET status=$3,updated_at=NOW() WHERE booking_id=$1 AND mobile=$2`,[claimed.rows[0].booking_id,mobile,result.success?'sent':'failed']);
       }
+      // Cancellation sends must have a tracking record, not just a rebook-link claim.
+      // Preserve the actual provider result: 'sent' means accepted, never delivered/read.
+      try {
+        await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail,provider,provider_message_id)
+          VALUES($1,'booking_cancellation',$2,'whatsapp',$3,$4,'botsailor',$5)
+          ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE
+          SET status=EXCLUDED.status,detail=EXCLUDED.detail,provider=EXCLUDED.provider,
+              provider_message_id=EXCLUDED.provider_message_id,created_at=NOW()`,
+          [b.id,recipient.kind,result.success?'sent':'failed',String(result.message||result.status||'').slice(0,500),bookingProviderMessageId(result)]);
+      } catch (logErr) { console.error('BOOKING CANCELLATION WHATSAPP TRACKING SAVE FAILED',recipient.kind,booking_ref,logErr?.message||logErr); }
       results.push({recipient:recipient.kind,...result});
     }catch(err){
       console.error('BOOKING REBOOK WHATSAPP',recipient.kind,err?.message||err);
