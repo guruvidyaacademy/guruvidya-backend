@@ -5057,7 +5057,25 @@ async function onBookingCancelledRebook({booking_ref}){
       const claimed=await pool.query(`INSERT INTO booking_rebook_link_deliveries(booking_id,mobile,status)
         SELECT id,$2,'pending' FROM student_bookings WHERE booking_ref=$1 AND status='cancelled'
         ON CONFLICT DO NOTHING RETURNING booking_id`,[booking_ref,mobile]);
-      if(!claimed.rowCount){results.push({recipient:recipient.kind,success:true,status:'already_claimed'});continue;}
+      if(!claimed.rowCount){
+        // A previously accepted cancellation card must still be visible in the
+        // lifecycle tracker. Never send it twice, and never infer delivered/read.
+        const prior=await pool.query(`SELECT status,updated_at FROM booking_rebook_link_deliveries
+          WHERE booking_id=$1 AND mobile=$2 LIMIT 1`,[b.id,mobile]);
+        if(prior.rows[0]?.status==='sent'){
+          try{
+            await pool.query(`INSERT INTO booking_delivery_logs
+              (booking_id,event,recipient,channel,status,detail,provider,created_at)
+              VALUES($1,'booking_cancellation',$2,'whatsapp','sent',
+                'Reconciled from previously accepted cancellation card; provider delivery/read not verified',
+                'botsailor',COALESCE($3,NOW()))
+              ON CONFLICT(booking_id,event,recipient,channel) DO NOTHING`,
+              [b.id,recipient.kind,prior.rows[0].updated_at]);
+          }catch(logErr){console.error('BOOKING CANCELLATION TRACKING RECONCILE FAILED',recipient.kind,booking_ref,logErr?.message||logErr);}
+        }
+        results.push({recipient:recipient.kind,success:prior.rows[0]?.status==='sent',status:'already_claimed'});
+        continue;
+      }
       let result={success:false};
       try{
         result=await sendGuruVidyaRebookingCard({mobile:recipient.mobile},booking_ref);
