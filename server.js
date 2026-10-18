@@ -25,12 +25,6 @@ app.use(cors());
 // Bulk BotSailor Flow Data imports can contain many TXT/JSON exports at once.
 app.use(express.json({ limit: "25mb", verify: (req, res, buf) => { if (req.originalUrl?.split("?")[0] === "/api/webhook/resend") req.resendRawBody = Buffer.from(buf); } }));
 
-function bookingProviderMessageId(result) {
-  const r=result?.response || result || {};
-  const data=r.data || {};
-  return String(r.wa_message_id || r.message_id || r.wamid || r.messages?.[0]?.id ||
-    data.wa_message_id || data.message_id || data.messages?.[0]?.id || result?.id || '').trim() || null;
-}
 // Resend/Svix signed events: never trust unverified delivery receipts.
 app.post('/api/webhook/resend', async (req, res) => {
   const secret = String(process.env.RESEND_WEBHOOK_SECRET || '').trim();
@@ -57,12 +51,6 @@ app.post('/api/webhook/resend', async (req, res) => {
     if (!state || !messageId) return res.status(200).json({success:true,ignored:true});
     // Higher positive state wins over out-of-order events; failures remain visible.
     const rank = {pending:0,sent:1,delivery_delayed:1,delivered:2,opened:3,clicked:4};
-    await pool.query(`UPDATE booking_delivery_logs SET status=CASE
-      WHEN $2 IN ('failed','bounced','complained','suppressed') THEN $2
-      WHEN status IN ('failed','bounced','complained','suppressed') THEN status
-      WHEN (CASE status WHEN 'clicked' THEN 4 WHEN 'opened' THEN 3 WHEN 'delivered' THEN 2 WHEN 'sent' THEN 1 ELSE 0 END) < $3 THEN $2
-      ELSE status END WHERE channel='email' AND provider='resend' AND provider_message_id=$1`,
-      [messageId,state,rank[state]??0]);
     for (const table of ['booking_internal_reminder_deliveries','booking_internal_alert_deliveries']) {
       await pool.query(`UPDATE ${table} SET status = CASE
         WHEN $2 IN ('failed','bounced','complained','suppressed') THEN $2
@@ -3303,17 +3291,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
             AND (CASE status WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)
               < (CASE $2 WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)
           RETURNING id`,[statusMessageId,nextStatus]);
-        const bookingUpdated=await pool.query(`UPDATE booking_delivery_logs SET status=$2
-          WHERE channel='whatsapp' AND provider_message_id=$1
-          AND status IN ('sent','delivered','read')
-          AND (CASE status WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)
-            < (CASE $2 WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)`,[statusMessageId,nextStatus]);
-        const alertUpdated=await pool.query(`UPDATE booking_internal_alert_deliveries SET status=$2,updated_at=NOW()
-          WHERE channel='whatsapp' AND provider_message_id=$1
-          AND status IN ('sent','delivered','read')
-          AND (CASE status WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)
-            < (CASE $2 WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)`,[statusMessageId,nextStatus]);
-        console.log('BOTSAILOR REMINDER STATUS', {status:nextStatus,hasMessageId:true,matched:updated.rowCount,bookingMatched:bookingUpdated.rowCount,alertMatched:alertUpdated.rowCount});
+        console.log('BOTSAILOR REMINDER STATUS', {status:nextStatus,hasMessageId:true,matched:updated.rowCount});
       } else {
         console.log('BOTSAILOR REMINDER STATUS UNMATCHED', {status:statusValue || '(empty)',hasMessageId:Boolean(statusMessageId)});
       }
@@ -4668,13 +4646,13 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
     const deliveryStatus=result.success?'sent':'failed';
     const deliveryDetail=result.message||result.status||'';
     const updatedDelivery=await pool.query(`UPDATE booking_delivery_logs
-      SET status=$3,detail=$4,created_at=NOW(),provider='botsailor',provider_message_id=$6
+      SET status=$3,detail=$4,created_at=NOW()
       WHERE booking_id=$1 AND event=$2 AND recipient=$5 AND channel='whatsapp'`,
-      [b.id,action,deliveryStatus,deliveryDetail,recipientKind,bookingProviderMessageId(result)]);
+      [b.id,action,deliveryStatus,deliveryDetail,recipientKind]);
     if(!updatedDelivery.rowCount){
-      await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail,provider,provider_message_id)
-        VALUES($1,$2,$5,'whatsapp',$3,$4,'botsailor',$6)`,
-        [b.id,action,deliveryStatus,deliveryDetail,recipientKind,bookingProviderMessageId(result)]);
+      await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail)
+        VALUES($1,$2,$5,'whatsapp',$3,$4)`,
+        [b.id,action,deliveryStatus,deliveryDetail,recipientKind]);
     }
   }catch(logErr){
     console.warn('BOOKING DELIVERY LOG SKIPPED:',logErr.message);
@@ -4717,13 +4695,13 @@ async function sendBookingGateTemplate(b,recipientKind='student') {
   const gateStatus=result.success?'sent':'failed';
   const gateDetail=result.message||result.status||'';
   const updatedGate=await pool.query(`UPDATE booking_delivery_logs
-    SET status=$2,detail=$3,created_at=NOW(),provider='botsailor',provider_message_id=$5
+    SET status=$2,detail=$3,created_at=NOW()
     WHERE booking_id=$1 AND event='booking_confirmation_gate' AND recipient=$4 AND channel='whatsapp'`,
-    [b.id,gateStatus,gateDetail,recipientKind,bookingProviderMessageId(result)]);
+    [b.id,gateStatus,gateDetail,recipientKind]);
   if(!updatedGate.rowCount){
-    await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail,provider,provider_message_id)
-      VALUES($1,'booking_confirmation_gate',$4,'whatsapp',$2,$3,'botsailor',$5)`,
-      [b.id,gateStatus,gateDetail,recipientKind,bookingProviderMessageId(result)]);
+    await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail)
+      VALUES($1,'booking_confirmation_gate',$4,'whatsapp',$2,$3)`,
+      [b.id,gateStatus,gateDetail,recipientKind]);
   }
   return result;
 }
@@ -4934,7 +4912,7 @@ async function sendBookingConfirmationEmails(b,token,options={}) {
       const text=`${options.rescheduled===true?'Appointment Rescheduled':'Appointment Confirmed'}\nBooking Reference: ${b.booking_ref}\nStudent: ${b.student_name}\nCourse: ${b.course}\nDate: ${date}\nTime (IST): ${time}\nManage Appointment: ${bookingManageUrl(b,token)}`;
       const result=await sendEmailWithFailover({to:r.email,subject,text,html:bookingEmailHtml(b,token,options)});
       results.push({recipient:r.kind,email:r.email,success:true,provider:result.provider});
-      await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail,provider,provider_message_id) VALUES($1,$2,$3,'email','sent',$4,$5,$6) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status='sent',detail=EXCLUDED.detail,provider=EXCLUDED.provider,provider_message_id=EXCLUDED.provider_message_id,created_at=NOW()`,[b.id,options.rescheduled===true?'booking_reschedule_confirmation':'booking_confirmation',r.kind,`Sent via ${result.provider}`,result.provider,result.id||null]).catch(()=>{});
+      await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail) VALUES($1,$2,$3,'email','sent',$4) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status='sent',detail=EXCLUDED.detail,created_at=NOW()`,[b.id,options.rescheduled===true?'booking_reschedule_confirmation':'booking_confirmation',r.kind,`Sent via ${result.provider}`]).catch(()=>{});
     }catch(e){
       results.push({recipient:r.kind,email:r.email,success:false,error:e.message});
       await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail) VALUES($1,$2,$3,'email','failed',$4) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status='failed',detail=EXCLUDED.detail,created_at=NOW()`,[b.id,options.rescheduled===true?'booking_reschedule_confirmation':'booking_confirmation',r.kind,String(e.message||'Email failed').slice(0,500)]).catch(()=>{});
@@ -5017,13 +4995,11 @@ async function sendBookingCancellationEmails(b){
     try{
       const result=await sendEmailWithFailover({to:r.email,subject:`Appointment Cancelled – GuruVidya Academy | ${b.booking_ref}`,text:`Dear ${b.student_name||'Student'},\nYour admission counselling appointment has been cancelled as requested.\nBooking Reference: ${b.booking_ref}\nStudent: ${b.student_name}\nCourse: ${b.course}\nBooked By: ${b.booked_by||'Student'}\nCancelled By: ${b.cancelled_by||b.cancelled_via||'Student'}\nReason: ${b.cancellation_reason||'—'}\nBook New Appointment: ${String(process.env.PUBLIC_BOOKING_URL||'https://guruvidya-backend.onrender.com/booking').split('#')[0]}`,html:bookingCancellationEmailHtml(b)});
       results.push({recipient:r.kind,success:true,provider:result.provider});
-      try {
-        await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail,provider,provider_message_id) VALUES($1,'booking_cancellation',$2,'email','sent',$3,$4,$5) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status='sent',detail=EXCLUDED.detail,provider=EXCLUDED.provider,provider_message_id=EXCLUDED.provider_message_id,created_at=NOW()`,[b.id,r.kind,`Sent via ${result.provider}`,result.provider,result.id||null]);
-      } catch (logErr) { console.error('BOOKING CANCELLATION EMAIL TRACKING SAVE FAILED',r.kind,b.booking_ref,logErr?.message||logErr); }
+      await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail) VALUES($1,'booking_cancellation',$2,'email','sent',$3) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status='sent',detail=EXCLUDED.detail,created_at=NOW()`,[b.id,r.kind,`Sent via ${result.provider}`]).catch(()=>{});
     }catch(e){
       console.error('BOOKING CANCELLATION EMAIL',r.kind,e?.message||e);
       results.push({recipient:r.kind,success:false,error:String(e?.message||e)});
-      await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail) VALUES($1,'booking_cancellation',$2,'email','failed',$3) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status='failed',detail=EXCLUDED.detail,created_at=NOW()`,[b.id,r.kind,String(e?.message||'Email failed').slice(0,500)]).catch(logErr=>console.error('BOOKING CANCELLATION EMAIL FAILURE LOG SAVE FAILED',r.kind,b.booking_ref,logErr?.message||logErr));
+      await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail) VALUES($1,'booking_cancellation',$2,'email','failed',$3) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status='failed',detail=EXCLUDED.detail,created_at=NOW()`,[b.id,r.kind,String(e?.message||'Email failed').slice(0,500)]).catch(()=>{});
     }
   }
   return {success:results.some(x=>x.success),status:results.length?'recipient_results':'no_email_recipient',results};
@@ -5057,41 +5033,31 @@ async function onBookingCancelledRebook({booking_ref}){
       const claimed=await pool.query(`INSERT INTO booking_rebook_link_deliveries(booking_id,mobile,status)
         SELECT id,$2,'pending' FROM student_bookings WHERE booking_ref=$1 AND status='cancelled'
         ON CONFLICT DO NOTHING RETURNING booking_id`,[booking_ref,mobile]);
-      if(!claimed.rowCount){
-        // A previously accepted cancellation card must still be visible in the
-        // lifecycle tracker. Never send it twice, and never infer delivered/read.
-        const prior=await pool.query(`SELECT status,updated_at FROM booking_rebook_link_deliveries
-          WHERE booking_id=$1 AND mobile=$2 LIMIT 1`,[b.id,mobile]);
-        if(prior.rows[0]?.status==='sent'){
-          try{
-            await pool.query(`INSERT INTO booking_delivery_logs
-              (booking_id,event,recipient,channel,status,detail,provider,created_at)
-              VALUES($1,'booking_cancellation',$2,'whatsapp','sent',
-                'Reconciled from previously accepted cancellation card; provider delivery/read not verified',
-                'botsailor',COALESCE($3,NOW()))
-              ON CONFLICT(booking_id,event,recipient,channel) DO NOTHING`,
-              [b.id,recipient.kind,prior.rows[0].updated_at]);
-          }catch(logErr){console.error('BOOKING CANCELLATION TRACKING RECONCILE FAILED',recipient.kind,booking_ref,logErr?.message||logErr);}
-        }
-        results.push({recipient:recipient.kind,success:prior.rows[0]?.status==='sent',status:'already_claimed'});
-        continue;
-      }
+      if(!claimed.rowCount){results.push({recipient:recipient.kind,success:true,status:'already_claimed'});continue;}
       let result={success:false};
       try{
         result=await sendGuruVidyaRebookingCard({mobile:recipient.mobile},booking_ref);
       }finally{
         await pool.query(`UPDATE booking_rebook_link_deliveries SET status=$3,updated_at=NOW() WHERE booking_id=$1 AND mobile=$2`,[claimed.rows[0].booking_id,mobile,result.success?'sent':'failed']);
       }
-      // Cancellation sends must have a tracking record, not just a rebook-link claim.
-      // Preserve the actual provider result: 'sent' means accepted, never delivered/read.
+      // Cancellation tracking is evidence of the actual send result, not of a
+      // provider delivery/read receipt. Do not depend on an ON CONFLICT index:
+      // older production databases may lack the corresponding unique key.
       try {
-        await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail,provider,provider_message_id)
-          VALUES($1,'booking_cancellation',$2,'whatsapp',$3,$4,'botsailor',$5)
-          ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE
-          SET status=EXCLUDED.status,detail=EXCLUDED.detail,provider=EXCLUDED.provider,
-              provider_message_id=EXCLUDED.provider_message_id,created_at=NOW()`,
-          [b.id,recipient.kind,result.success?'sent':'failed',String(result.message||result.status||'').slice(0,500),bookingProviderMessageId(result)]);
-      } catch (logErr) { console.error('BOOKING CANCELLATION WHATSAPP TRACKING SAVE FAILED',recipient.kind,booking_ref,logErr?.message||logErr); }
+        const trackedStatus=result.success?'sent':'failed';
+        const trackedDetail=String(result.message||result.status||'Booking cancellation WhatsApp card').slice(0,500);
+        const updated=await pool.query(`UPDATE booking_delivery_logs
+          SET status=$3,detail=$4,created_at=NOW()
+          WHERE booking_id=$1 AND event='cancelled' AND recipient=$2 AND channel='whatsapp'`,
+          [b.id,recipient.kind,trackedStatus,trackedDetail]);
+        if(!updated.rowCount){
+          await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail,created_at)
+            VALUES($1,'cancelled',$2,'whatsapp',$3,$4,NOW())`,
+            [b.id,recipient.kind,trackedStatus,trackedDetail]);
+        }
+      }catch(trackErr){
+        console.error('BOOKING CANCELLATION WHATSAPP TRACKING SAVE FAILED',recipient.kind,b.booking_ref,trackErr?.message||trackErr);
+      }
       results.push({recipient:recipient.kind,...result});
     }catch(err){
       console.error('BOOKING REBOOK WHATSAPP',recipient.kind,err?.message||err);
@@ -5158,7 +5124,7 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
             await loadPersistedConfig();
             const result=await sendBotSailorText({mobile:destination,name:r.name,course:booking.course},message,'internal_appointment_alert');
             if(!result?.success)throw new Error(result?.message||result?.status||'BotSailor send failed');
-            status='sent';provider='botsailor';providerMessageId=bookingProviderMessageId(result);detail='Accepted by BotSailor';
+            status='sent';provider='botsailor';detail='Accepted by BotSailor';
           }
         }
       }catch(e){detail=String(e?.message||e).slice(0,500);console.error('Internal appointment alert delivery:',channel,detail);}
