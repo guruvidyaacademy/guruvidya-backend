@@ -3272,6 +3272,32 @@ app.post("/api/webhook/botsailor", async (req, res) => {
   try {
     const payload = req.body || {};
 
+    // BotSailor's message-status webhook is delivered to this same endpoint.
+    // Handle receipts before chat/CTA routing: status callbacks are not incoming chats.
+    const statusPayload = payload.entry?.[0]?.changes?.[0]?.value?.statuses?.[0] || payload;
+    const statusValue = String(statusPayload.message_status || statusPayload.status || '').trim().toLowerCase();
+    const statusType = String(payload.webhook_type || payload.event || '').toLowerCase();
+    const isStatusCallback = Boolean(payload.message_status || payload.status_time ||
+      statusType.includes('message_status') || payload.entry?.[0]?.changes?.[0]?.value?.statuses?.length);
+    if (isStatusCallback) {
+      const statusMessageId = String(statusPayload.wa_message_id || statusPayload.message_id ||
+        statusPayload.wamid || statusPayload.id || payload.wa_message_id || payload.message_id || '').trim();
+      const nextStatus = ({sent:'sent',delivered:'delivered',read:'read'})[statusValue];
+      if (nextStatus && statusMessageId) {
+        const updated = await pool.query(`UPDATE booking_internal_reminder_deliveries
+          SET status=$2,updated_at=NOW()
+          WHERE channel='whatsapp' AND provider_message_id=$1
+            AND status IN ('sent','delivered','read')
+            AND (CASE status WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)
+              < (CASE $2 WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)
+          RETURNING id`,[statusMessageId,nextStatus]);
+        console.log('BOTSAILOR REMINDER STATUS', {status:nextStatus,hasMessageId:true,matched:updated.rowCount});
+      } else {
+        console.log('BOTSAILOR REMINDER STATUS UNMATCHED', {status:statusValue || '(empty)',hasMessageId:Boolean(statusMessageId)});
+      }
+      return res.status(200).json({success:true,received:true});
+    }
+
     // Always reload saved Automation/Integration settings so a Render restart
     // cannot lose the selected BotSailor "Call us" flow from memory.
     await loadPersistedConfig();

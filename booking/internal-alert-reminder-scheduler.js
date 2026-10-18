@@ -94,7 +94,7 @@ export async function runInternalAlertReminderScheduler(pool, {sendEmail,sendWha
               templateId:'461036',mediaUrl:`${publicBase}/api/public/internal-reminder/whatsapp-card`
             });
             if(!result?.success)throw new Error(result?.message||result?.status||'BotSailor send failed');
-            status='sent';provider='botsailor';providerMessageId=result.wa_message_id||result.response?.wa_message_id||null;detail='Approved media template accepted by BotSailor';
+            status='sent';provider='botsailor';providerMessageId=result.wa_message_id||result.message_id||result.response?.wa_message_id||result.response?.message_id||result.response?.messages?.[0]?.id||result.response?.data?.wa_message_id||null;detail='Approved media template accepted by BotSailor';
           }
         }
       }catch(err){detail=String(err?.message||err).slice(0,500);}
