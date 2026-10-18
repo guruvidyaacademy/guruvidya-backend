@@ -717,9 +717,9 @@ export function installBookingRoutes(app,pool,hooks={}) {
       FROM lifecycle_numbered e JOIN student_bookings b ON b.id=e.booking_id
       LEFT JOIN booking_delivery_logs d ON d.booking_id=e.booking_id
         AND (d.event=e.event
-          OR (e.event='confirmed' AND d.event IN ('booking_confirmation','booking_confirmation_gate'))
-          OR (e.event='rescheduled' AND d.event IN ('booking_reschedule_confirmation','booking_rescheduled'))
-          OR (e.event='cancelled' AND d.event IN ('booking_cancellation','booking_cancelled')))
+          OR (e.event='confirmed' AND d.event IN ('booking_confirmation','booking_confirmation_gate','booking_confirmation_24h','booking_confirmed_notification'))
+          OR (e.event='rescheduled' AND d.event IN ('booking_reschedule_confirmation','booking_reschedule_confirmation_24h','booking_rescheduled','booking_rescheduled_notification'))
+          OR (e.event='cancelled' AND d.event IN ('booking_cancellation','booking_cancelled','booking_cancelled_notification')))
         AND d.created_at >= e.event_at - INTERVAL '10 minutes'
         AND (e.next_event_at IS NULL OR d.created_at < e.next_event_at)
       ORDER BY e.event_at DESC,e.lifecycle_id DESC,d.id DESC NULLS LAST LIMIT 600`);
