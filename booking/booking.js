@@ -102,6 +102,10 @@ export async function initBooking(pool) {
   await pool.query(`ALTER TABLE booking_delivery_logs ADD COLUMN IF NOT EXISTS clicked_buttons JSONB NOT NULL DEFAULT '{}'::jsonb`);
   await pool.query(`ALTER TABLE booking_delivery_logs ADD COLUMN IF NOT EXISTS last_clicked_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE booking_delivery_logs ADD COLUMN IF NOT EXISTS click_history JSONB NOT NULL DEFAULT '[]'::jsonb`);
+  await pool.query(`ALTER TABLE booking_delivery_logs ADD COLUMN IF NOT EXISTS email_delivered_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE booking_delivery_logs ADD COLUMN IF NOT EXISTS email_opened_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE booking_delivery_logs ADD COLUMN IF NOT EXISTS email_clicked_at TIMESTAMPTZ`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS booking_delivery_email_provider_idx ON booking_delivery_logs(provider_message_id) WHERE channel='email' AND provider='resend' AND provider_message_id IS NOT NULL`);
   await pool.query(`CREATE INDEX IF NOT EXISTS booking_delivery_provider_message_idx ON booking_delivery_logs(provider_message_id) WHERE provider_message_id IS NOT NULL`);
   await pool.query('ALTER TABLE booking_counsellors ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ');
   // Booking locations are persisted separately so branch/address/map settings survive deploys and restarts.
@@ -726,7 +730,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
       SELECT b.id AS booking_id,b.booking_ref,b.student_name,b.student_mobile,
         b.parent_name,b.parent_mobile,b.parent_relation,b.booked_by,b.cancelled_by,b.course,
         e.lifecycle_id,e.event,e.performed_by,e.event_details,e.event_at,
-        d.id,d.recipient AS recipient_role,d.channel,d.status,d.detail,d.clicked_at,d.last_clicked_at,d.clicked_buttons,d.click_history,
+        d.id,d.recipient AS recipient_role,d.channel,d.status,d.detail,d.clicked_at,d.last_clicked_at,d.clicked_buttons,d.click_history,d.email_delivered_at,d.email_opened_at,d.email_clicked_at,
         COALESCE(d.created_at,e.event_at) AS created_at
       FROM lifecycle_numbered e JOIN student_bookings b ON b.id=e.booking_id
       LEFT JOIN booking_delivery_logs d ON d.booking_id=e.booking_id
