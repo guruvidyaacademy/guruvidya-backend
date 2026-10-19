@@ -3673,10 +3673,35 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       : bookingAction.includes('booking_cancel') || bookingAction.includes('cancel') ? 'cancel'
       : bookingAction.includes('booking_reschedule') || bookingAction.includes('reschedule') ? 'reschedule'
       : '';
+    // Record verified incoming WhatsApp reply-button actions only. Do not infer
+    // URL/image taps, and never mix student and parent recipients.
+    const recordBookingButtonClick=async(booking,kind,shortName)=>{
+      if(!booking?.id||!shortName||!(buttonReplyId||buttonReplyTitle))return;
+      const event=String(booking.status||'').toLowerCase()==='cancelled'?'cancelled':
+        String(booking.status||'').toLowerCase()==='rescheduled'?'rescheduled':'confirmed';
+      const aliases=event==='cancelled'?['cancelled','booking_cancellation','booking_cancelled','booking_cancelled_notification']:
+        event==='rescheduled'?['rescheduled','booking_reschedule_confirmation','booking_reschedule_confirmation_24h','booking_rescheduled','booking_rescheduled_notification']:
+        ['confirmed','booking_confirmation','booking_confirmation_gate','booking_confirmation_24h','booking_confirmed_notification'];
+      try{await pool.query(`UPDATE booking_delivery_logs SET clicked_at=COALESCE(clicked_at,NOW()),
+        clicked_buttons=jsonb_set(COALESCE(clicked_buttons,'{}'::jsonb),ARRAY[$4::text],to_jsonb(NOW()::text),true)
+        WHERE id=(SELECT id FROM booking_delivery_logs WHERE booking_id=$1 AND recipient=$2
+          AND channel='whatsapp' AND event=ANY($3::text[]) AND status IN ('sent','delivered','read')
+          ORDER BY created_at DESC,id DESC LIMIT 1)`,[booking.id,kind,aliases,shortName]);}
+      catch(err){console.error('BOOKING BUTTON CLICK TRACKING FAILED',err.message);}
+    };
     // The already-cancelled reply includes a working new-booking quick reply.
     // Keep it independent of the old booking's status or WhatsApp state.
     if (bookingAction.includes('booking_new_appointment') || bookingAction.includes('book new appointment')) {
       const newBookingUrl=String(process.env.PUBLIC_BOOKING_URL || 'https://guruvidya-backend.onrender.com/booking').split('#')[0];
+      if(buttonReplyId||buttonReplyTitle){
+        const canonical=botSailorPhone(mobile);
+        const national=canonical.startsWith('91')&&canonical.length===12?canonical.slice(2):canonical;
+        const last=await pool.query(`SELECT * FROM student_bookings WHERE status='cancelled'
+          AND (regexp_replace(COALESCE(student_mobile,''),'[^0-9]','','g') IN ($1,$2)
+            OR regexp_replace(COALESCE(parent_mobile,''),'[^0-9]','','g') IN ($1,$2))
+          ORDER BY updated_at DESC LIMIT 1`,[canonical,national]);
+        if(last.rows[0])await recordBookingButtonClick(last.rows[0],botSailorPhone(last.rows[0].parent_mobile)===canonical?'parent':'student','Book New');
+      }
       const sent=await sendBotSailorText({mobile},`Book your new counselling appointment using the link below:\n\n${newBookingUrl}`,'booking_new_appointment_link');
       return res.status(sent.success?200:400).json({status:sent.success?'ok':'error',action:'booking_new_appointment_link'});
     }
@@ -3710,6 +3735,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       const actionRecipientMobile=actionRecipientKind==='parent'?booking.parent_mobile:booking.student_mobile;
       const actionRecipientName=actionRecipientKind==='parent'?(booking.parent_name||booking.student_name):booking.student_name;
       const actionContact={mobile:actionRecipientMobile,name:actionRecipientName,course:booking.course};
+      await recordBookingButtonClick(booking,actionRecipientKind,({manage:'Manage',maps:'Maps',join:'Join',help:'Contact',cancel:'Cancel',cancel_yes:'Cancel',reschedule:'Reschedule'})[bookingActionType]);
       if(['reschedule','cancel','cancel_yes'].includes(bookingActionType) && String(booking.status||'').toLowerCase()==='cancelled'){
         const newBookingUrl=String(process.env.PUBLIC_BOOKING_URL || 'https://guruvidya-backend.onrender.com/booking').split('#')[0];
         const closed=await sendBookingActionGraphicText(actionContact,'already_cancelled',
