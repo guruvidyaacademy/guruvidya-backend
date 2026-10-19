@@ -3680,7 +3680,9 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       if(!booking?.id||!shortName||!isActualBookingButtonReply)return;
       try{
         const updated=await pool.query(`UPDATE booking_delivery_logs SET clicked_at=COALESCE(clicked_at,NOW()),
-          clicked_buttons=jsonb_set(COALESCE(clicked_buttons,'{}'::jsonb),ARRAY[$3::text],to_jsonb(NOW()::text),true)
+          last_clicked_at=NOW(),
+          clicked_buttons=jsonb_set(COALESCE(clicked_buttons,'{}'::jsonb),ARRAY[$3::text],to_jsonb(NOW()::text),true),
+          click_history=COALESCE(click_history,'[]'::jsonb)||jsonb_build_array(jsonb_build_object('button',$3::text,'at',NOW()))
           WHERE id=(SELECT id FROM booking_delivery_logs WHERE booking_id=$1 AND recipient=$2
             AND channel='whatsapp' AND event IN ('confirmed','booking_confirmation','booking_confirmation_gate','booking_confirmation_24h','booking_confirmed_notification',
               'rescheduled','booking_reschedule_confirmation','booking_reschedule_confirmation_24h','booking_rescheduled','booking_rescheduled_notification',
