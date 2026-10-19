@@ -3663,6 +3663,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       return res.json({status:'ok',action:'booking_cancel_reason_flow'});
     }
     // FINAL APPROVED booking confirmation action buttons.
+    const isActualBookingButtonReply=Boolean(buttonReplyId||buttonReplyTitle||/^#button[ _-]*reply#/i.test(webhookUserMessageRaw));
     const bookingAction = [buttonReplyId, buttonReplyTitle, webhookUserMessage]
       .map(v => normalizeLooseText(v));
     const bookingActionType = bookingAction.includes('booking_manage') || bookingAction.includes('manage appointment') ? 'manage'
@@ -3676,24 +3677,25 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     // Record verified incoming WhatsApp reply-button actions only. Do not infer
     // URL/image taps, and never mix student and parent recipients.
     const recordBookingButtonClick=async(booking,kind,shortName)=>{
-      if(!booking?.id||!shortName||!(buttonReplyId||buttonReplyTitle))return;
-      const event=String(booking.status||'').toLowerCase()==='cancelled'?'cancelled':
-        String(booking.status||'').toLowerCase()==='rescheduled'?'rescheduled':'confirmed';
-      const aliases=event==='cancelled'?['cancelled','booking_cancellation','booking_cancelled','booking_cancelled_notification']:
-        event==='rescheduled'?['rescheduled','booking_reschedule_confirmation','booking_reschedule_confirmation_24h','booking_rescheduled','booking_rescheduled_notification']:
-        ['confirmed','booking_confirmation','booking_confirmation_gate','booking_confirmation_24h','booking_confirmed_notification'];
-      try{await pool.query(`UPDATE booking_delivery_logs SET clicked_at=COALESCE(clicked_at,NOW()),
-        clicked_buttons=jsonb_set(COALESCE(clicked_buttons,'{}'::jsonb),ARRAY[$4::text],to_jsonb(NOW()::text),true)
-        WHERE id=(SELECT id FROM booking_delivery_logs WHERE booking_id=$1 AND recipient=$2
-          AND channel='whatsapp' AND event=ANY($3::text[]) AND status IN ('sent','delivered','read')
-          ORDER BY created_at DESC,id DESC LIMIT 1)`,[booking.id,kind,aliases,shortName]);}
+      if(!booking?.id||!shortName||!isActualBookingButtonReply)return;
+      try{
+        const updated=await pool.query(`UPDATE booking_delivery_logs SET clicked_at=COALESCE(clicked_at,NOW()),
+          clicked_buttons=jsonb_set(COALESCE(clicked_buttons,'{}'::jsonb),ARRAY[$3::text],to_jsonb(NOW()::text),true)
+          WHERE id=(SELECT id FROM booking_delivery_logs WHERE booking_id=$1 AND recipient=$2
+            AND channel='whatsapp' AND event IN ('confirmed','booking_confirmation','booking_confirmation_gate','booking_confirmation_24h','booking_confirmed_notification',
+              'rescheduled','booking_reschedule_confirmation','booking_reschedule_confirmation_24h','booking_rescheduled','booking_rescheduled_notification',
+              'cancelled','booking_cancellation','booking_cancelled','booking_cancelled_notification')
+            AND status IN ('sent','delivered','read') ORDER BY created_at DESC,id DESC LIMIT 1)
+          RETURNING id`,[booking.id,kind,shortName]);
+        console.log('BOOKING BUTTON CLICK TRACKING',{button:shortName,recipient:kind,matched:updated.rowCount});
+      }
       catch(err){console.error('BOOKING BUTTON CLICK TRACKING FAILED',err.message);}
     };
     // The already-cancelled reply includes a working new-booking quick reply.
     // Keep it independent of the old booking's status or WhatsApp state.
     if (bookingAction.includes('booking_new_appointment') || bookingAction.includes('book new appointment')) {
       const newBookingUrl=String(process.env.PUBLIC_BOOKING_URL || 'https://guruvidya-backend.onrender.com/booking').split('#')[0];
-      if(buttonReplyId||buttonReplyTitle){
+      if(isActualBookingButtonReply){
         const canonical=botSailorPhone(mobile);
         const national=canonical.startsWith('91')&&canonical.length===12?canonical.slice(2):canonical;
         const last=await pool.query(`SELECT * FROM student_bookings WHERE status='cancelled'
