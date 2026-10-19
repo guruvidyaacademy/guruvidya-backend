@@ -3322,7 +3322,16 @@ app.post("/api/webhook/botsailor", async (req, res) => {
             AND (CASE status WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)
               < (CASE $2 WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)
           RETURNING id`,[statusMessageId,nextStatus]);
-        console.log('BOTSAILOR REMINDER STATUS', {status:nextStatus,hasMessageId:true,matched:updated.rowCount,bookingMessages:bookingUpdated.rowCount});
+        // Internal team alerts have their own audit table. Never update student/parent
+        // booking_delivery_logs by recipient or booking ID: only the exact provider ID.
+        const internalAlertUpdated=await pool.query(`UPDATE booking_internal_alert_deliveries
+          SET status=$2,updated_at=NOW()
+          WHERE channel='whatsapp' AND provider='botsailor' AND provider_message_id=$1
+            AND status IN ('sent','delivered','read')
+            AND (CASE status WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)
+              < (CASE $2 WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)
+          RETURNING id`,[statusMessageId,nextStatus]);
+        console.log('BOTSAILOR REMINDER STATUS', {status:nextStatus,hasMessageId:true,matched:updated.rowCount,bookingMessages:bookingUpdated.rowCount,internalAlerts:internalAlertUpdated.rowCount});
       } else {
         console.log('BOTSAILOR REMINDER STATUS UNMATCHED', {status:statusValue || '(empty)',hasMessageId:Boolean(statusMessageId)});
       }
@@ -5267,7 +5276,11 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
       let status='failed',provider=null,detail='',providerMessageId=null;
       try {
         if(channel==='email'){
-          const result=await sendEmailWithFailover({to:destination,subject,text:message});
+          // An HTML part allows Resend's configured open-tracking pixel to be
+          // included; plain-text-only emails cannot report a reliable open.
+          const safeMessage=message.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+          const html=`<div style="font-family:Arial,Helvetica,sans-serif;white-space:pre-line;line-height:1.6;color:#1f2937">${safeMessage}</div>`;
+          const result=await sendEmailWithFailover({to:destination,subject,text:message,html});
           status='sent';provider=result.provider||'email';providerMessageId=result.id||null;detail=`Accepted by ${provider}`;
         } else {
           // Never use the booking test overrides for actual outbound messages.
@@ -5284,11 +5297,25 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
             const result=await sendBotSailorText({mobile:destination,name:r.name,course:booking.course},message,'internal_appointment_alert');
             if(!result?.success)throw new Error(result?.message||result?.status||'BotSailor send failed');
             status='sent';provider='botsailor';detail='Accepted by BotSailor';
+            providerMessageId=bookingProviderMessageId(result);
+            if(!providerMessageId)detail='Accepted by BotSailor; provider message ID unavailable for delivery/read tracking';
           }
         }
       }catch(e){detail=String(e?.message||e).slice(0,500);console.error('Internal appointment alert delivery:',channel,detail);}
       await pool.query(`UPDATE booking_internal_alert_deliveries SET status=$2,provider=$3,detail=$4,provider_message_id=$5,updated_at=NOW() WHERE id=$1`,
         [deliveryId,status,provider,detail,providerMessageId]).catch(e=>console.error('Internal alert audit update failed',e?.message||e));
+      // Provider may deliver its status callback before the outbound ID is saved.
+      // Reconcile against the existing exact-ID receipt cache, staff alerts only.
+      if(channel==='whatsapp' && providerMessageId){
+        await pool.query(`UPDATE booking_internal_alert_deliveries AS d
+          SET status=r.status,updated_at=NOW()
+          FROM booking_whatsapp_status_receipts AS r
+          WHERE d.id=$1 AND d.channel='whatsapp' AND d.provider_message_id=r.provider_message_id
+            AND r.provider_message_id=$2 AND d.status IN ('sent','delivered','read')
+            AND (CASE d.status WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)
+              < (CASE r.status WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)`,[deliveryId,providerMessageId])
+          .catch(e=>console.error('Internal alert receipt reconciliation failed',e?.message||e));
+      }
     }
   }
 }
