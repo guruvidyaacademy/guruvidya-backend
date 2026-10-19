@@ -3268,6 +3268,22 @@ app.get("/api/admin/botsailor-flow-data/status", async (req, res) => {
   }
 });
 
+// Only provider-issued WhatsApp IDs are eligible for delivery/read correlation.
+// BotSailor may wrap the Meta send response in data / messages arrays.
+function bookingProviderMessageId(result) {
+  const root=result?.response || result;
+  const candidates=[root,root?.data,root?.response,root?.data?.data,
+    root?.messages?.[0],root?.data?.messages?.[0],root?.response?.messages?.[0]];
+  for(const item of candidates){
+    if(!item || typeof item!=='object')continue;
+    for(const key of ['wa_message_id','wamid','message_id','whatsapp_message_id']){
+      const id=item[key];if(typeof id==='string' && id.trim())return id.trim();
+    }
+    if(typeof item.id==='string' && item.id.startsWith('wamid.'))return item.id;
+  }
+  return null;
+}
+
 app.post("/api/webhook/botsailor", async (req, res) => {
   try {
     const payload = req.body || {};
@@ -3291,7 +3307,16 @@ app.post("/api/webhook/botsailor", async (req, res) => {
             AND (CASE status WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)
               < (CASE $2 WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)
           RETURNING id`,[statusMessageId,nextStatus]);
-        console.log('BOTSAILOR REMINDER STATUS', {status:nextStatus,hasMessageId:true,matched:updated.rowCount});
+        // Booking lifecycle messages use a different delivery table from internal reminders.
+        // Never infer Delivered/Read from a send response or from opening the CRM page.
+        const bookingUpdated=await pool.query(`UPDATE booking_delivery_logs
+          SET status=$2
+          WHERE channel='whatsapp' AND provider_message_id=$1
+            AND status IN ('sent','delivered','read')
+            AND (CASE status WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)
+              < (CASE $2 WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)
+          RETURNING id`,[statusMessageId,nextStatus]);
+        console.log('BOTSAILOR WHATSAPP STATUS', {status:nextStatus,internalReminders:updated.rowCount,bookingMessages:bookingUpdated.rowCount});
       } else {
         console.log('BOTSAILOR REMINDER STATUS UNMATCHED', {status:statusValue || '(empty)',hasMessageId:Boolean(statusMessageId)});
       }
@@ -4646,13 +4671,13 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
     const deliveryStatus=result.success?'sent':'failed';
     const deliveryDetail=result.message||result.status||'';
     const updatedDelivery=await pool.query(`UPDATE booking_delivery_logs
-      SET status=$3,detail=$4,created_at=NOW()
+      SET status=$3,detail=$4,provider_message_id=$6,provider='botsailor',created_at=NOW()
       WHERE booking_id=$1 AND event=$2 AND recipient=$5 AND channel='whatsapp'`,
-      [b.id,action,deliveryStatus,deliveryDetail,recipientKind]);
+      [b.id,action,deliveryStatus,deliveryDetail,recipientKind,bookingProviderMessageId(result)]);
     if(!updatedDelivery.rowCount){
-      await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail)
-        VALUES($1,$2,$5,'whatsapp',$3,$4)`,
-        [b.id,action,deliveryStatus,deliveryDetail,recipientKind]);
+      await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail,provider_message_id,provider)
+        VALUES($1,$2,$5,'whatsapp',$3,$4,$6,'botsailor')`,
+        [b.id,action,deliveryStatus,deliveryDetail,recipientKind,bookingProviderMessageId(result)]);
     }
   }catch(logErr){
     console.warn('BOOKING DELIVERY LOG SKIPPED:',logErr.message);
@@ -5047,13 +5072,13 @@ async function onBookingCancelledRebook({booking_ref}){
         const trackedStatus=result.success?'sent':'failed';
         const trackedDetail=String(result.message||result.status||'Booking cancellation WhatsApp card').slice(0,500);
         const updated=await pool.query(`UPDATE booking_delivery_logs
-          SET status=$3,detail=$4,created_at=NOW()
+          SET status=$3,detail=$4,provider_message_id=$5,provider='botsailor',created_at=NOW()
           WHERE booking_id=$1 AND event='cancelled' AND recipient=$2 AND channel='whatsapp'`,
-          [b.id,recipient.kind,trackedStatus,trackedDetail]);
+          [b.id,recipient.kind,trackedStatus,trackedDetail,bookingProviderMessageId(result)]);
         if(!updated.rowCount){
-          await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail,created_at)
-            VALUES($1,'cancelled',$2,'whatsapp',$3,$4,NOW())`,
-            [b.id,recipient.kind,trackedStatus,trackedDetail]);
+          await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail,provider_message_id,provider,created_at)
+            VALUES($1,'cancelled',$2,'whatsapp',$3,$4,$5,'botsailor',NOW())`,
+            [b.id,recipient.kind,trackedStatus,trackedDetail,bookingProviderMessageId(result)]);
         }
       }catch(trackErr){
         console.error('BOOKING CANCELLATION WHATSAPP TRACKING SAVE FAILED',recipient.kind,b.booking_ref,trackErr?.message||trackErr);
@@ -5099,6 +5124,10 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
       if(rules && channel==='whatsapp' && !rules.open[eventIndex])continue;
       if(channel==='email' && !/^\S+@\S+\.\S+$/.test(destination))continue;
       if(channel==='whatsapp' && !/^\d{10}$/.test(destination))continue;
+      // Cancellation already sends the approved rebooking media card to the
+      // eligible number. Avoid a second plain-text internal alert in WhatsApp.
+      // Keep the existing internal email alert unchanged.
+      if(channel==='whatsapp' && event==='cancelled')continue;
       const inserted=await pool.query(`INSERT INTO booking_internal_alert_deliveries
         (booking_id,event,event_key,recipient_id,recipient_name,destination,channel)
         VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING RETURNING id`,
