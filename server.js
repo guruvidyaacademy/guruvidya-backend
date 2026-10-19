@@ -4982,6 +4982,20 @@ app.get('/api/public/booking/email-logo.png', async (_req,res)=>{
   }catch(e){res.status(404).end();}
 });
 
+// Persist booking email outcomes even on older databases where the original
+// booking_delivery_logs table was created without its four-column UNIQUE key.
+// Never turn a tracking write failure into a second email send.
+async function saveBookingEmailTracking(bookingId,event,recipient,status,detail,provider=null,messageId=null){
+  const args=[bookingId,event,recipient,status,String(detail||'').slice(0,500),provider,messageId];
+  const updated=await pool.query(`UPDATE booking_delivery_logs SET status=$4,detail=$5,provider=$6,provider_message_id=$7,
+    created_at=NOW(),email_delivered_at=NULL,email_opened_at=NULL,email_clicked_at=NULL
+    WHERE id=(SELECT id FROM booking_delivery_logs WHERE booking_id=$1 AND event=$2 AND recipient=$3 AND channel='email' ORDER BY id DESC LIMIT 1)
+    RETURNING id`,args);
+  if(updated.rowCount)return;
+  await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail,provider,provider_message_id)
+    VALUES($1,$2,$3,'email',$4,$5,$6,$7)`,args);
+}
+
 async function sendBookingConfirmationEmails(b,token,options={}) {
   if(config.emailEnabled===false || !String(config.emailFrom||'').trim()) return {success:false,status:'email_disabled'};
   const cfg=await pool.query('SELECT settings FROM booking_settings WHERE id=1');
@@ -5002,10 +5016,10 @@ async function sendBookingConfirmationEmails(b,token,options={}) {
       const text=`${options.rescheduled===true?'Appointment Rescheduled':'Appointment Confirmed'}\nBooking Reference: ${b.booking_ref}\nStudent: ${b.student_name}\nCourse: ${b.course}\nDate: ${date}\nTime (IST): ${time}\nManage Appointment: ${bookingManageUrl(b,token)}`;
       const result=await sendEmailWithFailover({to:r.email,subject,text,html:bookingEmailHtml(b,token,options)});
       results.push({recipient:r.kind,email:r.email,success:true,provider:result.provider});
-      await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail,provider,provider_message_id) VALUES($1,$2,$3,'email','sent',$4,$5,$6) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status='sent',detail=EXCLUDED.detail,provider=EXCLUDED.provider,provider_message_id=EXCLUDED.provider_message_id,created_at=NOW()`,[b.id,options.rescheduled===true?'booking_reschedule_confirmation':'booking_confirmation',r.kind,`Sent via ${result.provider}`,result.provider,result.id||null]).catch(e=>console.error('BOOKING EMAIL TRACKING SAVE FAILED',e.message));
+      saveBookingEmailTracking(b.id,options.rescheduled===true?'booking_reschedule_confirmation':'booking_confirmation',r.kind,'sent',`Sent via ${result.provider}`,result.provider,result.id||null).catch(e=>console.error('BOOKING EMAIL TRACKING SAVE FAILED',e.message));
     }catch(e){
       results.push({recipient:r.kind,email:r.email,success:false,error:e.message});
-      await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail) VALUES($1,$2,$3,'email','failed',$4) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status='failed',detail=EXCLUDED.detail,created_at=NOW()`,[b.id,options.rescheduled===true?'booking_reschedule_confirmation':'booking_confirmation',r.kind,String(e.message||'Email failed').slice(0,500)]).catch(()=>{});
+      await saveBookingEmailTracking(b.id,options.rescheduled===true?'booking_reschedule_confirmation':'booking_confirmation',r.kind,'failed',e.message||'Email failed').catch(()=>{});
     }
   }
   return {success:results.some(x=>x.success),status:results.length?'recipient_results':'no_email_recipient',results};
@@ -5085,11 +5099,11 @@ async function sendBookingCancellationEmails(b){
     try{
       const result=await sendEmailWithFailover({to:r.email,subject:`Appointment Cancelled – GuruVidya Academy | ${b.booking_ref}`,text:`Dear ${b.student_name||'Student'},\nYour admission counselling appointment has been cancelled as requested.\nBooking Reference: ${b.booking_ref}\nStudent: ${b.student_name}\nCourse: ${b.course}\nBooked By: ${b.booked_by||'Student'}\nCancelled By: ${b.cancelled_by||b.cancelled_via||'Student'}\nReason: ${b.cancellation_reason||'—'}\nBook New Appointment: ${String(process.env.PUBLIC_BOOKING_URL||'https://guruvidya-backend.onrender.com/booking').split('#')[0]}`,html:bookingCancellationEmailHtml(b)});
       results.push({recipient:r.kind,success:true,provider:result.provider});
-      await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail,provider,provider_message_id) VALUES($1,'booking_cancellation',$2,'email','sent',$3,$4,$5) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status='sent',detail=EXCLUDED.detail,provider=EXCLUDED.provider,provider_message_id=EXCLUDED.provider_message_id,created_at=NOW()`,[b.id,r.kind,`Sent via ${result.provider}`,result.provider,result.id||null]).catch(e=>console.error('BOOKING CANCELLATION EMAIL TRACKING SAVE FAILED',e.message));
+      await saveBookingEmailTracking(b.id,'booking_cancellation',r.kind,'sent',`Sent via ${result.provider}`,result.provider,result.id||null).catch(e=>console.error('BOOKING CANCELLATION EMAIL TRACKING SAVE FAILED',e.message));
     }catch(e){
       console.error('BOOKING CANCELLATION EMAIL',r.kind,e?.message||e);
       results.push({recipient:r.kind,success:false,error:String(e?.message||e)});
-      await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail) VALUES($1,'booking_cancellation',$2,'email','failed',$3) ON CONFLICT(booking_id,event,recipient,channel) DO UPDATE SET status='failed',detail=EXCLUDED.detail,created_at=NOW()`,[b.id,r.kind,String(e?.message||'Email failed').slice(0,500)]).catch(()=>{});
+      await saveBookingEmailTracking(b.id,'booking_cancellation',r.kind,'failed',e?.message||'Email failed').catch(()=>{});
     }
   }
   return {success:results.some(x=>x.success),status:results.length?'recipient_results':'no_email_recipient',results};
