@@ -3291,6 +3291,14 @@ app.post("/api/webhook/botsailor", async (req, res) => {
             AND (CASE status WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)
               < (CASE $2 WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)
           RETURNING id`,[statusMessageId,nextStatus]);
+        // Persist provider receipts before matching: callbacks may arrive before the
+        // send path has saved its booking_delivery_logs row (including the media delay).
+        await pool.query(`INSERT INTO booking_whatsapp_status_receipts(provider_message_id,status,received_at)
+          VALUES($1,$2,NOW()) ON CONFLICT(provider_message_id) DO UPDATE SET
+          status=CASE WHEN (CASE EXCLUDED.status WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)
+                       > (CASE booking_whatsapp_status_receipts.status WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)
+                      THEN EXCLUDED.status ELSE booking_whatsapp_status_receipts.status END,
+          received_at=NOW()`,[statusMessageId,nextStatus]);
         const bookingUpdated=await pool.query(`UPDATE booking_delivery_logs
           SET status=$2
           WHERE channel='whatsapp' AND provider_message_id=$1
@@ -4571,6 +4579,21 @@ function bookingProviderMessageId(result) {
   return String(ids.find(x=>typeof x==='string'&&x.trim())||'').trim()||null;
 }
 
+// Apply a receipt that arrived before the booking's outbound ID was persisted.
+// Match exact provider ID only; never merge Student and Parent statuses.
+async function reconcileBookingWhatsAppReceipt(providerId){
+  const result=await pool.query(`UPDATE booking_delivery_logs AS l
+    SET status=r.status
+    FROM booking_whatsapp_status_receipts AS r
+    WHERE l.channel='whatsapp' AND l.provider_message_id=$1
+      AND r.provider_message_id=l.provider_message_id
+      AND l.status IN ('sent','delivered','read')
+      AND (CASE l.status WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)
+        < (CASE r.status WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)
+    RETURNING l.id`,[providerId]);
+  if(result.rowCount) console.log('BOOKING EARLY RECEIPT RECONCILED',{matched:result.rowCount});
+}
+
 async function sendBookingSessionConfirmation(b, token, action='booking_confirmation_24h', options={}) {
   const recipientKind=options.recipientKind==='parent'?'parent':'student';
   const recipientMobile=recipientKind==='parent'?b.parent_mobile:b.student_mobile;
@@ -4618,6 +4641,27 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
       mediaType:'image',
     }
   );
+  // Delivery logging is non-critical and must not break customer-facing WhatsApp.
+  try{
+    const deliveryStatus=result.success?'sent':'failed';
+    const deliveryDetail=result.message||result.status||'';
+    const providerId=bookingProviderMessageId(result);
+    const updatedDelivery=await pool.query(`UPDATE booking_delivery_logs
+      SET status=CASE WHEN status IN ('delivered','read') AND $3='sent' THEN status ELSE $3 END,detail=$4,provider_message_id=$6,provider='botsailor',created_at=NOW()
+      WHERE booking_id=$1 AND event=$2 AND recipient=$5 AND channel='whatsapp'`,
+      [b.id,action,deliveryStatus,deliveryDetail,recipientKind,providerId]);
+    if(!updatedDelivery.rowCount){
+      await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail,provider_message_id,provider)
+        VALUES($1,$2,$5,'whatsapp',$3,$4,$6,'botsailor')`,
+        [b.id,action,deliveryStatus,deliveryDetail,recipientKind,providerId]);
+    }
+    if(providerId) await reconcileBookingWhatsAppReceipt(providerId);
+    if(result.success&&!providerId) console.warn('BOOKING WHATSAPP PROVIDER ID MISSING',{event:action,recipient:recipientKind});
+  }catch(logErr){
+    console.warn('BOOKING DELIVERY LOG SKIPPED:',logErr.message);
+  }
+
+
   // Keep the proven three-button confirmation untouched. Send Cancel/Reschedule as
   // a separate native WhatsApp interactive message immediately after the first send.
   // IMPORTANT: do this BEFORE delivery-log persistence. Some older databases do not
@@ -4657,24 +4701,6 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
     }
   }
 
-  // Delivery logging is non-critical and must not break customer-facing WhatsApp.
-  try{
-    const deliveryStatus=result.success?'sent':'failed';
-    const deliveryDetail=result.message||result.status||'';
-    const providerId=bookingProviderMessageId(result);
-    const updatedDelivery=await pool.query(`UPDATE booking_delivery_logs
-      SET status=$3,detail=$4,provider_message_id=$6,provider='botsailor',created_at=NOW()
-      WHERE booking_id=$1 AND event=$2 AND recipient=$5 AND channel='whatsapp'`,
-      [b.id,action,deliveryStatus,deliveryDetail,recipientKind,providerId]);
-    if(!updatedDelivery.rowCount){
-      await pool.query(`INSERT INTO booking_delivery_logs(booking_id,event,recipient,channel,status,detail,provider_message_id,provider)
-        VALUES($1,$2,$5,'whatsapp',$3,$4,$6,'botsailor')`,
-        [b.id,action,deliveryStatus,deliveryDetail,recipientKind,providerId]);
-    }
-    if(result.success&&!providerId) console.warn('BOOKING WHATSAPP PROVIDER ID MISSING',{event:action,recipient:recipientKind});
-  }catch(logErr){
-    console.warn('BOOKING DELIVERY LOG SKIPPED:',logErr.message);
-  }
 
   if(result.success){
     return { ...result, changeOptions:manageResult, mode:'interactive_final_design_plus_change_options' };
@@ -5065,7 +5091,7 @@ async function onBookingCancelledRebook({booking_ref}){
         const trackedStatus=result.success?'sent':'failed';
         const trackedDetail=String(result.message||result.status||'Booking cancellation WhatsApp card').slice(0,500);
         const updated=await pool.query(`UPDATE booking_delivery_logs
-          SET status=$3,detail=$4,provider_message_id=$5,provider='botsailor',created_at=NOW()
+          SET status=CASE WHEN status IN ('delivered','read') AND $3='sent' THEN status ELSE $3 END,detail=$4,provider_message_id=$5,provider='botsailor',created_at=NOW()
           WHERE booking_id=$1 AND event='cancelled' AND recipient=$2 AND channel='whatsapp'`,
           [b.id,recipient.kind,trackedStatus,trackedDetail,bookingProviderMessageId(result)]);
         if(!updated.rowCount){
@@ -5073,6 +5099,8 @@ async function onBookingCancelledRebook({booking_ref}){
             VALUES($1,'cancelled',$2,'whatsapp',$3,$4,$5,'botsailor',NOW())`,
             [b.id,recipient.kind,trackedStatus,trackedDetail,bookingProviderMessageId(result)]);
         }
+        const cancellationProviderId=bookingProviderMessageId(result);
+        if(cancellationProviderId) await reconcileBookingWhatsAppReceipt(cancellationProviderId);
       }catch(trackErr){
         console.error('BOOKING CANCELLATION WHATSAPP TRACKING SAVE FAILED',recipient.kind,b.booking_ref,trackErr?.message||trackErr);
       }
