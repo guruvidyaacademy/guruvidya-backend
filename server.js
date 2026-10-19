@@ -4883,7 +4883,10 @@ app.get('/api/public/booking/email-action',async(req,res)=>{
     const expected=createHmac('sha256',secret).update(payload).digest();
     const actual=Buffer.from(sig,'base64url');
     if(actual.length!==expected.length||!timingSafeEqual(actual,expected))return res.status(403).send('Invalid link');
-    const {id,event,recipient,button,url,issued}=JSON.parse(Buffer.from(payload,'base64url').toString());
+    const {id:rawId,event,recipient,button,url,issued}=JSON.parse(Buffer.from(payload,'base64url').toString());
+    // PostgreSQL BIGINT booking IDs are returned by pg as decimal strings.
+    // Accept those IDs without weakening validation or changing the signed payload.
+    const id=(typeof rawId==='string' && /^[1-9][0-9]*$/.test(rawId))?Number(rawId):rawId;
     const allowedEvents=['booking_confirmation','booking_reschedule_confirmation','booking_cancellation'];
     const allowedButtons=['Maps','Join Online Meeting','Manage','Contact','Call','Cancel','Reschedule','Book New Appointment'];
     if(!Number.isSafeInteger(id)||id<1||!allowedEvents.includes(event)||!['student','parent'].includes(recipient)||!allowedButtons.includes(button)||!Number.isFinite(issued)||issued>Date.now()+60000||Date.now()-issued>365*86400000)return res.status(400).send('Invalid link');
