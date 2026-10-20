@@ -37,3 +37,21 @@ export async function internalAlertPng(b,event){
  const height=y+42;const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="${height}"><defs><linearGradient id="h" x2="1" y2="1"><stop stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/></linearGradient></defs><rect width="1080" height="${height}" fill="white"/><text x="300" y="74" font-family="Arial" font-size="65" font-weight="bold" fill="#083b9e">Guru<tspan fill="#e32632">v</tspan>idya</text><text x="343" y="106" font-family="Arial" font-size="18" font-weight="bold" fill="#db3038">REAL EDUCATION • REAL RESULTS</text><rect y="135" width="1080" height="213" fill="url(#h)"/><rect x="58" y="162" width="275" height="38" rx="18" fill="#11a758"/><text x="77" y="188" font-family="Arial" font-size="20" font-weight="bold" fill="white">INTERNAL TEAM ALERT</text><text x="58" y="255" font-family="Arial" font-size="50" font-weight="bold" fill="white">${esc(titles[event])}</text><text x="60" y="297" font-family="Arial" font-size="23" fill="white">Guruvidya counselling appointment update</text><rect x="52" y="362" width="976" height="${height-380}" rx="22" fill="white" stroke="#0750a8" stroke-width="5"/><rect x="77" y="375" width="927" height="46" rx="9" fill="#e2f1ff"/><rect x="88" y="380" width="42" height="37" rx="7" fill="#0846b4"/><path d="M97 390h25v22H97z M103 384v10 M116 384v10 M97 397h25 M103 402h4 M112 402h4" stroke="white" stroke-width="2.3" fill="none" stroke-linejoin="round"/><text x="149" y="409" font-family="Arial" font-size="29" font-weight="bold" fill="#073b9d">Appointment Details</text><g font-family="Arial">${chunks}</g></svg>`;
  return sharp(Buffer.from(svg)).png().toBuffer();
 }
+
+export const internalActor=(booking,event,history)=>{
+  if(event==='confirmed')return String(booking.booked_by||'Student').toLowerCase().includes('parent')?'Parent':'Student';
+  if(event==='cancelled'&&booking.cancelled_by)return String(booking.cancelled_by).replace(/\s*\/\s*Guardian/i,'');
+  const actor=String(history?.actor||'').toLowerCase();
+  if(actor.includes('admin'))return 'Admin';
+  const named=String(history?.details?.rescheduled_by||history?.details?.cancelled_by||'');
+  if(named)return named.toLowerCase().includes('parent')?'Parent':named.toLowerCase().includes('student')?'Student':named;
+  // Customer reschedule does not currently persist the actor identity: do not guess.
+  return actor==='customer'?'Student/Parent':'Unknown';
+};
+export const internalCaption=(event,actor)=>`${{confirmed:'Booked',rescheduled:'Rescheduled',cancelled:'Cancelled'}[event]} by ${actor}`;
+
+
+// Compatibility with the established server.js import contract.
+export function internalAlertHtml(booking,event,history,crmUrl,meetingUrl,baseUrl){
+  return internalAlertEmail({...booking,meeting_link:meetingUrl||booking.meeting_link},event);
+}
