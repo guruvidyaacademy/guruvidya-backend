@@ -16,8 +16,10 @@ export const internalActor=(booking,event,history)=>{
   if(actor.includes('admin'))return 'Admin';
   const named=String(history?.details?.rescheduled_by||history?.details?.cancelled_by||'');
   if(named)return named.toLowerCase().includes('parent')?'Parent':named.toLowerCase().includes('student')?'Student':named;
-  // Customer reschedule does not currently persist the actor identity: do not guess.
-  return 'Unknown';
+  // Legacy customer reschedules did not record Student vs Parent.
+  // Show the known actor class without inventing an individual identity.
+  if(actor.includes('customer'))return 'Student / Parent';
+  return 'Not recorded';
 };
 export const internalCaption=(event,actor)=>`${{confirmed:'Booked',rescheduled:'Rescheduled',cancelled:'Cancelled'}[event]}${actor&&actor!=='Unknown'?' by '+actor:''}`;
 export function internalAlertRows(b,event,history){
