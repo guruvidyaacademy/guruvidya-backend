@@ -1,3 +1,4 @@
+import { internalActor, internalCaption, internalAlertHtml, internalAlertPng } from './booking/internal-team-alert-design.js';
 import { initInternalAlertReminderScheduler, runInternalAlertReminderScheduler } from './booking/internal-alert-reminder-scheduler.js';
 import { reconcileStaleBookingAttempts } from './booking/booking-stale-attempts.js';
 import { dispatchBookingReminders } from './booking/booking-delivery.js';
@@ -5232,12 +5233,32 @@ async function onBookingCancelledRebook({booking_ref}){
   await cancellationEmailJob;
   return {success:results.some(r=>r.success),status:results.length?'recipient_results':'no_valid_recipient',results};
 }
+// Signed, short-lived media endpoint for BotSailor to fetch private staff graphics.
+const internalTeamMediaSecret=randomBytes(32);
+const internalTeamMediaCache=new Map();
+const internalTeamMediaSignature=(id,event,expires)=>createHmac('sha256',internalTeamMediaSecret).update(`${id}:${event}:${expires}`).digest('hex');
+app.get('/api/public/booking/internal-team-alert/header/:event.png',async(req,res)=>{
+  const event=String(req.params.event);
+  if(!['confirmed','rescheduled','cancelled'].includes(event))return res.status(404).end();
+  try{const bytes=await readFile(new URL(`./booking/internal-team-alert-assets/${event}-header.png`,import.meta.url));res.set({'Content-Type':'image/png','Cache-Control':'public, max-age=86400','X-Content-Type-Options':'nosniff'}).send(bytes)}catch{return res.status(404).end()}
+});
+app.get('/api/public/booking/internal-team-alert/card/:id/:event.png',async(req,res)=>{
+  const {id,event}=req.params,expires=Number(req.query.expires),signature=String(req.query.signature||'');
+  if(!/^\d+$/.test(id)||!['confirmed','rescheduled','cancelled'].includes(event)||!Number.isSafeInteger(expires)||Date.now()>expires||expires>Date.now()+20*60*1000||!/^[a-f0-9]{64}$/.test(signature))return res.status(404).end();
+  const expected=internalTeamMediaSignature(id,event,expires);
+  if(!timingSafeEqual(Buffer.from(signature,'hex'),Buffer.from(expected,'hex')))return res.status(404).end();
+  const cached=internalTeamMediaCache.get(`${id}:${event}:${expires}`);
+  if(!cached)return res.status(404).end();
+  res.set({'Content-Type':'image/png','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','X-Robots-Tag':'noindex'}).send(cached);
+});
+
 // Internal staff alerts are isolated from student-facing booking notifications.
 // Dispatch is recorded before contacting external providers to prevent duplicate sends.
 async function sendInternalAppointmentAlert({bookingId,event}) {
   if (!['confirmed','rescheduled','cancelled'].includes(event)) return;
-  const found=await pool.query(`SELECT id,booking_ref,student_name,student_mobile,parent_mobile,course,mode,starts_at,status,updated_at
-    FROM student_bookings WHERE id=$1`,[bookingId]);
+  const found=await pool.query(`SELECT b.*,c.name AS counsellor_name,c.meeting_link,l.name AS offline_location_name,l.address AS offline_address
+    FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id
+    LEFT JOIN booking_locations l ON l.id=c.location_id WHERE b.id=$1`,[bookingId]);
   const booking=found.rows[0];
   if(!booking) return;
   // A later booking transition must not generate a stale alert.
@@ -5257,6 +5278,27 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
   const title=event==='confirmed'?'Confirmed':event==='rescheduled'?'Rescheduled':'Cancelled';
   const message=`GuruVidya Internal Appointment Alert\nBooking ${title}\nReference: ${booking.booking_ref}\nStudent: ${booking.student_name}\nCourse: ${booking.course}\nMode: ${booking.mode}\nAppointment: ${date} (IST)`;
   const subject=`GuruVidya Internal Alert: Booking ${title} | ${booking.booking_ref}`;
+  const historyResult=await pool.query(`SELECT actor,action,details,created_at FROM booking_events WHERE booking_id=$1 AND action=ANY($2::text[]) ORDER BY created_at DESC,id DESC LIMIT 1`,[booking.id,event==='confirmed'?['booked','approve','confirm']:event==='rescheduled'?['reschedule']:['cancel']]);
+  const history=historyResult.rows[0]||null;
+  const caption=internalCaption(event,internalActor(booking,event,history));
+  const crmBase=String(process.env.INTERNAL_ALERT_CRM_URL||process.env.ADMIN_FRONTEND_URL||'').trim();
+  // CRM deep links are configurable. Do not fabricate a destination.
+  const crmUrl=/^https:\/\/[^\s]+$/i.test(crmBase)?crmBase:'';
+  const meetingUrl=booking.mode==='online'&&event!=='cancelled'&&/^https:\/\/[^\s]+$/i.test(String(booking.meeting_link||''))?booking.meeting_link:'';
+  const publicBase=String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'');
+  let imageUrl='';
+  const mediaExpires=Date.now()+12*60*1000;
+  const mediaKey=`${booking.id}:${event}:${mediaExpires}`;
+  const whatsappEnabled=rules?rules.open[eventIndex]!==false:true;
+  if(whatsappEnabled){
+    try{
+      const png=await internalAlertPng(booking,event,history);
+      internalTeamMediaCache.set(mediaKey,png);
+      const expiration=mediaExpires;
+      setTimeout(()=>internalTeamMediaCache.delete(mediaKey),12*60*1000+2000).unref?.();
+      imageUrl=`${publicBase}/api/public/booking/internal-team-alert/card/${booking.id}/${event}.png?expires=${expiration}&signature=${internalTeamMediaSignature(booking.id,event,expiration)}`;
+    }catch(e){console.error('Internal team artwork generation failed:',e?.message||e)}
+  }
   for(const r of recipients.rows){
     for(const channel of ['email','whatsapp']){
       const destination=channel==='email'?String(r.email||'').trim():String(r.phone||'').replace(/\D/g,'').replace(/^91(?=\d{10}$)/,'');
@@ -5278,8 +5320,7 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
         if(channel==='email'){
           // An HTML part allows Resend's configured open-tracking pixel to be
           // included; plain-text-only emails cannot report a reliable open.
-          const safeMessage=message.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-          const html=`<div style="font-family:Arial,Helvetica,sans-serif;white-space:pre-line;line-height:1.6;color:#1f2937">${safeMessage}</div>`;
+          const html=internalAlertHtml(booking,event,history,crmUrl,meetingUrl,publicBase);
           const result=await sendEmailWithFailover({to:destination,subject,text:message,html});
           status='sent';provider=result.provider||'email';providerMessageId=result.id||null;detail=`Accepted by ${provider}`;
         } else {
@@ -5294,9 +5335,17 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
             status='skipped_closed';detail='No real 24h window; approved internal alert template not configured';
           }else{
             await loadPersistedConfig();
-            const result=await sendBotSailorText({mobile:destination,name:r.name,course:booking.course},message,'internal_appointment_alert');
+            // BotSailor send/file accepts a graphic + one-line media caption.
+            // Its currently integrated reply-buttons endpoint is NOT a native URL CTA;
+            // do not pretend a reply button opens CRM or a meeting.
+            const links=[meetingUrl&&`Join Online Meeting: ${meetingUrl}`,crmUrl&&`View in CRM: ${crmUrl}`].filter(Boolean);
+            const mediaCaption=[caption,...links].join('\n');
+            const result=imageUrl?await botSailorPost('https://botsailor.com/api/v1/whatsapp/send/file',{
+              apiToken:config.botsailorToken,phone_number_id:config.botsailorInstanceId,
+              phone_number:botSailorPhone(destination),media_url:imageUrl,media_type:'image',media_caption_text:mediaCaption
+            }):await sendBotSailorText({mobile:destination,name:r.name,course:booking.course},[message,mediaCaption].join('\n'),'internal_appointment_alert_fallback');
             if(!result?.success)throw new Error(result?.message||result?.status||'BotSailor send failed');
-            status='sent';provider='botsailor';detail='Accepted by BotSailor';
+            status='sent';provider='botsailor';detail=imageUrl?'Graphic + caption accepted by BotSailor; URL CTA requires approved template':'Text fallback accepted by BotSailor';
             providerMessageId=bookingProviderMessageId(result);
             if(!providerMessageId)detail='Accepted by BotSailor; provider message ID unavailable for delivery/read tracking';
           }
