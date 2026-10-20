@@ -3423,7 +3423,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
           const meet=await pool.query("SELECT c.meeting_link FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id WHERE b.id=$1 AND b.mode='online'",[chosen.booking_id]);
           link=String(meet.rows[0]?.meeting_link||'').trim();
         }
-        if(/^https:\/\/i.test(link))await sendBotSailorText({mobile:canonical},`${staffButtonName}: ${link}`,'internal_staff_button_link');
+        if(/^https:\/\//i.test(link))await sendBotSailorText({mobile:canonical},`${staffButtonName}: ${link}`,'internal_staff_button_link');
         return res.status(200).json({status:'ok',action:'internal_staff_button_click'});
       }
       console.warn('Internal staff button click not attributed: missing or ambiguous delivery context',{hasId:Boolean(staffMatch),hasContext:Boolean(staffContext),candidates:staffCandidates.rowCount});
