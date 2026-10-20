@@ -3413,14 +3413,14 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       if(staffCandidates.rowCount===1){
         const chosen=staffCandidates.rows[0];
         if(staffButtonName==='Join Online Meeting'){
-          const meet=await pool.query('SELECT c.meeting_link FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id WHERE b.id=$1 AND b.mode='online'',[chosen.booking_id]);
+          const meet=await pool.query("SELECT c.meeting_link FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id WHERE b.id=$1 AND b.mode='online'",[chosen.booking_id]);
           if(!/^https:\/\/[^\s]+$/i.test(String(meet.rows[0]?.meeting_link||'')))return res.status(200).json({status:'ok',action:'staff_meeting_unavailable'});
         }
         await pool.query(`UPDATE booking_internal_alert_deliveries SET whatsapp_clicked_at=COALESCE(whatsapp_clicked_at,NOW()),
           whatsapp_last_clicked_at=NOW(),whatsapp_click_history=COALESCE(whatsapp_click_history,'[]'::jsonb)||jsonb_build_array(jsonb_build_object('button',$2::text,'at',NOW())),updated_at=NOW() WHERE id=$1`,[chosen.id,staffButtonName]);
         let link=String(process.env.INTERNAL_ALERT_CRM_URL||process.env.ADMIN_FRONTEND_URL||'https://admins.guruvidya.in').trim();
         if(staffButtonName==='Join Online Meeting'){
-          const meet=await pool.query('SELECT c.meeting_link FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id WHERE b.id=$1 AND b.mode='online'',[chosen.booking_id]);
+          const meet=await pool.query("SELECT c.meeting_link FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id WHERE b.id=$1 AND b.mode='online'",[chosen.booking_id]);
           link=String(meet.rows[0]?.meeting_link||'').trim();
         }
         if(/^https:\/\/i.test(link))await sendBotSailorText({mobile:canonical},`${staffButtonName}: ${link}`,'internal_staff_button_link');
