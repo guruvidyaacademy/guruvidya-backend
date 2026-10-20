@@ -678,7 +678,8 @@ export function installBookingRoutes(app,pool,hooks={}) {
         await db.query(`UPDATE student_bookings SET status='cancelled',customer_response='cancelled',response_at=NOW(),updated_at=NOW(),cancellation_reason=$2,cancellation_note=$3,cancelled_via='Browser',cancelled_by=$4,cancelled_at=NOW() WHERE id=$1`,[b.id,reason,reason==='Other Reason'?note:null,cancelledBy]);
       }
       else await db.query(`UPDATE student_bookings SET customer_response='confirmed',response_at=NOW(),status='confirmed',updated_at=NOW() WHERE id=$1`,[b.id]);
-      await log(db,b.id,'customer',req.body.action,{old_starts_at:b.starts_at,new_starts_at:req.body.starts_at||null});
+      const customerActor=req.body.action==='reschedule'&&['Student','Parent'].includes(req.body.rescheduled_by)?req.body.rescheduled_by:null;
+      await log(db,b.id,'customer',req.body.action,{old_starts_at:b.starts_at,new_starts_at:req.body.starts_at||null,...(customerActor?{rescheduled_by:customerActor}:{})});
       if(req.body.action!=='cancel') await enqueueLifecycleBlockedIntents(db,{bookingId:Number(b.id),event:req.body.action==='confirm'?'confirmed':'rescheduled',eventKey:req.body.action+':'+randomUUID()});
       await db.query('COMMIT');
       // The reschedule is already committed. Confirm it to the browser immediately.

@@ -53,11 +53,12 @@ app.post('/api/webhook/resend', async (req, res) => {
     // Higher positive state wins over out-of-order events; failures remain visible.
     const rank = {pending:0,sent:1,delivery_delayed:1,delivered:2,opened:3,clicked:4};
     for (const table of ['booking_internal_reminder_deliveries','booking_internal_alert_deliveries']) {
-      await pool.query(`UPDATE ${table} SET status = CASE
+      const matched=await pool.query(`UPDATE ${table} SET status = CASE
         WHEN $2 IN ('failed','bounced','complained','suppressed') THEN $2
         WHEN status IN ('failed','bounced','complained','suppressed') THEN status
         WHEN (CASE status WHEN 'clicked' THEN 4 WHEN 'opened' THEN 3 WHEN 'delivered' THEN 2 WHEN 'sent' THEN 1 ELSE 0 END) <= $3 THEN $2
         ELSE status END, updated_at=NOW() WHERE channel='email' AND provider='resend' AND provider_message_id=$1`,[messageId,state,rank[state]??0]);
+      if(table==='booking_internal_alert_deliveries')console.info('RESEND INTERNAL ALERT STATUS',{event:eventType,matched:matched.rowCount});
     }
     // Student/parent booking emails are audited in booking_delivery_logs, not the
     // internal staff alert tables. Match the exact Resend email ID to avoid
@@ -74,7 +75,7 @@ app.post('/api/webhook/resend', async (req, res) => {
       WHERE channel='email' AND provider='resend' AND provider_message_id=$1
         AND event IN ('booking_confirmation','booking_reschedule_confirmation','booking_cancellation')
       RETURNING id`,[messageId,state,rank[state]??0]);
-    console.info('RESEND BOOKING EMAIL STATUS', {event:eventType,matched:bookingEvent.rowCount});
+    console.info('RESEND BOOKING EMAIL STATUS', {event:eventType,matched:bookingEvent.rowCount,messageIdPresent:true});
     return res.json({success:true});
   } catch (err) { console.error('Resend webhook processing error:', err.message); return res.status(500).json({success:false}); }
 });
@@ -5237,6 +5238,9 @@ async function onBookingCancelledRebook({booking_ref}){
 const internalTeamMediaSecret=randomBytes(32);
 const internalTeamMediaCache=new Map();
 const internalTeamMediaSignature=(id,event,expires)=>createHmac('sha256',internalTeamMediaSecret).update(`${id}:${event}:${expires}`).digest('hex');
+app.get('/api/public/booking/internal-team-alert/footer-wave.png',async(req,res)=>{
+  try{const bytes=await readFile(new URL('./booking/internal-team-alert-assets/footer-wave.png',import.meta.url));res.set({'Content-Type':'image/png','Cache-Control':'public, max-age=604800','X-Content-Type-Options':'nosniff'}).send(bytes)}catch{return res.status(404).end()}
+});
 app.get('/api/public/booking/internal-team-alert/header/:event.png',async(req,res)=>{
   const event=String(req.params.event);
   if(!['confirmed','rescheduled','cancelled'].includes(event))return res.status(404).end();
@@ -5281,7 +5285,7 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
   const historyResult=await pool.query(`SELECT actor,action,details,created_at FROM booking_events WHERE booking_id=$1 AND action=ANY($2::text[]) ORDER BY created_at DESC,id DESC LIMIT 1`,[booking.id,event==='confirmed'?['booked','approve','confirm']:event==='rescheduled'?['reschedule']:['cancel']]);
   const history=historyResult.rows[0]||null;
   const caption=internalCaption(event,internalActor(booking,event,history));
-  const crmBase=String(process.env.INTERNAL_ALERT_CRM_URL||process.env.ADMIN_FRONTEND_URL||'').trim();
+  const crmBase=String(process.env.INTERNAL_ALERT_CRM_URL||process.env.ADMIN_FRONTEND_URL||'https://admins.guruvidya.in').trim();
   // CRM deep links are configurable. Do not fabricate a destination.
   const crmUrl=/^https:\/\/[^\s]+$/i.test(crmBase)?crmBase:'';
   const meetingUrl=booking.mode==='online'&&event!=='cancelled'&&/^https:\/\/[^\s]+$/i.test(String(booking.meeting_link||''))?booking.meeting_link:'';
@@ -5322,7 +5326,7 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
           // included; plain-text-only emails cannot report a reliable open.
           const html=internalAlertHtml(booking,event,history,crmUrl,meetingUrl,publicBase);
           const result=await sendEmailWithFailover({to:destination,subject,text:message,html});
-          status='sent';provider=result.provider||'email';providerMessageId=result.id||null;detail=`Accepted by ${provider}`;
+          status='sent';provider=result.provider||'email';providerMessageId=result.id||null;detail=`Accepted by ${provider}${providerMessageId?'':' (provider message ID unavailable; webhook tracking not possible)'}`;
         } else {
           // Never use the booking test overrides for actual outbound messages.
           const window=await pool.query(`SELECT GREATEST(
