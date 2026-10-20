@@ -3389,6 +3389,31 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     }
 
 
+    // Internal-team View in CRM reply: unique delivery ID plus exact sender matching.
+    // Do not accept typed text or an uncorrelated button title as a click.
+    const staffButtonId=String(extractButtonReplyId(payload)||'').trim();
+    const staffReplyTitle=String(buttonReplyTitle||payload.user_message||payload.userMessage||'').replace(/^#button[ _-]*reply#/i,'').trim();
+    const staffMatch=staffButtonId.match(/^gv_staff_crm_(\d+)$/i);
+    const staffContext=ctaContextMessageId(payload);
+    if(mobile && ((staffMatch && (staffReplyTitle.toLowerCase()==='view in crm' || staffButtonId.toLowerCase()===`gv_staff_crm_${staffMatch[1]}`)) || (staffContext && staffReplyTitle.toLowerCase()==='view in crm' && (buttonReplyId||buttonReplyTitle||/^#button[ _-]*reply#/i.test(String(payload.user_message||'')))))){
+      const canonical=botSailorPhone(mobile);
+      const record=await pool.query(`SELECT d.id FROM booking_internal_alert_deliveries d
+        WHERE d.channel='whatsapp' AND d.status IN ('sent','delivered','read','clicked')
+        AND regexp_replace(d.destination,'[^0-9]','','g') IN ($1,$2)
+        AND ($3::bigint IS NULL OR d.id=$3)
+        AND ($4::text='' OR d.button_message_id=$4)
+        AND ($3::bigint IS NOT NULL OR $4::text<>'')
+        ORDER BY d.created_at DESC LIMIT 1`,[canonical,canonical.replace(/^91(?=\d{10}$)/,''),staffMatch?Number(staffMatch[1]):null,staffContext||'']);
+      if(record.rowCount){
+        const id=record.rows[0].id;
+        await pool.query(`UPDATE booking_internal_alert_deliveries SET whatsapp_clicked_at=COALESCE(whatsapp_clicked_at,NOW()),
+          whatsapp_last_clicked_at=NOW(),whatsapp_click_history=COALESCE(whatsapp_click_history,'[]'::jsonb)||jsonb_build_array(jsonb_build_object('button','View in CRM','at',NOW())),updated_at=NOW() WHERE id=$1`,[id]);
+        const crm=String(process.env.INTERNAL_ALERT_CRM_URL||process.env.ADMIN_FRONTEND_URL||'https://admins.guruvidya.in').trim();
+        if(/^https:\/\/[^\s]+$/i.test(crm))await sendBotSailorText({mobile:canonical},`View in CRM: ${crm}`,'internal_staff_crm_link');
+        return res.status(200).json({status:'ok',action:'internal_staff_crm_click'});
+      }
+    }
+
     // BotSailor can deliver a button tap as a normal user_message.
     const webhookUserMessageRaw = normalizeLooseText(
       payload.user_message ||
@@ -5384,7 +5409,21 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
             if(!result?.success)throw new Error(result?.message||result?.status||'BotSailor send failed');
             status='sent';provider='botsailor';detail=imageUrl?'Graphic + caption accepted by BotSailor; URL CTA requires approved template':'Text fallback accepted by BotSailor';
             providerMessageId=bookingProviderMessageId(result);
-            if(!providerMessageId)detail='Accepted by BotSailor; provider message ID unavailable for delivery/read tracking';
+            // Additional reply button; original graphic and caption remain unchanged.
+            // A distinct button ID identifies the exact delivery and recipient.
+            const buttonResult=await sendBotSailorReplyButtons(
+              {mobile:destination,name:r.name,course:booking.course},
+              'Open this appointment in Guruvidya CRM:',
+              [{id:`gv_staff_crm_${deliveryId}`,title:'View in CRM'}],
+              'internal_staff_view_crm_button');
+            if(buttonResult?.success){
+              const buttonMessageId=bookingProviderMessageId(buttonResult);
+              await pool.query('UPDATE booking_internal_alert_deliveries SET button_message_id=$2 WHERE id=$1',[deliveryId,buttonMessageId]);
+              detail+='; View in CRM reply button accepted';
+            }else{
+              detail+='; View in CRM reply button failed: '+String(buttonResult?.message||'unknown').slice(0,120);
+            }
+            if(!providerMessageId)detail+='; provider media message ID unavailable for delivery/read tracking';
           }
         }
       }catch(e){detail=String(e?.message||e).slice(0,500);console.error('Internal appointment alert delivery:',channel,detail);}

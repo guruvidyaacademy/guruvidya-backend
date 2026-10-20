@@ -162,6 +162,11 @@ export async function initBooking(pool) {
     CREATE INDEX IF NOT EXISTS booking_internal_alert_booking_idx ON booking_internal_alert_deliveries(booking_id);`);
   await pool.query(`ALTER TABLE booking_internal_alert_deliveries ADD COLUMN IF NOT EXISTS provider_message_id TEXT`);
   await pool.query(`ALTER TABLE booking_internal_alert_deliveries ADD COLUMN IF NOT EXISTS email_clicked_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE booking_internal_alert_deliveries ADD COLUMN IF NOT EXISTS button_message_id TEXT`);
+  await pool.query(`ALTER TABLE booking_internal_alert_deliveries ADD COLUMN IF NOT EXISTS whatsapp_clicked_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE booking_internal_alert_deliveries ADD COLUMN IF NOT EXISTS whatsapp_last_clicked_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE booking_internal_alert_deliveries ADD COLUMN IF NOT EXISTS whatsapp_click_history JSONB NOT NULL DEFAULT '[]'::jsonb`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS booking_internal_alert_button_message_idx ON booking_internal_alert_deliveries(button_message_id) WHERE button_message_id IS NOT NULL`);
   await pool.query(`CREATE INDEX IF NOT EXISTS booking_internal_alert_provider_message_idx ON booking_internal_alert_deliveries(provider_message_id) WHERE provider_message_id IS NOT NULL`);
 
 }
