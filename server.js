@@ -80,6 +80,30 @@ app.post('/api/webhook/resend', async (req, res) => {
   } catch (err) { console.error('Resend webhook processing error:', err.message); return res.status(500).json({success:false}); }
 });
 
+// Signed internal-team email CTA: record a real CRM link request without
+// relying on the mail client's optional Resend click-tracking setting.
+const internalAlertClickSecret = () => String(process.env.INTERNAL_ALERT_CLICK_SECRET || process.env.RESEND_WEBHOOK_SECRET || '').trim();
+const internalAlertClickSignature = (id,expires,destination,secret) => createHmac('sha256',secret).update(`${id}:${expires}:${destination}`).digest('hex');
+app.get('/api/public/booking/internal-team-alert/email-click/:id', async (req,res) => {
+  const id=Number(req.params.id), expires=Number(req.query.expires), sig=String(req.query.sig||'');
+  const secret=internalAlertClickSecret();
+  if(!secret || !Number.isSafeInteger(id) || id<1 || !Number.isSafeInteger(expires) || expires<Date.now() || expires>Date.now()+31*86400000 || !/^[a-f0-9]{64}$/.test(sig)) return res.status(404).send('Link unavailable');
+  try {
+    const row=await pool.query("SELECT id,channel FROM booking_internal_alert_deliveries WHERE id=$1 AND channel='email'",[id]);
+    if(!row.rowCount)return res.status(404).send('Link unavailable');
+    const crmBase=String(process.env.INTERNAL_ALERT_CRM_URL||process.env.ADMIN_FRONTEND_URL||'https://admins.guruvidya.in').trim();
+    const target=new URL(crmBase);
+    if(target.protocol!=='https:' || target.username || target.password)return res.status(404).send('Link unavailable');
+    const expected=internalAlertClickSignature(id,expires,target.origin+target.pathname,secret);
+    if(!timingSafeEqual(Buffer.from(sig,'hex'),Buffer.from(expected,'hex')))return res.status(404).send('Link unavailable');
+    await pool.query(`UPDATE booking_internal_alert_deliveries SET
+      email_clicked_at=COALESCE(email_clicked_at,NOW()),
+      status=CASE WHEN status IN ('failed','bounced','complained','suppressed') THEN status ELSE 'clicked' END,
+      updated_at=NOW() WHERE id=$1 AND channel='email'`,[id]);
+    res.set('Cache-Control','no-store');return res.redirect(302,target.toString());
+  }catch(e){console.error('Internal email click redirect:',e.message);return res.status(500).send('Unable to open CRM');}
+});
+
 const PORT = process.env.PORT || 3000;
 const INDIA_TZ = "Asia/Kolkata";
 const HOUR = 60 * 60 * 1000;
@@ -5324,7 +5348,16 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
         if(channel==='email'){
           // An HTML part allows Resend's configured open-tracking pixel to be
           // included; plain-text-only emails cannot report a reliable open.
-          const html=internalAlertHtml(booking,event,history,crmUrl,meetingUrl,publicBase);
+          const clickSecret=internalAlertClickSecret();
+          let emailCrmUrl=crmUrl;
+          if(clickSecret && crmUrl){
+            const expires=Date.now()+30*86400000;
+            const destination=new URL(crmUrl);
+            const signedDestination=destination.origin+destination.pathname;
+            const sig=internalAlertClickSignature(deliveryId,expires,signedDestination,clickSecret);
+            emailCrmUrl=`${publicBase}/api/public/booking/internal-team-alert/email-click/${deliveryId}?expires=${expires}&sig=${sig}`;
+          }
+          const html=internalAlertHtml(booking,event,history,emailCrmUrl,meetingUrl,publicBase);
           const result=await sendEmailWithFailover({to:destination,subject,text:message,html});
           status='sent';provider=result.provider||'email';providerMessageId=result.id||null;detail=`Accepted by ${provider}${providerMessageId?'':' (provider message ID unavailable; webhook tracking not possible)'}`;
         } else {
