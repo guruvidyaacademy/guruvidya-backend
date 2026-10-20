@@ -162,6 +162,7 @@ export async function initBooking(pool) {
     CREATE INDEX IF NOT EXISTS booking_internal_alert_booking_idx ON booking_internal_alert_deliveries(booking_id);`);
   await pool.query(`ALTER TABLE booking_internal_alert_deliveries ADD COLUMN IF NOT EXISTS provider_message_id TEXT`);
   await pool.query(`ALTER TABLE booking_internal_alert_deliveries ADD COLUMN IF NOT EXISTS email_clicked_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE booking_internal_alert_deliveries ADD COLUMN IF NOT EXISTS email_click_history JSONB NOT NULL DEFAULT '[]'::jsonb`);
   await pool.query(`ALTER TABLE booking_internal_alert_deliveries ADD COLUMN IF NOT EXISTS button_message_id TEXT`);
   await pool.query(`ALTER TABLE booking_internal_alert_deliveries ADD COLUMN IF NOT EXISTS whatsapp_clicked_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE booking_internal_alert_deliveries ADD COLUMN IF NOT EXISTS whatsapp_last_clicked_at TIMESTAMPTZ`);
@@ -333,7 +334,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
       const keys=await pool.query(`SELECT d.booking_id,d.recipient_name,MAX(d.created_at) AS latest FROM booking_internal_alert_deliveries d ${where} GROUP BY ${grouping} ORDER BY latest DESC,booking_id DESC LIMIT ${add(pageSize)} OFFSET ${add((page-1)*pageSize)}`,params);
       if(!keys.rows.length)return res.set('Cache-Control','no-store').json({success:true,data:{items:[],total:count.rows[0].total,page,pageSize}});
       const ids=keys.rows.map(x=>x.booking_id),names=keys.rows.map(x=>x.recipient_name);
-      const records=await pool.query(`SELECT id,booking_id,event,recipient_name AS recipient,destination,channel,status,provider,detail,created_at,email_clicked_at,whatsapp_clicked_at,whatsapp_last_clicked_at,whatsapp_click_history FROM booking_internal_alert_deliveries WHERE created_at >= NOW() - INTERVAL '7 days' AND (booking_id,recipient_name) IN (SELECT * FROM UNNEST($1::bigint[],$2::text[])) ORDER BY created_at DESC,id DESC`,[ids,names]);
+      const records=await pool.query(`SELECT id,booking_id,event,recipient_name AS recipient,destination,channel,status,provider,detail,created_at,email_clicked_at,email_click_history,whatsapp_clicked_at,whatsapp_last_clicked_at,whatsapp_click_history FROM booking_internal_alert_deliveries WHERE created_at >= NOW() - INTERVAL '7 days' AND (booking_id,recipient_name) IN (SELECT * FROM UNNEST($1::bigint[],$2::text[])) ORDER BY created_at DESC,id DESC`,[ids,names]);
       const items=keys.rows.map(k=>({...k,phone:(records.rows.find(r=>String(r.booking_id)===String(k.booking_id)&&r.recipient===k.recipient_name&&r.channel==='whatsapp')||{}).destination||'',events:records.rows.filter(r=>String(r.booking_id)===String(k.booking_id)&&r.recipient===k.recipient_name)}));
       res.set('Cache-Control','no-store').json({success:true,data:{items,total:count.rows[0].total,page,pageSize}});
     }catch(e){internalError(res,e)}

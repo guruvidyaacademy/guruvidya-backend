@@ -98,10 +98,35 @@ app.get('/api/public/booking/internal-team-alert/email-click/:id', async (req,re
     if(!timingSafeEqual(Buffer.from(sig,'hex'),Buffer.from(expected,'hex')))return res.status(404).send('Link unavailable');
     await pool.query(`UPDATE booking_internal_alert_deliveries SET
       email_clicked_at=COALESCE(email_clicked_at,NOW()),
+      email_click_history=COALESCE(email_click_history,'[]'::jsonb)||jsonb_build_array(jsonb_build_object('button','View in CRM','at',NOW())),
       status=CASE WHEN status IN ('failed','bounced','complained','suppressed') THEN status ELSE 'clicked' END,
       updated_at=NOW() WHERE id=$1 AND channel='email'`,[id]);
     res.set('Cache-Control','no-store');return res.redirect(302,target.toString());
   }catch(e){console.error('Internal email click redirect:',e.message);return res.status(500).send('Unable to open CRM');}
+});
+
+// Signed internal-team meeting CTA: record the specific email button and its timestamp.
+app.get('/api/public/booking/internal-team-alert/email-meet/:id', async (req,res) => {
+  const id=Number(req.params.id), expires=Number(req.query.expires), sig=String(req.query.sig||'');
+  const secret=internalAlertClickSecret();
+  if(!secret || !Number.isSafeInteger(id) || id<1 || !Number.isSafeInteger(expires) || expires<Date.now() || expires>Date.now()+31*86400000 || !/^[a-f0-9]{64}$/.test(sig))return res.status(404).send('Link unavailable');
+  try{
+    const result=await pool.query(`SELECT d.id,c.meeting_link FROM booking_internal_alert_deliveries d
+      JOIN student_bookings b ON b.id=d.booking_id
+      LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id
+      WHERE d.id=$1 AND d.channel='email' AND d.event<>'cancelled' AND b.mode='online'`,[id]);
+    if(!result.rowCount)return res.status(404).send('Link unavailable');
+    const target=new URL(String(result.rows[0].meeting_link||''));
+    if(target.protocol!=='https:' || target.username || target.password)return res.status(404).send('Link unavailable');
+    const expected=internalAlertClickSignature(id,expires,'meet:'+target.toString(),secret);
+    if(!timingSafeEqual(Buffer.from(sig,'hex'),Buffer.from(expected,'hex')))return res.status(404).send('Link unavailable');
+    await pool.query(`UPDATE booking_internal_alert_deliveries SET
+      email_clicked_at=COALESCE(email_clicked_at,NOW()),
+      email_click_history=COALESCE(email_click_history,'[]'::jsonb)||jsonb_build_array(jsonb_build_object('button','Join Online Meeting','at',NOW())),
+      status=CASE WHEN status IN ('failed','bounced','complained','suppressed') THEN status ELSE 'clicked' END,
+      updated_at=NOW() WHERE id=$1 AND channel='email'`,[id]);
+    res.set('Cache-Control','no-store');return res.redirect(302,target.toString());
+  }catch(e){console.error('Internal email meeting click redirect:',e.message);return res.status(404).send('Link unavailable');}
 });
 
 const PORT = process.env.PORT || 3000;
@@ -5397,7 +5422,13 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
             const sig=internalAlertClickSignature(deliveryId,expires,signedDestination,clickSecret);
             emailCrmUrl=`${publicBase}/api/public/booking/internal-team-alert/email-click/${deliveryId}?expires=${expires}&sig=${sig}`;
           }
-          const html=internalAlertHtml(booking,event,history,emailCrmUrl,meetingUrl,publicBase);
+          let emailMeetingUrl=meetingUrl;
+          if(clickSecret && meetingUrl){
+            const expires=Date.now()+30*86400000;
+            const sig=internalAlertClickSignature(deliveryId,expires,'meet:'+new URL(meetingUrl).toString(),clickSecret);
+            emailMeetingUrl=`${publicBase}/api/public/booking/internal-team-alert/email-meet/${deliveryId}?expires=${expires}&sig=${sig}`;
+          }
+          const html=internalAlertHtml(booking,event,history,emailCrmUrl,emailMeetingUrl,publicBase);
           const result=await sendEmailWithFailover({to:destination,subject,text:message,html});
           status='sent';provider=result.provider||'email';providerMessageId=result.id||null;detail=`Accepted by ${provider}${providerMessageId?'':' (provider message ID unavailable; webhook tracking not possible)'}`;
         } else {
