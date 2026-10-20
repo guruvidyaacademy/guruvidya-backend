@@ -3389,29 +3389,44 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     }
 
 
-    // Internal-team View in CRM reply: unique delivery ID plus exact sender matching.
-    // Do not accept typed text or an uncorrelated button title as a click.
+    // Internal staff reply buttons: prefer exact delivery ID, then provider context.
+    // BotSailor sometimes strips custom IDs and sends only #button_reply#Title.
+    // Title-only fallback is allowed ONLY for one unambiguous recent staff delivery.
     const staffButtonId=String(extractButtonReplyId(payload)||'').trim();
     const staffReplyTitle=String(buttonReplyTitle||payload.user_message||payload.userMessage||'').replace(/^#button[ _-]*reply#/i,'').trim();
-    const staffMatch=staffButtonId.match(/^gv_staff_crm_(\d+)$/i);
+    const staffMatch=staffButtonId.match(/^gv_staff_(crm|meet)_(\d+)$/i);
     const staffContext=ctaContextMessageId(payload);
-    if(mobile && ((staffMatch && (staffReplyTitle.toLowerCase()==='view in crm' || staffButtonId.toLowerCase()===`gv_staff_crm_${staffMatch[1]}`)) || (staffContext && staffReplyTitle.toLowerCase()==='view in crm' && (buttonReplyId||buttonReplyTitle||/^#button[ _-]*reply#/i.test(String(payload.user_message||'')))))){
+    const staffButtonName=staffMatch?(staffMatch[1].toLowerCase()==='meet'?'Join Online Meeting':'View in CRM'):
+      (/^view in crm$/i.test(staffReplyTitle)?'View in CRM':/^join online meeting$/i.test(staffReplyTitle)?'Join Online Meeting':null);
+    const isActualStaffButton=Boolean(staffMatch||((buttonReplyId||buttonReplyTitle||/^#button[ _-]*reply#/i.test(String(payload.user_message||'')))&&staffButtonName));
+    if(mobile && staffButtonName && isActualStaffButton){
       const canonical=botSailorPhone(mobile);
-      const record=await pool.query(`SELECT d.id FROM booking_internal_alert_deliveries d
+      const staffCandidates=await pool.query(`SELECT d.id,d.booking_id FROM booking_internal_alert_deliveries d
         WHERE d.channel='whatsapp' AND d.status IN ('sent','delivered','read','clicked')
         AND regexp_replace(d.destination,'[^0-9]','','g') IN ($1,$2)
+        AND d.button_message_id IS NOT NULL
+        AND d.created_at>NOW()-INTERVAL '24 hours'
         AND ($3::bigint IS NULL OR d.id=$3)
         AND ($4::text='' OR d.button_message_id=$4)
-        AND ($3::bigint IS NOT NULL OR $4::text<>'')
-        ORDER BY d.created_at DESC LIMIT 1`,[canonical,canonical.replace(/^91(?=\d{10}$)/,''),staffMatch?Number(staffMatch[1]):null,staffContext||'']);
-      if(record.rowCount){
-        const id=record.rows[0].id;
+        ORDER BY d.created_at DESC LIMIT 2`,[canonical,canonical.replace(/^91(?=\d{10}$)/,''),staffMatch?Number(staffMatch[2]):null,staffContext||'']);
+      // Never attribute an uncorrelated reply to the wrong appointment.
+      if(staffCandidates.rowCount===1){
+        const chosen=staffCandidates.rows[0];
+        if(staffButtonName==='Join Online Meeting'){
+          const meet=await pool.query('SELECT c.meeting_link FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id WHERE b.id=$1 AND b.mode='online'',[chosen.booking_id]);
+          if(!/^https:\/\/[^\s]+$/i.test(String(meet.rows[0]?.meeting_link||'')))return res.status(200).json({status:'ok',action:'staff_meeting_unavailable'});
+        }
         await pool.query(`UPDATE booking_internal_alert_deliveries SET whatsapp_clicked_at=COALESCE(whatsapp_clicked_at,NOW()),
-          whatsapp_last_clicked_at=NOW(),whatsapp_click_history=COALESCE(whatsapp_click_history,'[]'::jsonb)||jsonb_build_array(jsonb_build_object('button','View in CRM','at',NOW())),updated_at=NOW() WHERE id=$1`,[id]);
-        const crm=String(process.env.INTERNAL_ALERT_CRM_URL||process.env.ADMIN_FRONTEND_URL||'https://admins.guruvidya.in').trim();
-        if(/^https:\/\/[^\s]+$/i.test(crm))await sendBotSailorText({mobile:canonical},`View in CRM: ${crm}`,'internal_staff_crm_link');
-        return res.status(200).json({status:'ok',action:'internal_staff_crm_click'});
+          whatsapp_last_clicked_at=NOW(),whatsapp_click_history=COALESCE(whatsapp_click_history,'[]'::jsonb)||jsonb_build_array(jsonb_build_object('button',$2::text,'at',NOW())),updated_at=NOW() WHERE id=$1`,[chosen.id,staffButtonName]);
+        let link=String(process.env.INTERNAL_ALERT_CRM_URL||process.env.ADMIN_FRONTEND_URL||'https://admins.guruvidya.in').trim();
+        if(staffButtonName==='Join Online Meeting'){
+          const meet=await pool.query('SELECT c.meeting_link FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id WHERE b.id=$1 AND b.mode='online'',[chosen.booking_id]);
+          link=String(meet.rows[0]?.meeting_link||'').trim();
+        }
+        if(/^https:\/\/i.test(link))await sendBotSailorText({mobile:canonical},`${staffButtonName}: ${link}`,'internal_staff_button_link');
+        return res.status(200).json({status:'ok',action:'internal_staff_button_click'});
       }
+      console.warn('Internal staff button click not attributed: missing or ambiguous delivery context',{hasId:Boolean(staffMatch),hasContext:Boolean(staffContext),candidates:staffCandidates.rowCount});
     }
 
     // BotSailor can deliver a button tap as a normal user_message.
@@ -5400,8 +5415,7 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
             // BotSailor send/file accepts a graphic + one-line media caption.
             // Its currently integrated reply-buttons endpoint is NOT a native URL CTA;
             // do not pretend a reply button opens CRM or a meeting.
-            const links=[meetingUrl&&`Join Online Meeting: ${meetingUrl}`,crmUrl&&`View in CRM: ${crmUrl}`].filter(Boolean);
-            const mediaCaption=[caption,...links].join('\n');
+            const mediaCaption=caption;
             const result=imageUrl?await botSailorPost('https://botsailor.com/api/v1/whatsapp/send/file',{
               apiToken:config.botsailorToken,phone_number_id:config.botsailorInstanceId,
               phone_number:botSailorPhone(destination),media_url:imageUrl,media_type:'image',media_caption_text:mediaCaption
@@ -5413,8 +5427,8 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
             // A distinct button ID identifies the exact delivery and recipient.
             const buttonResult=await sendBotSailorReplyButtons(
               {mobile:destination,name:r.name,course:booking.course},
-              'Open this appointment in Guruvidya CRM:',
-              [{id:`gv_staff_crm_${deliveryId}`,title:'View in CRM'}],
+              caption,
+              [...(meetingUrl?[{id:`gv_staff_meet_${deliveryId}`,title:'Join Online Meeting'}]:[]),{id:`gv_staff_crm_${deliveryId}`,title:'View in CRM'}],
               'internal_staff_view_crm_button');
             if(buttonResult?.success){
               const buttonMessageId=bookingProviderMessageId(buttonResult);
