@@ -5412,32 +5412,27 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
             status='skipped_closed';detail='No real 24h window; approved internal alert template not configured';
           }else{
             await loadPersistedConfig();
-            // BotSailor send/file accepts a graphic + one-line media caption.
-            // Its currently integrated reply-buttons endpoint is NOT a native URL CTA;
-            // do not pretend a reply button opens CRM or a meeting.
-            const mediaCaption=caption;
-            const result=imageUrl?await botSailorPost('https://botsailor.com/api/v1/whatsapp/send/file',{
-              apiToken:config.botsailorToken,phone_number_id:config.botsailorInstanceId,
-              phone_number:botSailorPhone(destination),media_url:imageUrl,media_type:'image',media_caption_text:mediaCaption
-            }):await sendBotSailorText({mobile:destination,name:r.name,course:booking.course},[message,mediaCaption].join('\n'),'internal_appointment_alert_fallback');
-            if(!result?.success)throw new Error(result?.message||result?.status||'BotSailor send failed');
-            status='sent';provider='botsailor';detail=imageUrl?'Graphic + caption accepted by BotSailor; URL CTA requires approved template':'Text fallback accepted by BotSailor';
-            providerMessageId=bookingProviderMessageId(result);
-            // Additional reply button; original graphic and caption remain unchanged.
-            // A distinct button ID identifies the exact delivery and recipient.
-            const buttonResult=await sendBotSailorReplyButtons(
+            // Send one interactive WhatsApp message with image header, caption and
+            // per-delivery reply buttons. Avoid the previous duplicate media +
+            // separate button message. BotSailor accepts media_url/media_type here.
+            const staffButtons=[
+              ...(meetingUrl?[{id:`gv_staff_meet_${deliveryId}`,title:'Join Online Meeting'}]:[]),
+              {id:`gv_staff_crm_${deliveryId}`,title:'View in CRM'}
+            ];
+            const result=await sendBotSailorReplyButtons(
               {mobile:destination,name:r.name,course:booking.course},
-              caption,
-              [...(meetingUrl?[{id:`gv_staff_meet_${deliveryId}`,title:'Join Online Meeting'}]:[]),{id:`gv_staff_crm_${deliveryId}`,title:'View in CRM'}],
-              'internal_staff_view_crm_button');
-            if(buttonResult?.success){
-              const buttonMessageId=bookingProviderMessageId(buttonResult);
-              await pool.query('UPDATE booking_internal_alert_deliveries SET button_message_id=$2 WHERE id=$1',[deliveryId,buttonMessageId]);
-              detail+='; View in CRM reply button accepted';
+              caption,staffButtons,'internal_staff_alert_image_buttons',
+              imageUrl?{mediaUrl:imageUrl,mediaType:'image'}:{}
+            );
+            if(!result?.success)throw new Error('Combined graphic + buttons rejected by BotSailor: '+String(result?.message||result?.status||'unknown'));
+            providerMessageId=bookingProviderMessageId(result);
+            status='sent';provider='botsailor';
+            detail='Single graphic + caption + tracked reply buttons accepted by BotSailor';
+            if(providerMessageId){
+              await pool.query('UPDATE booking_internal_alert_deliveries SET button_message_id=$2 WHERE id=$1',[deliveryId,providerMessageId]);
             }else{
-              detail+='; View in CRM reply button failed: '+String(buttonResult?.message||'unknown').slice(0,120);
+              detail+='; provider message ID unavailable: button tracking requires an exact reply ID';
             }
-            if(!providerMessageId)detail+='; provider media message ID unavailable for delivery/read tracking';
           }
         }
       }catch(e){detail=String(e?.message||e).slice(0,500);console.error('Internal appointment alert delivery:',channel,detail);}
