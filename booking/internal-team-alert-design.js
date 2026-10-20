@@ -1,93 +1,36 @@
-// Internal team appointment artwork only. Never used by student/parent notifications.
+// Isolated internal-team appointment presentation. No student/parent notification changes.
 import sharp from 'sharp';
-import { readFile } from 'node:fs/promises';
-
-const titles={confirmed:'New Appointment Confirmed!',rescheduled:'Appointment Rescheduled!',cancelled:'Appointment Cancelled!'};
-const colors={confirmed:['#0056bd','#e9f5ff'],rescheduled:['#ed6800','#fff5e9'],cancelled:['#d80b2a','#fff0f2']};
-const socials=[['f','https://www.facebook.com/guruvidyaacademypvtltd'],['◎','https://www.instagram.com/guruvidyaca/'],['▶','https://www.youtube.com/c/GuruvidyaIn'],['in','https://www.linkedin.com/in/guruvidya-academy-pvt-ltd'],['X','https://x.com/guruvidya_']];
 const esc=v=>String(v??'—').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-const format=(value,opts={})=>value?new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',day:'2-digit',month:'short',year:'numeric',...opts}).format(new Date(value)):'—';
-const time=value=>format(value,{hour:'numeric',minute:'2-digit',hour12:true})+' (IST)';
-export const internalActor=(booking,event,history)=>{
-  if(event==='confirmed')return String(booking.booked_by||'Student').toLowerCase().includes('parent')?'Parent':'Student';
-  if(event==='cancelled'&&booking.cancelled_by)return /parent|guardian/i.test(booking.cancelled_by)?'Parent':/student/i.test(booking.cancelled_by)?'Student':/admin/i.test(booking.cancelled_by)?'Admin':'Unknown';
-  const actor=String(history?.actor||'').toLowerCase();
-  if(actor.includes('admin'))return 'Admin';
-  const named=String(history?.details?.rescheduled_by||history?.details?.cancelled_by||'');
-  if(named)return named.toLowerCase().includes('parent')?'Parent':named.toLowerCase().includes('student')?'Student':named;
-  // Customer reschedule does not currently persist the actor identity: do not guess.
-  return 'Unknown';
-};
-export const internalCaption=(event,actor)=>`${{confirmed:'Booked',rescheduled:'Rescheduled',cancelled:'Cancelled'}[event]}${actor&&actor!=='Unknown'?' by '+actor:''}`;
-export function internalAlertRows(b,event,history){
-  const rows=[['Booking Reference',b.booking_ref],['Student Name',b.student_name],['Parent / Guardian',[b.parent_name,b.parent_relation&&`(${b.parent_relation})`].filter(Boolean).join(' ')],['Student WhatsApp',b.student_mobile],['Parent WhatsApp',b.parent_mobile],['Email',b.student_email||b.parent_email],['Course',b.course],['Mode',b.mode==='online'?'Online (Live Counselling)':`Offline (${b.offline_location_name||'Branch'})`]];
-  if(event==='rescheduled')rows.push(['Previous Date & Time',history?.details?.previous_starts_at||history?.details?.old_starts_at?time(history.details.previous_starts_at||history.details.old_starts_at):'Not recorded'],['New Date & Time',time(b.starts_at)]);
-  else rows.push(['Date',format(b.starts_at,{weekday:'long',day:'2-digit',month:'long',year:'numeric'})],['Time (IST)',time(b.starts_at)]);
-  rows.push(['Counsellor',b.counsellor_name]);
-  if(b.mode==='offline')rows.push(['Location',[b.offline_location_name,b.offline_address].filter(Boolean).join(' — ')]);
-  const actor=internalActor(b,event,history);
-  rows.push([event==='confirmed'?'Booked By':event==='rescheduled'?'Rescheduled By':'Cancelled By',actor]);
-  rows.push([event==='confirmed'?'Booking Created At':event==='rescheduled'?'Rescheduled At':'Cancelled At',time(event==='confirmed'?b.created_at:event==='cancelled'?(b.cancelled_at||history?.created_at):history?.created_at)]);
-  if(event==='cancelled')rows.push(['Cancellation Reason',b.cancellation_reason||'Not specified']);
-  return rows;
+const phone=v=>{const s=String(v||'').replace(/\D/g,'').slice(-10);return s.length===10?`+91-${s}`:'—';};
+const date=v=>v?new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',weekday:'long',day:'numeric',month:'long',year:'numeric'}).format(new Date(v)):'—';
+const time=v=>v?new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',day:'numeric',month:'short',year:'numeric',hour:'numeric',minute:'2-digit',hour12:true}).format(new Date(v))+' (IST)':'—';
+const titles={confirmed:'New Appointment Confirmed!',rescheduled:'Appointment Rescheduled!',cancelled:'Appointment Cancelled!'};
+const colors={confirmed:['#0638a3','#078adf'],rescheduled:['#f05a0b','#ffb000'],cancelled:['#b91c1c','#f04444']};
+const icons={ref:'▣',student:'●',parent:'♟',wa:'☎',email:'✉',course:'◆',mode:'▣',date:'▦',time:'◷',person:'●',location:'◆',actor:'●',created:'▤',reason:'ℹ'};
+export function internalAlertRows(b,event){
+ const rows=[['ref','Booking Reference',b.booking_ref],['student','Student Name',b.student_name],['parent','Parent / Guardian',[b.parent_name,b.parent_relation?`(${b.parent_relation})`:''].filter(Boolean).join(' ')||'—'],['wa','Student WhatsApp',phone(b.student_mobile)],['wa','Parent WhatsApp',phone(b.parent_mobile)],['email','Email',b.student_email||b.parent_email],['course','Course',b.course],['mode','Mode',b.mode==='online'?'Online':`Offline${b.offline_location_name?` (${b.offline_location_name})`:''}`]];
+ if(event==='rescheduled')rows.push(['date','Previous Date & Time',b.previous_starts_at?time(b.previous_starts_at):'—'],['date','New Date & Time',time(b.starts_at)]);
+ else rows.push(['date','Date',date(b.starts_at)],['time','Time (IST)',time(b.starts_at)]);
+ rows.push(['person','Counsellor',b.counsellor_name]);
+ if(b.mode==='offline')rows.push(['location','Location',[b.offline_location_name,b.offline_address].filter(Boolean).join(' — ')]);
+ if(b.mode==='online')rows.push(['location','Meeting',b.meeting_link?'Online meeting link available':'Online']);
+ if(event==='confirmed')rows.push(['actor','Booked By',b.booked_by||'Student'],['created','Booking Created At',time(b.created_at)]);
+ if(event==='rescheduled')rows.push(['actor','Rescheduled By',b.rescheduled_by||'—'],['created','Rescheduled At',time(b.updated_at)]);
+ if(event==='cancelled')rows.push(['actor','Cancelled By',b.cancelled_by||b.cancelled_via||'—'],['created','Cancelled At',time(b.cancelled_at||b.updated_at)],['reason','Reason',b.cancellation_reason||'—']);
+ return rows;
 }
-export function internalAlertHtml(b,event,history,crmUrl,meetingUrl,baseUrl){
-  const [primary,tint]=colors[event],rows=internalAlertRows(b,event,history);
-  const hero=`${baseUrl}/api/public/booking/internal-team-alert/header/${event}.png`;
-  const icons={
-    'Booking Reference':'info-blue','Student Name':'user-blue','Parent / Guardian':'users-blue',
-    'Student WhatsApp':'whatsapp-green','Parent WhatsApp':'whatsapp-green','Email':'mail-blue',
-    'Course':'course-blue','Mode':b.mode==='online'?'video-blue':'pin-blue',
-    'Date':'calendar-blue','Time (IST)':'calendar-blue','Counsellor':'user-blue',
-    'Location':'pin-blue','Booked By':'user-blue','Booking Created At':'info-blue',
-    'Rescheduled By':'user-blue','Rescheduled At':'info-blue','Cancelled By':'user-blue',
-    'Cancelled At':'info-blue','Previous Date & Time':'calendar-red','New Date & Time':'calendar-green',
-    'Cancellation Reason':'info-red'
-  };
-  const icon=(name)=>`<img src="${esc(baseUrl)}/api/public/booking/email-icon/${name}.png" width="22" height="22" alt="" style="display:block;width:22px;height:22px;border:0">`;
-  const rowHtml=rows.map(([k,v])=>{
-    const special=k==='Previous Date & Time'?'#fff0f0':k==='New Date & Time'?'#edfff0':k==='Cancellation Reason'?'#ffebed':'';
-    const valueColor=k==='Previous Date & Time'||k==='Cancellation Reason'?'#c71724':k==='New Date & Time'?'#078b37':'#113f87';
-    return `<tr style="background:${special||'#fff'}"><td width="30" valign="top" style="padding:9px 2px 9px 8px;border-bottom:1px solid #e0e9f3">${icon(icons[k]||'info-blue')}</td><td valign="top" style="padding:10px 5px;border-bottom:1px solid #e0e9f3;color:${valueColor};font-weight:700;width:39%;font-size:12px">${esc(k)}</td><td valign="top" style="padding:10px 7px;border-bottom:1px solid #e0e9f3;color:${valueColor};overflow-wrap:anywhere;font-size:12px">${esc(v)}</td></tr>`;
-  }).join('');
-  const button=(label,url,bg,iconName,width)=>`<td width="${width}" style="padding:4px"><a href="${esc(url)}" style="display:block;text-align:center;padding:15px 5px;background:${bg};color:#ffffff;text-decoration:none;border-radius:9px;font-weight:700;font-size:14px;white-space:nowrap"><span style="color:#fff;font-size:19px;vertical-align:middle">${iconName}</span>&nbsp; ${esc(label)} &nbsp;›</a></td>`;
-  const join=(event!=='cancelled'&&b.mode==='online'&&meetingUrl);
-  const links=`<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%;table-layout:fixed"><tr>${join?button('Join Online Meeting',meetingUrl,'#0868ed','▣','50%'):''}${crmUrl?button('View in CRM',crmUrl,'#079847','↗',join?'50%':'100%'):''}</tr></table>`;
-  const social=socials.map(([label,url],i)=>`<a href="${esc(url)}" style="display:inline-block;vertical-align:middle;margin-left:5px"><img src="${esc(baseUrl)}/api/public/internal-reminder/art/${['facebook','instagram','youtube','linkedin','x'][i]}" width="26" height="26" alt="${esc(label)}" style="display:block;border:0"></a>`).join('');
-  const wave=`${baseUrl}/api/public/booking/internal-team-alert/footer-wave.png`;
-  return `<!doctype html><html><body style="margin:0;background:#f1f5fb;font-family:Arial,Helvetica,sans-serif"><table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center"><table role="presentation" width="560" style="width:560px;max-width:100%;background:#fff;border-radius:14px;overflow:hidden" cellspacing="0" cellpadding="0"><tr><td><img src="${esc(hero)}" alt="GuruVidya Internal Team Alert: ${esc(titles[event])}" style="display:block;width:100%;height:auto;border:0"></td></tr><tr><td style="padding:12px 16px 0"><div style="border:1px solid #12a8e9;border-radius:15px;padding:10px;background:#fff"><div style="background:${tint};color:#06358b;padding:12px;font-size:18px;font-weight:700;border-radius:9px"><span style="display:inline-block;background:#06358b;color:#fff;padding:5px 9px;border-radius:6px;margin-right:10px;font-size:22px">▦</span> Appointment Details</div><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">${rowHtml}</table><div style="text-align:center;padding:14px 0 0">${links}</div></div></td></tr><tr><td style="padding:0"><img src="${esc(wave)}" width="560" alt="" style="display:block;width:100%;height:auto;border:0"></td></tr><tr><td style="background:#052762;color:#fff;padding:5px 14px 18px"><table role="presentation" width="100%"><tr><td valign="middle" style="font-size:16px;font-weight:700"><img src="${esc(baseUrl)}/api/public/internal-reminder/g-icon" width="46" alt="GuruVidya" style="vertical-align:middle;margin-right:5px;border:0">Guruvidya Academy Pvt. Ltd.<div style="color:#ff4b53;font-size:10px;margin-top:5px;margin-left:20px;letter-spacing:.1px">REAL EDUCATION • REAL RESULTS</div></td><td valign="middle" align="right">${social}<div style="font-size:11px;margin-top:8px"><a href="https://www.guruvidya.in" style="color:#fff;text-decoration:none">www.guruvidya.in</a></div></td></tr></table></td></tr></table></td></tr></table></body></html>`;
+export function internalAlertEmail(b,event){
+ const [c1,c2]=colors[event];const rows=internalAlertRows(b,event);
+ const social=[['f','https://www.facebook.com/guruvidyaacademypvtltd'],['◎','https://www.instagram.com/guruvidyaca/'],['▶','https://www.youtube.com/c/GuruvidyaIn'],['in','https://www.linkedin.com/in/guruvidya-academy-pvt-ltd'],['X','https://x.com/guruvidya_']];
+ const rowHtml=rows.map(([icon,label,value])=>{const mode=icon==='mode';const prev=label.startsWith('Previous');const next=label.startsWith('New Date');const fg=prev?'#c52828':next?'#118b50':'#103a90';const badge=mode?`<span style="display:inline-block;background:#fa8015;color:white;padding:7px 12px;border-radius:7px;font-weight:700">&#9679; ${esc(value)}</span>`:esc(value);return `<tr><td style="width:34px;padding:10px 3px;border-bottom:1px solid #dbe8f7;color:${icon==='wa'?'#12aa65':fg};font-size:19px;font-weight:900">${esc(icons[icon])}</td><td style="width:40%;padding:10px 6px;border-bottom:1px solid #dbe8f7;color:${fg};font-weight:700;font-size:13px">${esc(label)}</td><td style="width:9px;border-bottom:1px solid #dbe8f7;color:#17447f">:</td><td style="padding:10px 5px;border-bottom:1px solid #dbe8f7;color:${fg};font-size:13px;overflow-wrap:anywhere">${badge}</td></tr>`;}).join('');
+ const button=(label,url,color)=>`<a href="${esc(url)}" style="display:inline-block;text-decoration:none;background:${color};color:white;border-radius:8px;padding:13px 18px;margin:4px;font-size:14px;font-weight:bold">${esc(label)}</a>`;
+ const buttons=(b.mode==='online'&&event!=='cancelled'&&/^https:\/\//.test(b.meeting_link||'')?button('▣ Join Online Meeting',b.meeting_link,'#0769dc'):'')+button('↗ View in CRM','https://admins.guruvidya.in','#08b957');
+ return `<!doctype html><html><body style="margin:0;background:#f1f6fc;padding:20px 8px;font-family:Arial,Helvetica,sans-serif"><div style="max-width:620px;margin:auto;background:white;border-radius:15px;overflow:hidden;border:1px solid #c8dff7"><div style="padding:18px 24px 12px;text-align:center;background:white"><span style="font-size:30px;font-weight:900;color:#073b9d">Guru<span style="color:#e3292f">v</span>idya</span><div style="font-size:10px;font-weight:bold;letter-spacing:1px;color:#d92f35">REAL EDUCATION • REAL RESULTS</div></div><div style="padding:22px 26px;color:white;background:linear-gradient(125deg,${c1},${c2})"><div style="display:inline-block;padding:5px 12px;border-radius:20px;background:#11a55c;font-size:11px;font-weight:bold">INTERNAL TEAM ALERT</div><h1 style="font-size:28px;line-height:1.15;margin:10px 0">${esc(titles[event])}</h1><div style="font-size:14px">${event==='confirmed'?'A new counselling appointment has been successfully booked.':event==='rescheduled'?'An existing counselling appointment has been rescheduled.':'A counselling appointment has been cancelled.'}</div></div><div style="padding:14px"><div style="border:2px solid #1474d5;border-radius:14px;padding:12px 14px 16px"><div style="background:#e5f3ff;border-radius:9px;padding:10px 12px;color:#073b9d;font-size:18px;font-weight:800"><span style="display:inline-block;background:#0648b2;color:white;border-radius:7px;padding:7px 10px;margin-right:8px">▦</span> Appointment Details</div><table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse">${rowHtml}</table><div style="text-align:center;margin-top:14px">${buttons}</div></div></div><div style="background:#073b94;color:white;padding:17px 18px;display:flex;justify-content:space-between;align-items:center"><div style="display:inline-block;vertical-align:middle"><div style="font-size:16px;font-weight:800">Guruvidya Academy Pvt. Ltd.</div><div style="font-size:9px;letter-spacing:.25px;margin-top:3px;margin-left:18px;color:#f8b7c3">REAL EDUCATION • REAL RESULTS</div></div><div style="display:inline-block;text-align:right;vertical-align:middle">${social.map(([i,url])=>`<a href="${esc(url)}" style="display:inline-block;text-decoration:none;color:white;background:#1162b6;border-radius:50%;padding:5px 7px;margin-left:3px;font-size:11px;font-weight:bold">${esc(i)}</a>`).join('')}<div style="font-size:10px;margin-top:7px">www.guruvidya.in</div></div></div></div></body></html>`;
 }
-export async function internalAlertPng(b,event,history){
-  const rows=internalAlertRows(b,event,history),[primary,tint]=colors[event];
-  const head=await readFile(new URL(`./internal-team-alert-assets/${event}-header.png`,import.meta.url));
-  const width=900,headerHeight=510,rowHeight=62,contentHeight=135+rows.length*rowHeight,total=headerHeight+contentHeight;
-  const text=(value,x,y,size=24,bold=false,color='#113f87')=>`<text x="${x}" y="${y}" font-family="Arial,sans-serif" font-size="${size}" font-weight="${bold?'700':'400'}" fill="${color}">${esc(String(value??'—').slice(0,bold?26:65))}</text>`;
-  const wrap=(v,x,y)=>{const str=String(v??'—');const chunks=str.match(/.{1,44}(?:\s|$)|.{1,44}/g)||['—'];return chunks.slice(0,2).map((s,i)=>text(s.trim(),x,y+i*23,19,false)).join('')};
-  const iconNames={
-    'Booking Reference':'document-blue','Student Name':'user-blue','Parent / Guardian':'users-blue',
-    'Student WhatsApp':'whatsapp-green','Parent WhatsApp':'whatsapp-green','Email':'mail-blue',
-    'Course':'course-blue','Mode':b.mode==='online'?'video-white':'pin-white',
-    'Date':'calendar-blue','Time (IST)':'clock-blue','Counsellor':'user-blue',
-    'Location':'pin-blue','Booked By':'user-blue','Booking Created At':'document-blue',
-    'Rescheduled By':'user-blue','Rescheduled At':'document-blue','Cancelled By':'user-blue',
-    'Cancelled At':'document-blue','Previous Date & Time':'calendar-red','New Date & Time':'calendar-green',
-    'Cancellation Reason':'info-red'
-  };
-  const iconCache={};
-  for(const name of new Set(Object.values(iconNames))){
-    try{iconCache[name]=(await readFile(new URL(`./email-icons/${name}.png`,import.meta.url))).toString('base64')}catch{}
-  }
-  const rowSvg=rows.map(([k,v],i)=>{const y=115+i*rowHeight;
-    const special=k==='Previous Date & Time'?'#fff0f0':k==='New Date & Time'?'#eaffef':k==='Cancellation Reason'?'#ffeded':null;
-    const color=k==='Previous Date & Time'||k==='Cancellation Reason'?'#cc1727':k==='New Date & Time'?'#058f40':'#06367c';
-    const isMode=k==='Mode';
-    const iconName=iconNames[k];
-    const iconData=iconCache[iconName];
-    const iconMarkup=iconData?`<image x="52" y="${y-29}" width="29" height="29" href="data:image/png;base64,${iconData}"/>`:text('●',52,y-5,24,true,color);
-    const val=String(v??'—');
-    const modeValue=isMode?`<rect x="409" y="${y-38}" width="${Math.min(445,Math.max(260,val.length*12+55))}" height="43" rx="13" fill="#f36b19"/>${iconData?`<image x="420" y="${y-29}" width="25" height="25" href="data:image/png;base64,${iconData}"/>`:''}${text(val,454,y-10,18,true,'#ffffff')}`:wrap(v,409,y-5);
-    return `${special?`<rect x="42" y="${y-39}" width="816" height="55" rx="9" fill="${special}"/>`:''}<line x1="45" x2="855" y1="${y+19}" y2="${y+19}" stroke="#d8e6f2"/>${isMode?'':iconMarkup}${text(k,97,y-5,19,true,color)}${text(':',380,y-5,20,true,color)}${modeValue}`;
-  }).join('');
-  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${contentHeight}"><rect width="900" height="${contentHeight}" fill="white"/><rect x="25" y="18" width="850" height="${contentHeight-35}" rx="22" fill="#f9fcff" stroke="#dce8f2"/><rect x="42" y="30" width="816" height="52" rx="12" fill="${tint}"/><rect x="53" y="39" width="38" height="36" rx="6" fill="#06358b"/>${text('▦',59,65,27,true,'#ffffff')}${text('Appointment Details',109,65,29,true,'#06358b')}${rowSvg}</svg>`;
-  return sharp({create:{width,height:total,channels:4,background:'#fff'}}).composite([{input:await sharp(head).resize({width,height:headerHeight,fit:'fill'}).toBuffer(),top:0,left:0},{input:Buffer.from(svg),top:headerHeight,left:0}]).png().toBuffer();
+function wrapText(s,max=42){const out=[];let line='';for(const w of String(s||'—').split(/\s+/)){if((line+' '+w).trim().length>max){out.push(line);line=w;}else line=(line+' '+w).trim();}out.push(line);return out.slice(0,5);}
+export async function internalAlertPng(b,event){
+ const rows=internalAlertRows(b,event),[c1,c2]=colors[event];let y=410;
+ const chunks=rows.map(([icon,label,value])=>{const lines=wrapText(value,icon==='mode'?45:48);const h=Math.max(55,lines.length*28+16);const val=lines.map((line,i)=>`<text x="438" y="${y+35+i*27}" font-size="23" fill="${label.startsWith('Previous')?'#bb2525':label.startsWith('New Date')?'#128c51':'#173e85'}">${esc(line)}</text>`).join('');const mode=icon==='mode'?`<rect x="428" y="${y+5}" width="540" height="${h-8}" rx="12" fill="#f57a16"/>`:'';const valueText=icon==='mode'?lines.map((line,i)=>`<text x="445" y="${y+35+i*27}" font-size="23" font-weight="bold" fill="white">${esc('◆ '+line)}</text>`).join(''):val;const svg=`<line x1="85" y1="${y+h}" x2="995" y2="${y+h}" stroke="#d6e4f5"/><text x="100" y="${y+35}" fill="${icon==='wa'?'#14a65c':'#073b9d'}" font-size="29" font-weight="bold">${esc(icons[icon])}</text><text x="153" y="${y+35}" fill="#08378e" font-size="23" font-weight="bold">${esc(label)}</text><text x="414" y="${y+35}" fill="#08378e" font-size="24">:</text>${mode}${valueText}`;y+=h;return svg;}).join('');
+ const height=y+42;const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="${height}"><defs><linearGradient id="h" x2="1" y2="1"><stop stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/></linearGradient></defs><rect width="1080" height="${height}" fill="white"/><text x="300" y="74" font-family="Arial" font-size="65" font-weight="bold" fill="#083b9e">Guru<tspan fill="#e32632">v</tspan>idya</text><text x="343" y="106" font-family="Arial" font-size="18" font-weight="bold" fill="#db3038">REAL EDUCATION • REAL RESULTS</text><rect y="135" width="1080" height="213" fill="url(#h)"/><rect x="58" y="162" width="275" height="38" rx="18" fill="#11a758"/><text x="77" y="188" font-family="Arial" font-size="20" font-weight="bold" fill="white">INTERNAL TEAM ALERT</text><text x="58" y="255" font-family="Arial" font-size="50" font-weight="bold" fill="white">${esc(titles[event])}</text><text x="60" y="297" font-family="Arial" font-size="23" fill="white">Guruvidya counselling appointment update</text><rect x="52" y="362" width="976" height="${height-380}" rx="22" fill="white" stroke="#1165c7" stroke-width="4"/><rect x="77" y="375" width="927" height="46" rx="9" fill="#e2f1ff"/><rect x="88" y="380" width="42" height="37" rx="7" fill="#0846b4"/><text x="98" y="408" font-family="Arial" font-size="26" font-weight="bold" fill="white">▦</text><text x="149" y="409" font-family="Arial" font-size="29" font-weight="bold" fill="#073b9d">Appointment Details</text><g font-family="Arial">${chunks}</g></svg>`;
+ return sharp(Buffer.from(svg)).png().toBuffer();
 }
