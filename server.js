@@ -57,7 +57,7 @@ app.post('/api/webhook/resend', async (req, res) => {
         WHEN $2 IN ('failed','bounced','complained','suppressed') THEN $2
         WHEN status IN ('failed','bounced','complained','suppressed') THEN status
         WHEN (CASE status WHEN 'clicked' THEN 4 WHEN 'opened' THEN 3 WHEN 'delivered' THEN 2 WHEN 'sent' THEN 1 ELSE 0 END) <= $3 THEN $2
-        ELSE status END, updated_at=NOW() WHERE channel='email' AND provider='resend' AND provider_message_id=$1`,[messageId,state,rank[state]??0]);
+        ELSE status END, email_clicked_at=CASE WHEN $2='clicked' THEN COALESCE(email_clicked_at,NOW()) ELSE email_clicked_at END, updated_at=NOW() WHERE channel='email' AND provider='resend' AND provider_message_id=$1`,[messageId,state,rank[state]??0]);
       if(table==='booking_internal_alert_deliveries')console.info('RESEND INTERNAL ALERT STATUS',{event:eventType,matched:matched.rowCount});
     }
     // Student/parent booking emails are audited in booking_delivery_logs, not the
