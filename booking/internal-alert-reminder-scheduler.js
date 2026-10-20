@@ -15,6 +15,9 @@ export async function initInternalAlertReminderScheduler(pool) {
   await pool.query(`ALTER TABLE booking_internal_reminder_deliveries ADD COLUMN IF NOT EXISTS acknowledgement_token_hash TEXT`);
   await pool.query(`ALTER TABLE booking_internal_reminder_deliveries ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE booking_internal_reminder_deliveries ADD COLUMN IF NOT EXISTS clicked_at TIMESTAMPTZ`);
+  // Resend webhook records email clicks on reminder deliveries as well.
+  // Existing databases need this idempotent migration before events are processed.
+  await pool.query(`ALTER TABLE booking_internal_reminder_deliveries ADD COLUMN IF NOT EXISTS email_clicked_at TIMESTAMPTZ`);
   await pool.query(`CREATE INDEX IF NOT EXISTS booking_internal_reminder_provider_message_idx ON booking_internal_reminder_deliveries(provider_message_id) WHERE provider_message_id IS NOT NULL`);
 }
 
