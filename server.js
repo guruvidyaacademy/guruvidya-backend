@@ -5467,9 +5467,30 @@ async function persistInternalUtilityJpeg(png,publicBase){
   return `${publicBase}/api/public/booking/internal-team-alert/utility-media/${token}.jpg`;
 }
 
+// Meta's approved online CTA points to admins.guruvidya.in/?gv_join_ref=<booking-ref>.
+// The Admin app forwards that reference here; resolve the CURRENT counsellor link
+// so reschedules do not send users to a stale meeting URL.
+app.get('/api/public/booking/internal-team-alert/join/:ref',async(req,res)=>{
+  const ref=String(req.params.ref||'').trim();
+  if(!/^[-A-Za-z0-9_]{4,100}$/.test(ref))return res.status(404).send('Meeting unavailable');
+  try{
+    const found=await pool.query(`SELECT c.meeting_link FROM student_bookings b
+      LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id
+      WHERE b.booking_ref=$1 AND LOWER(COALESCE(b.mode,''))='online'
+        AND LOWER(COALESCE(b.status,''))<>'cancelled' LIMIT 1`,[ref]);
+    const link=String(found.rows[0]?.meeting_link||'').trim();
+    if(!link)return res.status(404).send('Meeting unavailable');
+    const url=new URL(link);
+    if(url.protocol!=='https:'||url.username||url.password)return res.status(404).send('Meeting unavailable');
+    res.set('Cache-Control','no-store');return res.redirect(302,url.toString());
+  }catch(err){console.error('Internal online meeting redirect failed:',err?.message||err);return res.status(500).send('Meeting temporarily unavailable')}
+});
+
 // BotSailor-approved Utility templates for real CLOSED 24-hour windows only.
 // Field names and IDs match the generated BotSailor POST examples (24 Oct 2026).
 const INTERNAL_CLOSED_TEMPLATE_IDS=Object.freeze({confirmed:'464154',rescheduled:'464314',cancelled:'464313'});
+// Only ONLINE confirmed/rescheduled require the additional approved meeting CTA.
+const INTERNAL_CLOSED_ONLINE_TEMPLATE_IDS=Object.freeze({confirmed:'464401',rescheduled:'464400'});
 const INTERNAL_CLOSED_ACTOR_FIELDS=Object.freeze({
   confirmed:'templateVariable-Bookedby-2',
   rescheduled:'templateVariable-Rescheduledby-2',
@@ -5479,7 +5500,8 @@ async function sendInternalClosedTemplate({event,booking,recipient,actor,imageUr
   await loadPersistedConfig();
   if(!config.whatsappEnabled)throw Error('WhatsApp disabled');
   if(!imageUrl)throw Error('Internal alert graphic unavailable; template not sent');
-  const templateId=INTERNAL_CLOSED_TEMPLATE_IDS[event];
+  const onlineWithMeeting=String(booking.mode||'').toLowerCase()==='online' && event!=='cancelled';
+  const templateId=onlineWithMeeting?INTERNAL_CLOSED_ONLINE_TEMPLATE_IDS[event]:INTERNAL_CLOSED_TEMPLATE_IDS[event];
   if(!templateId)throw Error('Unsupported internal template event');
   const reference=String(booking.booking_ref||'').trim();
   if(!reference||!/^[-A-Za-z0-9_]+$/.test(reference))throw Error('Invalid booking reference for dynamic URL');
@@ -5493,7 +5515,10 @@ async function sendInternalClosedTemplate({event,booking,recipient,actor,imageUr
     template_header_media_url:imageUrl,
     'templateVariable-StudentName-1':String(booking.student_name||'Student'),
     [INTERNAL_CLOSED_ACTOR_FIELDS[event]]:actor,
-    'templateVariable-BookingReference-3':reference
+    ...(onlineWithMeeting ? {
+      'templateVariable-JoinOnlineMeetingLink-3':reference,
+      'templateVariable-BookingReference-4':reference
+    } : { 'templateVariable-BookingReference-3':reference })
   };
   const result=await botSailorPost('https://botsailor.com/api/v1/whatsapp/send/template',fields);
   await addIntegrationLog('whatsapp','internal_closed_'+event,result.success?'success':'failed',{
