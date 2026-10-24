@@ -5486,6 +5486,54 @@ app.get('/api/public/booking/internal-team-alert/join/:ref',async(req,res)=>{
   }catch(err){console.error('Internal online meeting redirect failed:',err?.message||err);return res.status(500).send('Meeting temporarily unavailable')}
 });
 
+// Signed per-recipient URL suffix for CLOSED-window BotSailor template CTAs.
+// The approved templates retain their existing URL prefixes. The admin app
+// redirects only these signed suffixes here, leaving normal booking refs alone.
+const internalClosedClickKey=()=>internalAlertClickSecret() || String(config.botsailorToken||'').trim();
+const internalClosedClickSuffix=(id,reference)=>{
+  const key=internalClosedClickKey();
+  if(!key)throw Error('Internal WhatsApp CTA signing key unavailable');
+  const expires=Date.now()+15*86400000;
+  const signature=createHmac('sha256',key).update(`closed-cta:${id}:${expires}:${reference}`).digest('hex');
+  return `${id}.${expires}.${signature}`;
+};
+app.get('/api/public/booking/internal-team-alert/closed-cta/:action/:token',async(req,res)=>{
+  const action=String(req.params.action||'');
+  const match=String(req.params.token||'').match(/^(\d+)\.(\d+)\.([a-f0-9]{64})$/);
+  if(!['crm','join'].includes(action)||!match)return res.status(404).send('Link unavailable');
+  const id=Number(match[1]),expires=Number(match[2]);
+  if(!Number.isSafeInteger(id)||id<1||!Number.isSafeInteger(expires)||expires<Date.now()||expires>Date.now()+16*86400000)return res.status(404).send('Link expired');
+  try{
+    await loadPersistedConfig();
+    const key=internalClosedClickKey();
+    if(!key)return res.status(503).send('Link temporarily unavailable');
+    const result=await pool.query(`SELECT d.id,d.event,b.booking_ref,b.mode,b.status AS booking_status,c.meeting_link
+      FROM booking_internal_alert_deliveries d
+      JOIN student_bookings b ON b.id=d.booking_id
+      LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id
+      WHERE d.id=$1 AND d.channel='whatsapp' AND d.provider='botsailor'`,[id]);
+    if(!result.rowCount)return res.status(404).send('Link unavailable');
+    const row=result.rows[0];
+    const expected=createHmac('sha256',key).update(`closed-cta:${id}:${expires}:${row.booking_ref}`).digest('hex');
+    if(!timingSafeEqual(Buffer.from(match[3],'hex'),Buffer.from(expected,'hex')))return res.status(404).send('Link unavailable');
+    let destination;
+    if(action==='join'){
+      if(String(row.mode||'').toLowerCase()!=='online'||row.event==='cancelled'||String(row.booking_status||'').toLowerCase()==='cancelled')return res.status(404).send('Meeting unavailable');
+      destination=new URL(String(row.meeting_link||''));
+    }else{
+      destination=new URL(String(process.env.INTERNAL_ALERT_CRM_URL||process.env.ADMIN_FRONTEND_URL||'https://admins.guruvidya.in'));
+      destination.searchParams.set('gv_booking_ref',row.booking_ref);
+    }
+    if(destination.protocol!=='https:'||destination.username||destination.password)return res.status(404).send('Link unavailable');
+    const button=action==='join'?'Join Online Meeting':'View in CRM';
+    await pool.query(`UPDATE booking_internal_alert_deliveries SET
+      whatsapp_clicked_at=COALESCE(whatsapp_clicked_at,NOW()),whatsapp_last_clicked_at=NOW(),
+      whatsapp_click_history=COALESCE(whatsapp_click_history,'[]'::jsonb)||jsonb_build_array(jsonb_build_object('button',$2::text,'at',NOW())),
+      updated_at=NOW() WHERE id=$1 AND channel='whatsapp'`,[id,button]);
+    res.set('Cache-Control','no-store');return res.redirect(302,destination.toString());
+  }catch(err){console.error('Internal CLOSED WhatsApp CTA:',err?.message||err);return res.status(500).send('Unable to open link')}
+});
+
 // BotSailor-approved Utility templates for real CLOSED 24-hour windows only.
 // Field names and IDs match the generated BotSailor POST examples (24 Oct 2026).
 const INTERNAL_CLOSED_TEMPLATE_IDS=Object.freeze({confirmed:'464154',rescheduled:'464314',cancelled:'464313'});
@@ -5496,7 +5544,7 @@ const INTERNAL_CLOSED_ACTOR_FIELDS=Object.freeze({
   rescheduled:'templateVariable-Rescheduledby-2',
   cancelled:'templateVariable-Cancelledby-2'
 });
-async function sendInternalClosedTemplate({event,booking,recipient,actor,imageUrl}){
+async function sendInternalClosedTemplate({event,booking,recipient,actor,imageUrl,deliveryId}){
   await loadPersistedConfig();
   if(!config.whatsappEnabled)throw Error('WhatsApp disabled');
   if(!imageUrl)throw Error('Internal alert graphic unavailable; template not sent');
@@ -5505,8 +5553,9 @@ async function sendInternalClosedTemplate({event,booking,recipient,actor,imageUr
   if(!templateId)throw Error('Unsupported internal template event');
   const reference=String(booking.booking_ref||'').trim();
   if(!reference||!/^[-A-Za-z0-9_]+$/.test(reference))throw Error('Invalid booking reference for dynamic URL');
-  // Meta-approved dynamic CTA prefix: https://admins.guruvidya.in/?gv_booking_ref=
-  // BotSailor appends the booking reference supplied in variable 3.
+  // Approved URL prefixes stay unchanged; each recipient gets a signed CTA
+  // suffix so CRM can attribute clicks to the exact delivery and button.
+  const trackedSuffix=internalClosedClickSuffix(deliveryId,reference);
   const fields={
     apiToken:config.botsailorToken,
     phone_number_id:config.botsailorInstanceId,
@@ -5516,9 +5565,9 @@ async function sendInternalClosedTemplate({event,booking,recipient,actor,imageUr
     'templateVariable-StudentName-1':String(recipient.name||'Team Member').trim()||'Team Member',
     [INTERNAL_CLOSED_ACTOR_FIELDS[event]]:actor,
     ...(onlineWithMeeting ? {
-      'templateVariable-JoinOnlineMeetingLink-3':reference,
-      'templateVariable-BookingReference-4':reference
-    } : { 'templateVariable-BookingReference-3':reference })
+      'templateVariable-JoinOnlineMeetingLink-3':trackedSuffix,
+      'templateVariable-BookingReference-4':trackedSuffix
+    } : { 'templateVariable-BookingReference-3':trackedSuffix })
   };
   const result=await botSailorPost('https://botsailor.com/api/v1/whatsapp/send/template',fields);
   await addIntegrationLog('whatsapp','internal_closed_'+event,result.success?'success':'failed',{
@@ -5632,10 +5681,10 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
             // Do not alter the working OPEN-window graphic + reply-buttons path.
             const result=await sendInternalClosedTemplate({event,booking,
               recipient:{name:r.name,phone:destination},
-              actor:internalActor(booking,event,history),imageUrl:utilityImageUrl});
+              actor:internalActor(booking,event,history),imageUrl:utilityImageUrl,deliveryId});
             providerMessageId=bookingProviderMessageId(result);
             status='sent';provider='botsailor';
-            detail='Approved CLOSED-window Utility template accepted by BotSailor; URL CTA is a direct CRM link (not a tracked reply button)';
+            detail='Approved CLOSED-window Utility template accepted by BotSailor; signed per-recipient URL CTA tracking enabled';
             if(providerMessageId){
               await pool.query('UPDATE booking_internal_alert_deliveries SET button_message_id=$2 WHERE id=$1',[deliveryId,providerMessageId]);
             }else detail+='; provider message ID unavailable for delivery/read receipts';
