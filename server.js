@@ -5407,6 +5407,43 @@ app.get('/api/public/booking/internal-team-alert/card/:id/:event.png',async(req,
   res.set({'Content-Type':'image/png','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','X-Robots-Tag':'noindex'}).send(cached);
 });
 
+// BotSailor-approved Utility templates for real CLOSED 24-hour windows only.
+// Field names and IDs match the generated BotSailor POST examples (24 Oct 2026).
+const INTERNAL_CLOSED_TEMPLATE_IDS=Object.freeze({confirmed:'464154',rescheduled:'464314',cancelled:'464313'});
+const INTERNAL_CLOSED_ACTOR_FIELDS=Object.freeze({
+  confirmed:'templateVariable-Bookedby-2',
+  rescheduled:'templateVariable-Rescheduledby-2',
+  cancelled:'templateVariable-Cancelledby-2'
+});
+async function sendInternalClosedTemplate({event,booking,recipient,actor,imageUrl}){
+  await loadPersistedConfig();
+  if(!config.whatsappEnabled)throw Error('WhatsApp disabled');
+  if(!imageUrl)throw Error('Internal alert graphic unavailable; template not sent');
+  const templateId=INTERNAL_CLOSED_TEMPLATE_IDS[event];
+  if(!templateId)throw Error('Unsupported internal template event');
+  const reference=String(booking.booking_ref||'').trim();
+  if(!reference||!/^[-A-Za-z0-9_]+$/.test(reference))throw Error('Invalid booking reference for dynamic URL');
+  // Meta-approved dynamic CTA prefix: https://admins.guruvidya.in/?gv_booking_ref=
+  // BotSailor appends the booking reference supplied in variable 3.
+  const fields={
+    apiToken:config.botsailorToken,
+    phone_number_id:config.botsailorInstanceId,
+    template_id:templateId,
+    phone_number:botSailorPhone(recipient.phone),
+    template_header_media_url:imageUrl,
+    'templateVariable-StudentName-1':String(booking.student_name||'Student'),
+    [INTERNAL_CLOSED_ACTOR_FIELDS[event]]:actor,
+    'templateVariable-BookingReference-3':reference
+  };
+  const result=await botSailorPost('https://botsailor.com/api/v1/whatsapp/send/template',fields);
+  await addIntegrationLog('whatsapp','internal_closed_'+event,result.success?'success':'failed',{
+    template_id:templateId,phone:fields.phone_number,booking_ref:reference,
+    header_present:true,actor
+  },result.response||{error:result.error||result.message});
+  if(!result.success)throw Error('BotSailor Utility template rejected: '+String(result.message||result.status||'unknown'));
+  return result;
+}
+
 // Internal staff alerts are isolated from student-facing booking notifications.
 // Dispatch is recorded before contacting external providers to prevent duplicate sends.
 async function sendInternalAppointmentAlert({bookingId,event}) {
@@ -5501,8 +5538,17 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
           ) AS last_incoming`,['91'+destination,destination]);
           const last=window.rows[0]?.last_incoming;
           if(!last || Date.now()-new Date(last).getTime()>=24*60*60*1000){
-            // An approved internal-alert template must be configured before CLOSED-window delivery.
-            status='skipped_closed';detail='No real 24h window; approved internal alert template not configured';
+            // Only the actual customer-message window controls template fallback.
+            // Do not alter the working OPEN-window graphic + reply-buttons path.
+            const result=await sendInternalClosedTemplate({event,booking,
+              recipient:{name:r.name,phone:destination},
+              actor:internalActor(booking,event,history),imageUrl});
+            providerMessageId=bookingProviderMessageId(result);
+            status='sent';provider='botsailor';
+            detail='Approved CLOSED-window Utility template accepted by BotSailor; URL CTA is a direct CRM link (not a tracked reply button)';
+            if(providerMessageId){
+              await pool.query('UPDATE booking_internal_alert_deliveries SET button_message_id=$2 WHERE id=$1',[deliveryId,providerMessageId]);
+            }else detail+='; provider message ID unavailable for delivery/read receipts';
           }else{
             await loadPersistedConfig();
             // Send one interactive WhatsApp message with image header, caption and
