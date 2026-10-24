@@ -5422,6 +5422,51 @@ app.get('/api/public/booking/internal-team-alert/card/:id/:event.jpg',async(req,
   }catch(e){console.error('Internal Utility JPEG conversion failed:',e?.message||e);res.status(404).end()}
 });
 
+// Durable, opaque JPEG URL for BotSailor Utility template media retrieval.
+// Render's memory cache is per-process: external provider fetches may reach a
+// different/restarted process. Keep the working OPEN-window PNG path intact.
+let internalUtilityMediaTablePromise;
+function ensureInternalUtilityMediaTable(){
+  if(!internalUtilityMediaTablePromise){
+    internalUtilityMediaTablePromise=pool.query(`CREATE TABLE IF NOT EXISTS booking_internal_utility_media (
+      token TEXT PRIMARY KEY, image_bytes BYTEA NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ NOT NULL
+    )`).catch(err=>{internalUtilityMediaTablePromise=null;throw err});
+  }
+  return internalUtilityMediaTablePromise;
+}
+app.get('/api/public/booking/internal-team-alert/utility-media/:token.jpg',async(req,res)=>{
+  const token=String(req.params.token||'');
+  if(!/^[a-f0-9]{64}$/.test(token))return res.status(404).end();
+  try{
+    await ensureInternalUtilityMediaTable();
+    const result=await pool.query(`SELECT image_bytes FROM booking_internal_utility_media
+      WHERE token=$1 AND expires_at>NOW()`,[token]);
+    if(!result.rowCount)return res.status(404).end();
+    const jpeg=result.rows[0].image_bytes;
+    res.set({'Content-Type':'image/jpeg','Content-Length':String(jpeg.length),
+      'Cache-Control':'public, max-age=3600','X-Content-Type-Options':'nosniff',
+      'X-Robots-Tag':'noindex','Content-Disposition':'inline; filename="appointment.jpg"'});
+    return res.status(200).send(jpeg);
+  }catch(err){console.error('Internal Utility media fetch failed:',err?.message||err);return res.status(503).end()}
+});
+async function persistInternalUtilityJpeg(png,publicBase){
+  await ensureInternalUtilityMediaTable();
+  const jpeg=await sharp(png).flatten({background:'#ffffff'})
+    .jpeg({quality:82,mozjpeg:true}).toBuffer();
+  const metadata=await sharp(jpeg).metadata();
+  if(metadata.format!=='jpeg'||jpeg.length<1024||jpeg.length>5*1024*1024)
+    throw Error('Internal Utility JPEG invalid or too large');
+  const token=randomBytes(32).toString('hex');
+  await pool.query(`INSERT INTO booking_internal_utility_media(token,image_bytes,expires_at)
+    VALUES($1,$2,NOW()+INTERVAL '24 hours')`,[token,jpeg]);
+  // Best-effort retention cleanup; failure should not prevent sending.
+  pool.query(`DELETE FROM booking_internal_utility_media WHERE expires_at<NOW()`)
+    .catch(err=>console.error('Internal Utility media cleanup failed:',err?.message||err));
+  return `${publicBase}/api/public/booking/internal-team-alert/utility-media/${token}.jpg`;
+}
+
 // BotSailor-approved Utility templates for real CLOSED 24-hour windows only.
 // Field names and IDs match the generated BotSailor POST examples (24 Oct 2026).
 const INTERNAL_CLOSED_TEMPLATE_IDS=Object.freeze({confirmed:'464154',rescheduled:'464314',cancelled:'464313'});
@@ -5494,6 +5539,7 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
   const meetingUrl=booking.mode==='online'&&event!=='cancelled'&&/^https:\/\/[^\s]+$/i.test(String(booking.meeting_link||''))?booking.meeting_link:'';
   const publicBase=String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'');
   let imageUrl='';
+  let utilityImageUrl='';
   const mediaExpires=Date.now()+30*60*1000;
   const mediaKey=`${booking.id}:${event}:${mediaExpires}`;
   const whatsappEnabled=rules?rules.open[eventIndex]!==false:true;
@@ -5501,6 +5547,10 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
     try{
       const png=await internalAlertPng(booking,event,history);
       internalTeamMediaCache.set(mediaKey,png);
+      // Store a real JPEG in PostgreSQL so BotSailor can fetch it after a restart.
+      // Only the CLOSED-window template uses this new URL.
+      try{utilityImageUrl=await persistInternalUtilityJpeg(png,publicBase)}
+      catch(mediaErr){console.error('Internal Utility durable media preparation failed:',mediaErr?.message||mediaErr)}
       const expiration=mediaExpires;
       setTimeout(()=>internalTeamMediaCache.delete(mediaKey),30*60*1000+2000).unref?.();
       imageUrl=`${publicBase}/api/public/booking/internal-team-alert/card/${booking.id}/${event}.png?expires=${expiration}&signature=${internalTeamMediaSignature(booking.id,event,expiration)}`;
@@ -5557,7 +5607,7 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
             // Do not alter the working OPEN-window graphic + reply-buttons path.
             const result=await sendInternalClosedTemplate({event,booking,
               recipient:{name:r.name,phone:destination},
-              actor:internalActor(booking,event,history),imageUrl:imageUrl.replace(/\.png\?/,'.jpg?')});
+              actor:internalActor(booking,event,history),imageUrl:utilityImageUrl});
             providerMessageId=bookingProviderMessageId(result);
             status='sent';provider='botsailor';
             detail='Approved CLOSED-window Utility template accepted by BotSailor; URL CTA is a direct CRM link (not a tracked reply button)';
