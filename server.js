@@ -5399,12 +5399,27 @@ app.get('/api/public/booking/internal-team-alert/header/:event.png',async(req,re
 });
 app.get('/api/public/booking/internal-team-alert/card/:id/:event.png',async(req,res)=>{
   const {id,event}=req.params,expires=Number(req.query.expires),signature=String(req.query.signature||'');
-  if(!/^\d+$/.test(id)||!['confirmed','rescheduled','cancelled'].includes(event)||!Number.isSafeInteger(expires)||Date.now()>expires||expires>Date.now()+20*60*1000||!/^[a-f0-9]{64}$/.test(signature))return res.status(404).end();
+  if(!/^\d+$/.test(id)||!['confirmed','rescheduled','cancelled'].includes(event)||!Number.isSafeInteger(expires)||Date.now()>expires||expires>Date.now()+35*60*1000||!/^[a-f0-9]{64}$/.test(signature))return res.status(404).end();
   const expected=internalTeamMediaSignature(id,event,expires);
   if(!timingSafeEqual(Buffer.from(signature,'hex'),Buffer.from(expected,'hex')))return res.status(404).end();
   const cached=internalTeamMediaCache.get(`${id}:${event}:${expires}`);
   if(!cached)return res.status(404).end();
   res.set({'Content-Type':'image/png','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','X-Robots-Tag':'noindex'}).send(cached);
+});
+
+// Dedicated JPEG endpoint for BotSailor Utility image headers. The existing PNG
+// endpoint remains unchanged for the working OPEN-window interactive alerts.
+app.get('/api/public/booking/internal-team-alert/card/:id/:event.jpg',async(req,res)=>{
+  const {id,event}=req.params,expires=Number(req.query.expires),signature=String(req.query.signature||'');
+  if(!/^\d+$/.test(id)||!['confirmed','rescheduled','cancelled'].includes(event)||!Number.isSafeInteger(expires)||Date.now()>expires||expires>Date.now()+35*60*1000||!/^[a-f0-9]{64}$/.test(signature))return res.status(404).end();
+  const expected=internalTeamMediaSignature(id,event,expires);
+  if(!timingSafeEqual(Buffer.from(signature,'hex'),Buffer.from(expected,'hex')))return res.status(404).end();
+  const cached=internalTeamMediaCache.get(`${id}:${event}:${expires}`);
+  if(!cached)return res.status(404).end();
+  try{
+    const jpeg=await sharp(cached).flatten({background:'#ffffff'}).jpeg({quality:86,mozjpeg:true}).toBuffer();
+    res.set({'Content-Type':'image/jpeg','Cache-Control':'public, max-age=300','X-Content-Type-Options':'nosniff','X-Robots-Tag':'noindex'}).send(jpeg);
+  }catch(e){console.error('Internal Utility JPEG conversion failed:',e?.message||e);res.status(404).end()}
 });
 
 // BotSailor-approved Utility templates for real CLOSED 24-hour windows only.
@@ -5479,7 +5494,7 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
   const meetingUrl=booking.mode==='online'&&event!=='cancelled'&&/^https:\/\/[^\s]+$/i.test(String(booking.meeting_link||''))?booking.meeting_link:'';
   const publicBase=String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'');
   let imageUrl='';
-  const mediaExpires=Date.now()+12*60*1000;
+  const mediaExpires=Date.now()+30*60*1000;
   const mediaKey=`${booking.id}:${event}:${mediaExpires}`;
   const whatsappEnabled=rules?rules.open[eventIndex]!==false:true;
   if(whatsappEnabled){
@@ -5487,7 +5502,7 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
       const png=await internalAlertPng(booking,event,history);
       internalTeamMediaCache.set(mediaKey,png);
       const expiration=mediaExpires;
-      setTimeout(()=>internalTeamMediaCache.delete(mediaKey),12*60*1000+2000).unref?.();
+      setTimeout(()=>internalTeamMediaCache.delete(mediaKey),30*60*1000+2000).unref?.();
       imageUrl=`${publicBase}/api/public/booking/internal-team-alert/card/${booking.id}/${event}.png?expires=${expiration}&signature=${internalTeamMediaSignature(booking.id,event,expiration)}`;
     }catch(e){console.error('Internal team artwork generation failed:',e?.message||e)}
   }
@@ -5542,7 +5557,7 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
             // Do not alter the working OPEN-window graphic + reply-buttons path.
             const result=await sendInternalClosedTemplate({event,booking,
               recipient:{name:r.name,phone:destination},
-              actor:internalActor(booking,event,history),imageUrl});
+              actor:internalActor(booking,event,history),imageUrl:imageUrl.replace(/\.png\?/,'.jpg?')});
             providerMessageId=bookingProviderMessageId(result);
             status='sent';provider='botsailor';
             detail='Approved CLOSED-window Utility template accepted by BotSailor; URL CTA is a direct CRM link (not a tracked reply button)';
