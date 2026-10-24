@@ -5513,7 +5513,7 @@ async function sendInternalClosedTemplate({event,booking,recipient,actor,imageUr
     template_id:templateId,
     phone_number:botSailorPhone(recipient.phone),
     template_header_media_url:imageUrl,
-    'templateVariable-StudentName-1':String(booking.student_name||'Student'),
+    'templateVariable-StudentName-1':String(recipient.name||'Team Member').trim()||'Team Member',
     [INTERNAL_CLOSED_ACTOR_FIELDS[event]]:actor,
     ...(onlineWithMeeting ? {
       'templateVariable-JoinOnlineMeetingLink-3':reference,
