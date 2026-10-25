@@ -1,3 +1,4 @@
+import { revisionSetClause } from './smart-reminder-revision-gate.js';
 import { findMatchingBookingSlot } from './booking-slot-match.js';
 import { getBookingMonitoringSummary } from './booking-monitoring-summary.js';
 import { inspectBookingDatabase } from './booking-database-integration.js';
@@ -675,14 +676,14 @@ export function installBookingRoutes(app,pool,hooks={}) {
         const slot=findMatchingBookingSlot(available,req.body.starts_at);
         if(!slot){await db.query('ROLLBACK');return fail(res,409,'New slot unavailable');}
         const cfg=await settings();
-        await db.query(`UPDATE student_bookings SET starts_at=$2,ends_at=$3,status=$4,customer_response=$5,response_at=NOW(),admin_alert_sent_at=NULL,admin_alert_ack_at=NULL,admin_alert_ack_note=NULL,updated_at=NOW() WHERE id=$1`,[b.id,slot.starts_at,slot.ends_at,cfg.approval_required?'requested':'confirmed',cfg.approval_required?'awaiting':'confirmed']);
+        await db.query(`UPDATE student_bookings SET starts_at=$2,ends_at=$3,status=$4,customer_response=$5,response_at=NOW(),admin_alert_sent_at=NULL,admin_alert_ack_at=NULL,admin_alert_ack_note=NULL,updated_at=NOW()${revisionSetClause(b,'reschedule')} WHERE id=$1`,[b.id,slot.starts_at,slot.ends_at,cfg.approval_required?'requested':'confirmed',cfg.approval_required?'awaiting':'confirmed']);
       }else if(req.body.action==='cancel'){
         const reason=String(req.body.cancellation_reason||'').trim();
         const allowed=['Schedule Conflict','Personal Reasons','Date Not Suitable','Need Different Time','Prefer Online','Prefer Offline','Admission Plan Changed','Not Interested','Booked by Mistake','Duplicate Booking','Parent/Guardian Unavailable for Visit','Joined Another Institute','Financial Constraints','Other Reason'];
         const note=String(req.body.cancellation_note||'').trim();
         const cancelledBy=['Student','Parent / Guardian'].includes(req.body.cancelled_by)?req.body.cancelled_by:'Student';
         if(!allowed.includes(reason)||(reason==='Other Reason'&&(!note||note.length>500))){await db.query('ROLLBACK');return fail(res,400,'Please select a valid cancellation reason');}
-        await db.query(`UPDATE student_bookings SET status='cancelled',customer_response='cancelled',response_at=NOW(),updated_at=NOW(),cancellation_reason=$2,cancellation_note=$3,cancelled_via='Browser',cancelled_by=$4,cancelled_at=NOW() WHERE id=$1`,[b.id,reason,reason==='Other Reason'?note:null,cancelledBy]);
+        await db.query(`UPDATE student_bookings SET status='cancelled',customer_response='cancelled',response_at=NOW(),updated_at=NOW(),cancellation_reason=$2,cancellation_note=$3,cancelled_via='Browser',cancelled_by=$4,cancelled_at=NOW()${revisionSetClause(b,'cancel')} WHERE id=$1`,[b.id,reason,reason==='Other Reason'?note:null,cancelledBy]);
       }
       else await db.query(`UPDATE student_bookings SET customer_response='confirmed',response_at=NOW(),status='confirmed',updated_at=NOW() WHERE id=$1`,[b.id]);
       const customerActor=req.body.action==='reschedule'&&['Student','Parent'].includes(req.body.rescheduled_by)?req.body.rescheduled_by:null;
@@ -862,13 +863,13 @@ export function installBookingRoutes(app,pool,hooks={}) {
     const rawIds=req.body?.ids;
     // PostgreSQL BIGSERIAL ids are serialized as strings by node-postgres. Accept decimal strings safely.
     if(!Array.isArray(rawIds)||!rawIds.length||rawIds.length>500||rawIds.some(id=>!((typeof id==='string'&&/^[1-9]\d*$/.test(id)&&BigInt(id)<=9223372036854775807n)||(typeof id==='number'&&Number.isSafeInteger(id)&&id>0))))return fail(res,400,'Select 1–500 valid bookings');
-    const ids=rawIds.map(String);
+    const ids=rawIds.map(String).sort((a,b)=>BigInt(a)<BigInt(b)?-1:BigInt(a)>BigInt(b)?1:0);
     if(new Set(ids).size!==ids.length)return fail(res,400,'Duplicate booking selection');
     const db=await pool.connect();
-    try {await db.query('BEGIN');const r=await db.query('SELECT id,status,starts_at FROM student_bookings WHERE id=ANY($1::bigint[]) AND trashed_at IS NULL FOR UPDATE',[ids]);
+    try {await db.query('BEGIN');const r=await db.query('SELECT id,status,starts_at FROM student_bookings WHERE id=ANY($1::bigint[]) AND trashed_at IS NULL ORDER BY id FOR UPDATE',[ids]);
       if(r.rowCount!==ids.length){await db.query('ROLLBACK');return fail(res,409,'Some bookings are missing or already in Trash. Refresh and retry.');}
       if(r.rows.some(b=>!['cancelled','completed','no_show'].includes(b.status))){await db.query('ROLLBACK');return fail(res,409,'Cancel active appointments before moving them to Trash.');}
-      await db.query('UPDATE student_bookings SET trashed_at=NOW(),updated_at=NOW() WHERE id=ANY($1::bigint[])',[ids]);
+      await db.query(`UPDATE student_bookings SET trashed_at=NOW(),updated_at=NOW()${process.env.GV_SMART_REMINDER_REVISION_WRITES === 'enabled' ? ',appointment_revision=appointment_revision+1' : ''} WHERE id=ANY($1::bigint[])`,[ids]);
       for(const row of r.rows)await db.query("INSERT INTO booking_events(booking_id,actor,action) VALUES($1,'booking_admin','moved_to_trash')",[row.id]);
       await db.query('COMMIT');res.json({success:true,data:{count:ids.length}});
     }catch {await db.query('ROLLBACK');fail(res,500,'Unable to move bookings to Trash');}finally{db.release();}
@@ -876,10 +877,18 @@ export function installBookingRoutes(app,pool,hooks={}) {
   app.post('/api/admin/booking/trash/restore',admin,async(req,res)=>{
     const rawIds=req.body?.ids;
     if(!Array.isArray(rawIds)||!rawIds.length||rawIds.length>500||rawIds.some(id=>!((typeof id==='string'&&/^[1-9]\d*$/.test(id)&&BigInt(id)<=9223372036854775807n)||(typeof id==='number'&&Number.isSafeInteger(id)&&id>0))))return fail(res,400,'Select valid bookings');
-    const ids=rawIds.map(String);
+    const ids=rawIds.map(String).sort((a,b)=>BigInt(a)<BigInt(b)?-1:BigInt(a)>BigInt(b)?1:0);
     if(new Set(ids).size!==ids.length)return fail(res,400,'Duplicate booking selection');
-    try {const r=await pool.query('UPDATE student_bookings SET trashed_at=NULL,updated_at=NOW() WHERE id=ANY($1::bigint[]) AND trashed_at IS NOT NULL RETURNING id',[ids]);if(r.rowCount!==ids.length)return fail(res,409,'Some bookings could not be restored. Refresh and retry.');res.json({success:true,data:{count:r.rowCount}});}
-    catch {fail(res,500,'Unable to restore bookings');}
+    const db=await pool.connect();
+    try {
+      await db.query('BEGIN');
+      const locked=await db.query('SELECT id FROM student_bookings WHERE id=ANY($1::bigint[]) AND trashed_at IS NOT NULL ORDER BY id FOR UPDATE',[ids]);
+      if(locked.rowCount!==ids.length){await db.query('ROLLBACK');return fail(res,409,'Some bookings could not be restored. Refresh and retry.');}
+      const r=await db.query(`UPDATE student_bookings SET trashed_at=NULL,updated_at=NOW()${process.env.GV_SMART_REMINDER_REVISION_WRITES === 'enabled' ? ',appointment_revision=appointment_revision+1' : ''} WHERE id=ANY($1::bigint[]) AND trashed_at IS NOT NULL RETURNING id`,[ids]);
+      if(r.rowCount!==ids.length){await db.query('ROLLBACK');return fail(res,409,'Some bookings could not be restored. Refresh and retry.');}
+      await db.query('COMMIT');res.json({success:true,data:{count:r.rowCount}});
+    }
+    catch {await db.query('ROLLBACK');fail(res,500,'Unable to restore bookings');}finally{db.release();}
   });
   // Admin operations use the existing server-side secret guard; do not expose it in a frontend bundle.
   app.get('/api/admin/booking/:id/events',admin,async(req,res)=>{
@@ -927,7 +936,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
         nextStart=choice.starts_at;nextEnd=choice.ends_at;
         nextStatus=action==='reschedule'?'rescheduled':b.status;
       }
-      await db.query(`UPDATE student_bookings SET status=$2,counsellor_id=$3,starts_at=$4,ends_at=$5,updated_at=NOW(),customer_response=CASE WHEN $6='approve' THEN 'confirmed' WHEN $6='reschedule' THEN 'awaiting' ELSE customer_response END,response_at=CASE WHEN $6='reschedule' THEN NOW() ELSE response_at END,admin_alert_sent_at=CASE WHEN $6='reschedule' THEN NULL ELSE admin_alert_sent_at END,admin_alert_ack_at=CASE WHEN $6='reschedule' THEN NULL ELSE admin_alert_ack_at END,admin_alert_ack_note=CASE WHEN $6='reschedule' THEN NULL ELSE admin_alert_ack_note END WHERE id=$1`,[b.id,nextStatus,nextCounsellor,nextStart,nextEnd,action]);
+      await db.query(`UPDATE student_bookings SET status=$2,counsellor_id=$3,starts_at=$4,ends_at=$5,updated_at=NOW(),customer_response=CASE WHEN $6='approve' THEN 'confirmed' WHEN $6='reschedule' THEN 'awaiting' ELSE customer_response END,response_at=CASE WHEN $6='reschedule' THEN NOW() ELSE response_at END,admin_alert_sent_at=CASE WHEN $6='reschedule' THEN NULL ELSE admin_alert_sent_at END,admin_alert_ack_at=CASE WHEN $6='reschedule' THEN NULL ELSE admin_alert_ack_at END,admin_alert_ack_note=CASE WHEN $6='reschedule' THEN NULL ELSE admin_alert_ack_note END${revisionSetClause(b,action)} WHERE id=$1`,[b.id,nextStatus,nextCounsellor,nextStart,nextEnd,action]);
       if(action==='cancel')await db.query(`UPDATE student_bookings SET cancellation_reason=$2,cancellation_note=$3,cancelled_via='Admin',cancelled_by='GuruVidya Admin',cancelled_at=NOW(),customer_response='cancelled',response_at=NOW() WHERE id=$1`,[b.id,String(req.body.cancellation_reason),String(req.body.cancellation_note||'').slice(0,500)]);
       await log(db,b.id,'admin',action,{previous_status:b.status,previous_counsellor_id:b.counsellor_id,previous_starts_at:b.starts_at,new_status:nextStatus,new_counsellor_id:nextCounsellor,new_starts_at:nextStart});
       if(['approve','reschedule'].includes(action)) await enqueueLifecycleBlockedIntents(db,{bookingId:Number(b.id),event:action==='approve'?'approved':'rescheduled',eventKey:action+':'+randomUUID()});
@@ -946,6 +955,53 @@ export function installBookingRoutes(app,pool,hooks={}) {
   });
   app.get('/api/admin/booking/settings',admin,async(req,res)=>res.json({success:true,data:await settings()}));
   app.put('/api/admin/booking/settings',admin,async(req,res)=>{const {duration_minutes,buffer_minutes,advance_hours,booking_days,approval_required,reminder_hours,offline_address,student_address_visible=true,student_address_required=true,student_address_style='detailed',whatsapp_verification_enabled=true,email_notifications_enabled=true,email_recipient_mode='both',whatsapp_open_notifications}=req.body;if(!Number.isInteger(duration_minutes)||duration_minutes<10||duration_minutes>240||!Number.isInteger(buffer_minutes)||buffer_minutes<0||buffer_minutes>120||!Number.isFinite(advance_hours)||advance_hours<0||!Number.isInteger(booking_days)||booking_days<1||booking_days>365||!Array.isArray(reminder_hours)||reminder_hours.some(x=>!Number.isFinite(x)||x<=0)||typeof approval_required!=='boolean'||typeof offline_address!=='string'||typeof student_address_visible!=='boolean'||typeof student_address_required!=='boolean'||!['detailed','single'].includes(student_address_style)||typeof whatsapp_verification_enabled!=='boolean'||typeof email_notifications_enabled!=='boolean'||!['both','student','parent'].includes(email_recipient_mode)||(whatsapp_open_notifications!==undefined&&(!whatsapp_open_notifications||typeof whatsapp_open_notifications!=='object'||['student','parent'].some(w=>{const c=whatsapp_open_notifications[w];return c!==undefined&&(!c||typeof c!=='object'||['enabled','confirmed','rescheduled','cancelled'].some(k=>c[k]!==undefined&&typeof c[k]!=='boolean'))}))))return fail(res,400,'Invalid settings');const r=await pool.query(`UPDATE booking_settings SET settings=settings||$1::jsonb WHERE id=1 RETURNING settings`,[JSON.stringify(req.body)]);res.json({success:true,data:r.rows[0].settings});});
+  // Smart Reminders: settings only; dispatch is intentionally not installed.
+  const smartDefaults = () => ({master_enabled:false,offline:{'4h':{whatsapp:true,email:true},'2h':{whatsapp:true,email:true},'1h':{whatsapp:true,email:true}},online:{'4h':{whatsapp:true,email:true},'2h':{whatsapp:true,email:true},'1h':{whatsapp:true,email:true},'5min':{whatsapp:true,email:true}},fallback_minutes:{'4h':60,'2h':30,'1h':10,'5min':0}});
+  const smartValid = input => {
+    if(!input || typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!['master_enabled','offline','online','fallback_minutes'].includes(k)))return false;
+    if(input.master_enabled!==false)return false; // production dispatch remains on HOLD
+    for(const [mode,stages] of Object.entries({offline:['4h','2h','1h'],online:['4h','2h','1h','5min']})){
+      if(!input[mode]||typeof input[mode]!=='object'||Array.isArray(input[mode])||Object.keys(input[mode]).some(k=>!stages.includes(k)))return false;
+      for(const stage of stages){const v=input[mode][stage];if(!v||typeof v!=='object'||Array.isArray(v)||Object.keys(v).some(k=>!['whatsapp','email'].includes(k))||typeof v.whatsapp!=='boolean'||typeof v.email!=='boolean')return false;}
+    }
+    const d=input.fallback_minutes;
+    return Boolean(d&&typeof d==='object'&&!Array.isArray(d)&&Object.keys(d).length===4&&Object.entries({'4h':60,'2h':30,'1h':10,'5min':0}).every(([k,v])=>d[k]===v));
+  };
+  app.get('/api/admin/booking/smart-reminders/settings',admin,async(req,res)=>{
+    try {const r=await pool.query(`SELECT settings->'smart_reminders' AS smart FROM booking_settings WHERE id=1`);const stored=r.rows[0]?.smart;res.json({success:true,data:smartValid(stored)?{...stored,master_enabled:false}:smartDefaults()});}
+    catch(e){console.error('Smart reminder settings read:',e.message);fail(res,503,'Smart reminder settings unavailable');}
+  });
+  app.put('/api/admin/booking/smart-reminders/settings',admin,async(req,res)=>{
+    if(!smartValid(req.body))return fail(res,400,'Invalid smart reminder settings or automation is locked OFF');
+    try {const r=await pool.query(`UPDATE booking_settings SET settings=jsonb_set(COALESCE(settings,'{}'::jsonb),'{smart_reminders}',$1::jsonb,true) WHERE id=1 RETURNING settings->'smart_reminders' AS smart`,[JSON.stringify(req.body)]);if(!r.rowCount)return fail(res,503,'Booking settings unavailable');res.json({success:true,data:{...r.rows[0].smart,master_enabled:false}});}
+    catch(e){console.error('Smart reminder settings save:',e.message);fail(res,503,'Unable to save smart reminder settings');}
+  });
+  app.get('/api/admin/booking/smart-reminders/tracking',admin,async(req,res)=>{
+    // The dedicated delivery table is intentionally migration-gated; never fabricate tracking rows.
+    try {const r=await pool.query(`SELECT to_regclass('public.booking_smart_reminder_deliveries') AS tbl`);
+      if(!r.rows[0]?.tbl)return res.status(503).json({success:false,message:'Smart reminder tracking schema not installed; migration approval required'});
+      const rows=await pool.query(`SELECT id,booking_id,recipient_type,stage,channel,status,sent_at,delivered_at,read_at,opened_at,clicked_at,first_clicked_at,last_clicked_at,created_at FROM booking_smart_reminder_deliveries WHERE created_at >= NOW()-INTERVAL '15 days' ORDER BY created_at DESC LIMIT 300`);
+      res.json({success:true,data:rows.rows});
+    }catch(e){console.error('Smart reminder tracking read:',e.message);fail(res,503,'Smart reminder tracking unavailable');}
+  });
+  // Read-only, authenticated, bounded click history. No webhook or provider dispatch is mounted.
+  app.get('/api/admin/booking/smart-reminders/tracking/:deliveryId/clicks',admin,async(req,res)=>{
+    const deliveryId=String(req.params.deliveryId||'');
+    if(!/^[1-9]\d{0,17}$/.test(deliveryId))return fail(res,400,'Invalid delivery ID');
+    const rawLimit=String(req.query.limit ?? '50');
+    if(!/^[1-9]\d{0,2}$/.test(rawLimit)||Number(rawLimit)>100)return fail(res,400,'Invalid click history limit');
+    const limit=Number(rawLimit);
+    try{
+      const schema=await pool.query(`SELECT to_regclass('public.booking_smart_reminder_deliveries') AS deliveries, to_regclass('public.booking_smart_reminder_click_events') AS clicks`);
+      if(!schema.rows[0]?.deliveries||!schema.rows[0]?.clicks)return res.status(503).json({success:false,message:'Smart reminder click tracking migration not installed'});
+      const r=await pool.query(`SELECT e.id,e.button_key,e.clicked_at
+        FROM booking_smart_reminder_click_events e
+        JOIN booking_smart_reminder_deliveries d ON d.id=e.delivery_id
+        WHERE d.id=$1::bigint AND d.created_at >= NOW()-INTERVAL '15 days'
+        ORDER BY e.clicked_at DESC,e.id DESC LIMIT $2`,[deliveryId,limit]);
+      res.json({success:true,data:r.rows});
+    }catch(e){console.error('Smart reminder click history read:',e.message);fail(res,503,'Smart reminder click history unavailable');}
+  });
   app.get('/api/admin/booking/locations',admin,async(req,res)=>{
     try {const r=await pool.query('SELECT id,name,address,map_url,is_default,created_at,updated_at FROM booking_locations ORDER BY is_default DESC,name ASC,id ASC');res.json({success:true,data:r.rows});}
     catch{fail(res,500,'Unable to load locations');}

@@ -4,6 +4,8 @@ import { reconcileStaleBookingAttempts } from './booking/booking-stale-attempts.
 import { dispatchBookingReminders } from './booking/booking-delivery.js';
 import { reconcileBookingQueue } from './booking/booking-queue-maintenance.js';
 import { runBookingReminderQueue } from './booking/booking-reminders.js';
+import { revisionSetClause } from './booking/smart-reminder-revision-gate.js';
+import { bookingDispatchLockSql, bookingDispatchLockArgs } from './booking/booking-dispatch-lock.js';
 import { initBooking, installBookingRoutes, hasBookingSuppression } from "./booking/booking.js";
 import express from "express";
 import cors from "cors";
@@ -3946,14 +3948,32 @@ app.post("/api/webhook/botsailor", async (req, res) => {
           await sendBotSailorText(actionContact,'Please select a cancellation reason before confirming.','booking_cancel_reason_required');
           return res.json({status:'ok',action:'booking_cancel_reason_required'});
         }
-        const cancelled=await pool.query(`UPDATE student_bookings SET status='cancelled',customer_response='cancelled',response_at=NOW(),updated_at=NOW(),cancellation_reason=$2,cancellation_note=$3,cancelled_via='WhatsApp',cancelled_at=NOW() WHERE id=$1 AND status IN ('requested','approved','confirmed','rescheduled') RETURNING id`,[booking.id,selected,selected==='Other Reason'?String(pending.payload.cancel_note||'').slice(0,500):null]);
-        if(!cancelled.rowCount)return res.json({status:'ignored',message:'Booking already closed'});
-        // Keep the cancelled booking bound to this WhatsApp action set so an old
-        // Reschedule button can never jump to a different booking on the same mobile.
-        await pool.query(`INSERT INTO booking_whatsapp_states(mobile,booking_id,booking_ref,state,payload,updated_at)
-          VALUES($1,$2,$3,'cancelled','{}'::jsonb,NOW())
-          ON CONFLICT(mobile) DO UPDATE SET booking_id=EXCLUDED.booking_id,booking_ref=EXCLUDED.booking_ref,state='cancelled',payload='{}'::jsonb,updated_at=NOW()`,
-          [canonical,booking.id,booking.booking_ref]);
+        // Lock booking before WhatsApp state to align with booking mutation lock ordering.
+        // Both changes commit or roll back together; no provider call inside transaction.
+        const cancelDb=await pool.connect();
+        let cancelled;
+        try {
+          await cancelDb.query('BEGIN');
+          await cancelDb.query(bookingDispatchLockSql(true),bookingDispatchLockArgs(booking.id));
+          const cancelRevisionColumn=process.env.GV_SMART_REMINDER_REVISION_WRITES==='enabled' ? ',appointment_revision' : '';
+          const locked=await cancelDb.query(`SELECT id,status${cancelRevisionColumn} FROM student_bookings WHERE id=$1 FOR UPDATE`,[booking.id]);
+          if(!locked.rowCount || !['requested','approved','confirmed','rescheduled'].includes(String(locked.rows[0].status||''))){
+            await cancelDb.query('ROLLBACK');
+            return res.json({status:'ignored',message:'Booking already closed'});
+          }
+          const cancelRevision=revisionSetClause(locked.rows[0],'cancel');
+          cancelled=await cancelDb.query(`UPDATE student_bookings SET status='cancelled',customer_response='cancelled',response_at=NOW(),updated_at=NOW(),cancellation_reason=$2,cancellation_note=$3,cancelled_via='WhatsApp',cancelled_at=NOW()${cancelRevision} WHERE id=$1 AND status IN ('requested','approved','confirmed','rescheduled') RETURNING id`,[booking.id,selected,selected==='Other Reason'?String(pending.payload.cancel_note||'').slice(0,500):null]);
+          if(!cancelled.rowCount){await cancelDb.query('ROLLBACK');return res.json({status:'ignored',message:'Booking already closed'});}
+          // Preserve the WhatsApp action state, atomically with cancellation.
+          await cancelDb.query(`INSERT INTO booking_whatsapp_states(mobile,booking_id,booking_ref,state,payload,updated_at)
+            VALUES($1,$2,$3,'cancelled','{}'::jsonb,NOW())
+            ON CONFLICT(mobile) DO UPDATE SET booking_id=EXCLUDED.booking_id,booking_ref=EXCLUDED.booking_ref,state='cancelled',payload='{}'::jsonb,updated_at=NOW()`,
+            [canonical,booking.id,booking.booking_ref]);
+          await cancelDb.query('COMMIT');
+        } catch(cancelErr){
+          try {await cancelDb.query('ROLLBACK');} catch (_) {}
+          throw cancelErr;
+        } finally {cancelDb.release();}
         reply=`\n\nYour appointment *${booking.booking_ref}* has been cancelled successfully.\n\nIf you need counselling later, please book a new appointment.\n\nBook a new appointment for a future slot using this link:\n${String(process.env.PUBLIC_BOOKING_URL || 'https://guruvidya-backend.onrender.com/booking').split('#')[0]}`;
       } else if(bookingActionType==='reschedule') {
         // Reuse the currently valid private token when available. Rotating it here
@@ -4028,16 +4048,40 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     if (isBookingConfirmClick) {
       const canonical=botSailorPhone(mobile);
       const national=canonical.startsWith('91')&&canonical.length===12?canonical.slice(2):canonical;
-      const br=await pool.query(`SELECT b.booking_ref FROM student_bookings b
+      const br=await pool.query(`SELECT b.id,b.booking_ref FROM student_bookings b
         WHERE regexp_replace(COALESCE(b.student_mobile,''),'[^0-9]','','g') IN ($1,$2)
           AND b.status IN ('requested','approved','confirmed','rescheduled')
         ORDER BY b.created_at DESC LIMIT 1`,[canonical,national]);
       if(!br.rows[0]) return res.status(200).json({status:'ignored',message:'No active booking found for this mobile'});
       const token=randomBytes(32).toString('hex');
       const tokenHash=createHash('sha256').update(token).digest('hex');
-      await pool.query(`UPDATE student_bookings SET token_hash=$1,customer_response='confirmed',response_at=NOW(),
-        status=CASE WHEN status='requested' THEN 'confirmed' ELSE status END,updated_at=NOW() WHERE booking_ref=$2`,[tokenHash,br.rows[0].booking_ref]);
-      const booking=await loadBookingWhatsAppContext(br.rows[0].booking_ref);
+      // Serialize confirmation with other booking lifecycle writers. Do not send
+      // WhatsApp messages while holding the database transaction/row lock.
+      const confirmDb=await pool.connect();
+      let confirmedRef;
+      try {
+        await confirmDb.query('BEGIN');
+        await confirmDb.query(bookingDispatchLockSql(true),bookingDispatchLockArgs(br.rows[0].id));
+        const revisionColumn=process.env.GV_SMART_REMINDER_REVISION_WRITES==='enabled' ? ',appointment_revision' : '';
+        const locked=await confirmDb.query(`SELECT id,booking_ref,status${revisionColumn} FROM student_bookings
+          WHERE booking_ref=$1 AND regexp_replace(COALESCE(student_mobile,''),'[^0-9]','','g') IN ($2,$3)
+          FOR UPDATE`,[br.rows[0].booking_ref,canonical,national]);
+        const current=locked.rows[0];
+        if(!current || !['requested','approved','confirmed','rescheduled'].includes(String(current.status||''))){
+          await confirmDb.query('ROLLBACK');
+          return res.status(200).json({status:'ignored',message:'Booking no longer active'});
+        }
+        const revision=current.status==='requested' ? revisionSetClause(current,'confirm') : '';
+        await confirmDb.query(`UPDATE student_bookings SET token_hash=$1,customer_response='confirmed',response_at=NOW(),
+          status=CASE WHEN status='requested' THEN 'confirmed' ELSE status END,updated_at=NOW()${revision}
+          WHERE id=$2`,[tokenHash,current.id]);
+        confirmedRef=current.booking_ref;
+        await confirmDb.query('COMMIT');
+      } catch(confirmErr) {
+        try {await confirmDb.query('ROLLBACK');} catch (_) {}
+        throw confirmErr;
+      } finally {confirmDb.release();}
+      const booking=await loadBookingWhatsAppContext(confirmedRef);
       const result=await sendBookingSessionConfirmation(booking,token,'booking_confirmation_after_gate');
       return res.status(result.success?200:400).json({status:result.success?'ok':'error',action:'booking_confirmation_after_gate'});
     }
