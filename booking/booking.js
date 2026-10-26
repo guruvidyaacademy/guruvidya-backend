@@ -1001,7 +1001,10 @@ export function installBookingRoutes(app,pool,hooks={}) {
       // Consent is required for WhatsApp. Never use a UI window override to authorize a send.
       if(channel==='whatsapp'){
         const consent=await pool.query(`SELECT verified,opted_in,revoked_at,mobile FROM booking_recipient_consents WHERE booking_id=$1 AND kind=$2`,[booking_id,recipient_type]);
-        if(!consent.rowCount||!consent.rows[0].verified||!consent.rows[0].opted_in||consent.rows[0].revoked_at||bookingPhone(consent.rows[0].mobile)!==bookingPhone(destination))return fail(res,409,'WhatsApp recipient verified consent is required');
+        if(!consent.rowCount)return fail(res,409,'WhatsApp consent record missing for this booking and recipient. Booking WhatsApp verification and consent are separate; obtain verified opt-in before testing.');
+        if(bookingPhone(consent.rows[0].mobile)!==bookingPhone(destination))return fail(res,409,'WhatsApp consent mobile does not match the booking recipient');
+        if(consent.rows[0].revoked_at)return fail(res,409,'WhatsApp consent was revoked for this recipient');
+        if(!consent.rows[0].verified||!consent.rows[0].opted_in)return fail(res,409,'WhatsApp recipient verified opt-in is required');
       }
       await pool.query(`CREATE TABLE IF NOT EXISTS booking_smart_reminder_manual_tests (id BIGSERIAL PRIMARY KEY,booking_id BIGINT NOT NULL,booking_ref TEXT NOT NULL,recipient_type TEXT NOT NULL,channel TEXT NOT NULL,stage TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'sending',provider_message_id TEXT,detail TEXT,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),completed_at TIMESTAMPTZ)`);
       // Server-enforced 60-second cooldown prevents accidental double-click sends.
