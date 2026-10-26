@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import { dispatchSmartReminderJob, validateReminderDispatchJob } from './smart-reminder-step5-dispatch-boundary.js';
+const job = {bookingId: 1, revision: 1, recipient: 'student', channel: 'email', stage: '4h', mode: 'offline', expectedStartsAt: '2026-10-27T09:00:00+05:30'};
+assert.equal(validateReminderDispatchJob(job), true);
+let calls = 0;
+const sendApprovedMessage = async () => { calls++; return {providerMessageId:'test-id'}; };
+assert.equal((await dispatchSmartReminderJob(job, {sendApprovedMessage})).dispatched, false);
+assert.equal(calls, 0);
+assert.equal((await dispatchSmartReminderJob(job, {workerEnabled:true, sendApprovedMessage})).dispatched, false);
+assert.equal(calls, 0);
+const gates = {workerEnabled:true, masterEnabled:true, migrationVerified:true, consentVerified:true, bookingRevisionVerified:true, uniqueClaimVerified:true, approvedTemplateVerified:true, sendApprovedMessage};
+assert.equal((await dispatchSmartReminderJob(job, gates)).dispatched, true);
+assert.equal(calls, 1);
+assert.throws(() => validateReminderDispatchJob({...job, stage:'5min'}));
+console.log('Step 5 boundary: 5 assertions passed');
