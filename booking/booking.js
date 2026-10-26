@@ -980,7 +980,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
   // Manually initiated reminder test only. Never schedules or auto-sends.
   // Separate audit table: test messages must not masquerade as scheduled reminders.
   app.get('/api/admin/booking/smart-reminders/manual-tests',admin,async(req,res)=>{
-    try {const r=await pool.query(`SELECT id,booking_id,booking_ref,recipient_type,channel,stage,status,created_at,completed_at FROM booking_smart_reminder_manual_tests ORDER BY id DESC LIMIT 30`);res.json({success:true,data:r.rows});}
+    try {const r=await pool.query(`SELECT id,booking_id,booking_ref,recipient_type,channel,stage,status,provider_message_id,detail,created_at,completed_at FROM booking_smart_reminder_manual_tests WHERE created_at >= NOW()-INTERVAL '15 days' ORDER BY id DESC LIMIT 500`);res.json({success:true,data:r.rows});}
     catch(e){console.error('Smart manual tests list:',e.message);fail(res,503,'Manual test history unavailable');}
   });
   app.post('/api/admin/booking/smart-reminders/manual-test',admin,async(req,res)=>{
