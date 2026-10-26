@@ -1,3 +1,4 @@
+import { runSmartReminderStep6Preflight } from './booking/smart-reminder-step6-preflight.js';
 import { startSmartReminderQueuePlanner } from './booking/smart-reminder-step4-queue-reconciler.js';
 import { internalActor, internalCaption, internalAlertHtml, internalAlertPng } from './booking/internal-team-alert-design.js';
 import { initInternalAlertReminderScheduler, runInternalAlertReminderScheduler } from './booking/internal-alert-reminder-scheduler.js';
@@ -23,6 +24,17 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 });
+
+// Step 6B: optional, read-only database compatibility report. Never sends messages.
+// Enable temporarily with GV_SMART_REMINDER_PREFLIGHT=1 in Render environment.
+if (process.env.GV_SMART_REMINDER_PREFLIGHT === '1') {
+  runSmartReminderStep6Preflight(pool).then(result => {
+    console.info('[Smart Reminders Step 6B] PREFLIGHT', JSON.stringify(result));
+    if (!result.ready) console.warn('[Smart Reminders Step 6B] NOT READY — keep automation OFF');
+  }).catch(err => {
+    console.error('[Smart Reminders Step 6B] PREFLIGHT ERROR', String(err?.message || err));
+  });
+}
 
 const app = express();
 app.use(cors());
