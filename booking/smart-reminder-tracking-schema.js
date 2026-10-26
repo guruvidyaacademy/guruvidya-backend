@@ -1,5 +1,7 @@
 // Additive, idempotent Smart Reminder tracking foundation.
 // Runs only during existing initBooking(); does NOT mount a scheduler or send messages.
+// booking_id is deliberately not a foreign key: legacy student_bookings may lack a
+// database-enforced UNIQUE/PRIMARY KEY on id. This avoids modifying that working table.
 export async function initSmartReminderTrackingSchema(pool) {
   const sql = String.raw`-- Guruvidya Smart Appointment Reminders — Step 1 (review before applying)
 -- ADDITIVE ONLY. Not executed by the application or this package.
@@ -11,7 +13,7 @@ ALTER TABLE public.student_bookings
 
 CREATE TABLE IF NOT EXISTS public.booking_smart_reminder_claims (
   id BIGSERIAL PRIMARY KEY,
-  booking_id BIGINT NOT NULL REFERENCES public.student_bookings(id) ON DELETE RESTRICT,
+  booking_id BIGINT NOT NULL,
   appointment_revision INTEGER NOT NULL CHECK (appointment_revision >= 1),
   recipient TEXT NOT NULL CHECK (recipient IN ('student','parent')),
   channel TEXT NOT NULL CHECK (channel IN ('whatsapp','email')),
@@ -26,7 +28,7 @@ CREATE TABLE IF NOT EXISTS public.booking_smart_reminder_claims (
 
 CREATE TABLE IF NOT EXISTS public.booking_smart_reminder_deliveries (
   id BIGSERIAL PRIMARY KEY,
-  booking_id BIGINT NOT NULL REFERENCES public.student_bookings(id) ON DELETE RESTRICT,
+  booking_id BIGINT NOT NULL,
   appointment_revision INTEGER NOT NULL CHECK (appointment_revision >= 1),
   recipient_type TEXT NOT NULL CHECK (recipient_type IN ('student','parent')),
   stage TEXT NOT NULL CHECK (stage IN ('4h','2h','1h','5min')),
@@ -70,7 +72,7 @@ CREATE INDEX IF NOT EXISTS smart_click_delivery_time_idx
 
 CREATE TABLE IF NOT EXISTS public.booking_smart_reminder_window_events (
   id BIGSERIAL PRIMARY KEY,
-  booking_id BIGINT NOT NULL REFERENCES public.student_bookings(id) ON DELETE RESTRICT,
+  booking_id BIGINT NOT NULL,
   recipient_type TEXT NOT NULL CHECK (recipient_type IN ('student','parent')),
   event_type TEXT NOT NULL CHECK (event_type IN ('inbound_verified','window_opened','extension_requested','extension_replied','window_expired','window_closed')),
   event_at TIMESTAMPTZ NOT NULL,
