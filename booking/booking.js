@@ -966,16 +966,26 @@ export function installBookingRoutes(app,pool,hooks={}) {
   app.get('/api/admin/booking/settings',admin,async(req,res)=>res.json({success:true,data:await settings()}));
   app.put('/api/admin/booking/settings',admin,async(req,res)=>{const {duration_minutes,buffer_minutes,advance_hours,booking_days,approval_required,reminder_hours,offline_address,student_address_visible=true,student_address_required=true,student_address_style='detailed',whatsapp_verification_enabled=true,email_notifications_enabled=true,email_recipient_mode='both',whatsapp_open_notifications}=req.body;if(!Number.isInteger(duration_minutes)||duration_minutes<10||duration_minutes>240||!Number.isInteger(buffer_minutes)||buffer_minutes<0||buffer_minutes>120||!Number.isFinite(advance_hours)||advance_hours<0||!Number.isInteger(booking_days)||booking_days<1||booking_days>365||!Array.isArray(reminder_hours)||reminder_hours.some(x=>!Number.isFinite(x)||x<=0)||typeof approval_required!=='boolean'||typeof offline_address!=='string'||typeof student_address_visible!=='boolean'||typeof student_address_required!=='boolean'||!['detailed','single'].includes(student_address_style)||typeof whatsapp_verification_enabled!=='boolean'||typeof email_notifications_enabled!=='boolean'||!['both','student','parent'].includes(email_recipient_mode)||(whatsapp_open_notifications!==undefined&&(!whatsapp_open_notifications||typeof whatsapp_open_notifications!=='object'||['student','parent'].some(w=>{const c=whatsapp_open_notifications[w];return c!==undefined&&(!c||typeof c!=='object'||['enabled','confirmed','rescheduled','cancelled'].some(k=>c[k]!==undefined&&typeof c[k]!=='boolean'))}))))return fail(res,400,'Invalid settings');const r=await pool.query(`UPDATE booking_settings SET settings=settings||$1::jsonb WHERE id=1 RETURNING settings`,[JSON.stringify(req.body)]);res.json({success:true,data:r.rows[0].settings});});
   // Smart Reminders: settings only; dispatch is intentionally not installed.
-  const smartDefaults = () => ({master_enabled:false,offline:{'4h':{whatsapp:true,email:true},'2h':{whatsapp:true,email:true},'1h':{whatsapp:true,email:true}},online:{'4h':{whatsapp:true,email:true},'2h':{whatsapp:true,email:true},'1h':{whatsapp:true,email:true},'5min':{whatsapp:true,email:true}},fallback_minutes:{'4h':60,'2h':30,'1h':10,'5min':0}});
+  const smartDefaults = () => ({master_enabled:false,offline:{'4h':{whatsapp:true,email:true},'2h':{whatsapp:true,email:true},'1h':{whatsapp:true,email:true}},online:{'4h':{whatsapp:true,email:true},'2h':{whatsapp:true,email:true},'1h':{whatsapp:true,email:true},'5min':{whatsapp:true,email:true}},fallback_minutes:{'4h':60,'2h':30,'1h':10,'5min':0},stage_minutes:{offline:{'4h':240,'2h':120,'1h':60},online:{'4h':240,'2h':120,'1h':60,'5min':5}}});
   const smartValid = input => {
-    if(!input || typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!['master_enabled','offline','online','fallback_minutes'].includes(k)))return false;
+    if(!input || typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!['master_enabled','offline','online','fallback_minutes','stage_minutes'].includes(k)))return false;
     if(input.master_enabled!==false)return false; // production dispatch remains on HOLD
     for(const [mode,stages] of Object.entries({offline:['4h','2h','1h'],online:['4h','2h','1h','5min']})){
       if(!input[mode]||typeof input[mode]!=='object'||Array.isArray(input[mode])||Object.keys(input[mode]).some(k=>!stages.includes(k)))return false;
       for(const stage of stages){const v=input[mode][stage];if(!v||typeof v!=='object'||Array.isArray(v)||Object.keys(v).some(k=>!['whatsapp','email'].includes(k))||typeof v.whatsapp!=='boolean'||typeof v.email!=='boolean')return false;}
     }
     const d=input.fallback_minutes;
-    return Boolean(d&&typeof d==='object'&&!Array.isArray(d)&&Object.keys(d).length===4&&Object.entries({'4h':60,'2h':30,'1h':10,'5min':0}).every(([k,v])=>d[k]===v));
+    if(!d||typeof d!=='object'||Array.isArray(d)||Object.keys(d).length!==4||!['4h','2h','1h'].every(k=>Number.isSafeInteger(d[k])&&d[k]>=0&&d[k]<=1440)||d['5min']!==0)return false;
+    const t=input.stage_minutes;
+    if(!t||typeof t!=='object'||Array.isArray(t)||Object.keys(t).sort().join(',')!=='offline,online')return false;
+    for(const [mode,stages] of Object.entries({offline:['4h','2h','1h'],online:['4h','2h','1h','5min']})){
+      if(!t[mode]||Object.keys(t[mode]).sort().join(',')!==[...stages].sort().join(','))return false;
+      const values=stages.map(k=>t[mode][k]);
+      if(values.some(v=>!Number.isSafeInteger(v)||v<1||v>1440)||new Set(values).size!==values.length)return false;
+      if(values.some((v,i)=>i>0&&v>=values[i-1]))return false;
+      if(stages.some((k,i)=>k!=='5min'&&d[k]>=values[i]))return false;
+    }
+    return true;
   };
   // Supervised, explicit per-recipient WhatsApp opt-in attestation for existing bookings.
   // Verification alone is not consent. Never infer opt-in from a 24h window.
@@ -1054,7 +1064,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
     }catch(e){console.error('Smart manual test:',e.message);return fail(res,503,'Unable to complete manual test');}
   });
   app.get('/api/admin/booking/smart-reminders/settings',admin,async(req,res)=>{
-    try {const r=await pool.query(`SELECT settings->'smart_reminders' AS smart FROM booking_settings WHERE id=1`);const stored=r.rows[0]?.smart;res.json({success:true,data:smartValid(stored)?{...stored,master_enabled:false}:smartDefaults()});}
+    try {const r=await pool.query(`SELECT settings->'smart_reminders' AS smart FROM booking_settings WHERE id=1`);const stored=r.rows[0]?.smart;res.json({success:true,data:smartValid({...smartDefaults(),...stored,stage_minutes:stored?.stage_minutes||smartDefaults().stage_minutes})?{...smartDefaults(),...stored,master_enabled:false}:smartDefaults()});}
     catch(e){console.error('Smart reminder settings read:',e.message);fail(res,503,'Smart reminder settings unavailable');}
   });
   app.put('/api/admin/booking/smart-reminders/settings',admin,async(req,res)=>{
