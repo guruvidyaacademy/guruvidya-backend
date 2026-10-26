@@ -977,6 +977,34 @@ export function installBookingRoutes(app,pool,hooks={}) {
     const d=input.fallback_minutes;
     return Boolean(d&&typeof d==='object'&&!Array.isArray(d)&&Object.keys(d).length===4&&Object.entries({'4h':60,'2h':30,'1h':10,'5min':0}).every(([k,v])=>d[k]===v));
   };
+  // Supervised, explicit per-recipient WhatsApp opt-in attestation for existing bookings.
+  // Verification alone is not consent. Never infer opt-in from a 24h window.
+  app.post('/api/admin/booking/smart-reminders/record-consent',admin,async(req,res)=>{
+    const {booking_id,recipient_type,confirmation,evidence}=req.body||{};
+    if(confirmation!=='I_CONFIRMED_EXPLICIT_WHATSAPP_OPT_IN'||!['student','parent'].includes(recipient_type)||!Number.isSafeInteger(Number(booking_id))||Number(booking_id)<1||typeof evidence!=='string'||evidence.trim().length<15||evidence.trim().length>500)
+      return fail(res,400,'Explicit recipient opt-in attestation and evidence (15-500 characters) are required');
+    const db=await pool.connect();
+    try{
+      await db.query('BEGIN');
+      const r=await db.query(`SELECT id,student_mobile,parent_mobile,student_whatsapp_verified,parent_whatsapp_verified FROM student_bookings WHERE id=$1 FOR UPDATE`,[booking_id]);
+      if(!r.rowCount){await db.query('ROLLBACK');return fail(res,404,'Booking not found');}
+      const booking=r.rows[0],mobile=bookingPhone(booking[recipient_type+'_mobile']);
+      if(!/^\d{10}$/.test(mobile)||booking[recipient_type+'_whatsapp_verified']!==true){await db.query('ROLLBACK');return fail(res,409,'Recipient WhatsApp verification is required before recording consent');}
+      const old=await db.query(`SELECT revoked_at FROM booking_recipient_consents WHERE booking_id=$1 AND kind=$2 FOR UPDATE`,[booking_id,recipient_type]);
+      if(old.rows[0]?.revoked_at){await db.query('ROLLBACK');return fail(res,409,'Consent was revoked. Do not reinstate without a new independently verified opt-in process');}
+      // Source and timestamp are durable; the staff-provided evidence is kept in a separate audit log.
+      await db.query(`INSERT INTO booking_recipient_consents(booking_id,kind,mobile,verified,opted_in,source,verified_at,consented_at,revoked_at)
+        VALUES($1,$2,$3,TRUE,TRUE,'verified_staff_record',NOW(),NOW(),NULL)
+        ON CONFLICT(booking_id,kind) DO UPDATE SET mobile=EXCLUDED.mobile,verified=TRUE,opted_in=TRUE,source='verified_staff_record',verified_at=NOW(),consented_at=NOW()
+        WHERE booking_recipient_consents.revoked_at IS NULL`,[booking_id,recipient_type,mobile]);
+      await db.query(`CREATE TABLE IF NOT EXISTS booking_smart_reminder_consent_audit(
+        id BIGSERIAL PRIMARY KEY,booking_id BIGINT NOT NULL,recipient_type TEXT NOT NULL,
+        mobile_snapshot TEXT NOT NULL,evidence TEXT NOT NULL,recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+      await db.query(`INSERT INTO booking_smart_reminder_consent_audit(booking_id,recipient_type,mobile_snapshot,evidence) VALUES($1,$2,$3,$4)`,[booking_id,recipient_type,mobile,evidence.trim()]);
+      await db.query('COMMIT');return res.json({success:true,message:'Verified recipient opt-in recorded. This does not send a WhatsApp message.'});
+    }catch(e){await db.query('ROLLBACK').catch(()=>{});console.error('Smart reminder consent attestation:',e.message);return fail(res,503,'Unable to record consent');}
+    finally{db.release();}
+  });
   // Manually initiated reminder test only. Never schedules or auto-sends.
   // Separate audit table: test messages must not masquerade as scheduled reminders.
   app.get('/api/admin/booking/smart-reminders/manual-tests',admin,async(req,res)=>{
