@@ -171,6 +171,7 @@ export async function initBooking(pool) {
   await pool.query(`ALTER TABLE booking_internal_alert_deliveries ADD COLUMN IF NOT EXISTS whatsapp_click_history JSONB NOT NULL DEFAULT '[]'::jsonb`);
   await pool.query(`CREATE INDEX IF NOT EXISTS booking_internal_alert_button_message_idx ON booking_internal_alert_deliveries(button_message_id) WHERE button_message_id IS NOT NULL`);
   await pool.query(`CREATE INDEX IF NOT EXISTS booking_internal_alert_provider_message_idx ON booking_internal_alert_deliveries(provider_message_id) WHERE provider_message_id IS NOT NULL`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS booking_smart_reminder_manual_tests (id BIGSERIAL PRIMARY KEY,booking_id BIGINT NOT NULL,booking_ref TEXT NOT NULL,recipient_type TEXT NOT NULL,channel TEXT NOT NULL,stage TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'sending',provider_message_id TEXT,detail TEXT,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),completed_at TIMESTAMPTZ)`);
   // Smart Reminders Step 1: additive tracking schema only; never sends messages.
   // Run automatically at startup so deployment does not require a manual SQL step.
   // Fail open for legacy booking: a missing CREATE privilege must not break existing CRM.
@@ -976,6 +977,51 @@ export function installBookingRoutes(app,pool,hooks={}) {
     const d=input.fallback_minutes;
     return Boolean(d&&typeof d==='object'&&!Array.isArray(d)&&Object.keys(d).length===4&&Object.entries({'4h':60,'2h':30,'1h':10,'5min':0}).every(([k,v])=>d[k]===v));
   };
+  // Manually initiated reminder test only. Never schedules or auto-sends.
+  // Separate audit table: test messages must not masquerade as scheduled reminders.
+  app.get('/api/admin/booking/smart-reminders/manual-tests',admin,async(req,res)=>{
+    try {const r=await pool.query(`SELECT id,booking_id,booking_ref,recipient_type,channel,stage,status,created_at,completed_at FROM booking_smart_reminder_manual_tests ORDER BY id DESC LIMIT 30`);res.json({success:true,data:r.rows});}
+    catch(e){console.error('Smart manual tests list:',e.message);fail(res,503,'Manual test history unavailable');}
+  });
+  app.post('/api/admin/booking/smart-reminders/manual-test',admin,async(req,res)=>{
+    if(process.env.SMART_REMINDER_MANUAL_TEST_ENABLED!=='true')return fail(res,403,'Manual test is disabled on the server. Set SMART_REMINDER_MANUAL_TEST_ENABLED=true only for a supervised test.');
+    const {booking_id,recipient_type,channel,stage,confirm}=req.body||{};
+    if(confirm!=='SEND_REAL_TEST'||!['student','parent'].includes(recipient_type)||!['email','whatsapp'].includes(channel)||!['4h','2h','1h','5min'].includes(stage)||!Number.isSafeInteger(Number(booking_id))||Number(booking_id)<1)return fail(res,400,'Invalid manual test request');
+    if(typeof hooks.sendSmartReminderManualTest!=='function')return fail(res,503,'Manual test provider not configured');
+    let record;
+    try {
+      const r=await pool.query(`SELECT id,booking_ref,student_name,parent_name,student_mobile,parent_mobile,student_email,parent_email,course,mode,starts_at,status,appointment_revision FROM student_bookings WHERE id=$1`,[booking_id]);
+      record=r.rows[0];
+      if(!record)return fail(res,404,'Booking not found');
+      if(!['approved','confirmed','rescheduled'].includes(String(record.status).toLowerCase()))return fail(res,409,'Only active confirmed appointments may be tested');
+      if(new Date(record.starts_at).getTime()<=Date.now())return fail(res,409,'Appointment is not in the future');
+      if(stage==='5min'&&record.mode!=='online')return fail(res,400,'5-minute stage requires an online appointment');
+      const destination=record[recipient_type+'_'+(channel==='email'?'email':'mobile')];
+      if(!destination || (channel==='email'&&!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(destination)) || (channel==='whatsapp'&&!/^\d{10}$/.test(bookingPhone(destination))))return fail(res,409,'Selected recipient contact is missing or invalid');
+      // Consent is required for WhatsApp. Never use a UI window override to authorize a send.
+      if(channel==='whatsapp'){
+        const consent=await pool.query(`SELECT verified,opted_in,revoked_at,mobile FROM booking_recipient_consents WHERE booking_id=$1 AND kind=$2`,[booking_id,recipient_type]);
+        if(!consent.rowCount||!consent.rows[0].verified||!consent.rows[0].opted_in||consent.rows[0].revoked_at||bookingPhone(consent.rows[0].mobile)!==bookingPhone(destination))return fail(res,409,'WhatsApp recipient verified consent is required');
+      }
+      await pool.query(`CREATE TABLE IF NOT EXISTS booking_smart_reminder_manual_tests (id BIGSERIAL PRIMARY KEY,booking_id BIGINT NOT NULL,booking_ref TEXT NOT NULL,recipient_type TEXT NOT NULL,channel TEXT NOT NULL,stage TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'sending',provider_message_id TEXT,detail TEXT,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),completed_at TIMESTAMPTZ)`);
+      // Server-enforced 60-second cooldown prevents accidental double-click sends.
+      const db=await pool.connect();let test;
+      try {await db.query('BEGIN');await db.query('SELECT pg_advisory_xact_lock($1,$2)',[Number(booking_id),recipient_type==='student'?1:2]);
+        const recent=await db.query(`SELECT id FROM booking_smart_reminder_manual_tests WHERE booking_id=$1 AND recipient_type=$2 AND channel=$3 AND stage=$4 AND created_at>NOW()-INTERVAL '60 seconds' LIMIT 1`,[booking_id,recipient_type,channel,stage]);
+        if(recent.rowCount){await db.query('ROLLBACK');return fail(res,429,'Please wait 60 seconds before retrying this test');}
+        const inserted=await db.query(`INSERT INTO booking_smart_reminder_manual_tests(booking_id,booking_ref,recipient_type,channel,stage) VALUES($1,$2,$3,$4,$5) RETURNING id`,[booking_id,record.booking_ref,recipient_type,channel,stage]);test=inserted.rows[0];await db.query('COMMIT');
+      }catch(e){await db.query('ROLLBACK').catch(()=>{});throw e;}finally{db.release();}
+      // Never retry an unknown provider outcome automatically.
+      try {const result=await hooks.sendSmartReminderManualTest({booking:record,recipient_type,channel,stage,destination});
+        const success=result?.success===true;
+        await pool.query(`UPDATE booking_smart_reminder_manual_tests SET status=$2,provider_message_id=$3,detail=$4,completed_at=NOW() WHERE id=$1`,[test.id,success?'accepted':'failed',result?.message_id||null,String(result?.message||result?.status||'Provider response').slice(0,400)]);
+        return res.status(success?200:502).json({success,data:{id:test.id,status:success?'accepted':'failed',channel,recipient_type,stage},message:success?'Provider accepted manual test; delivery/read is not yet confirmed':'Provider did not accept manual test'});
+      }catch(sendError){console.error('Smart manual test provider error:',sendError.message);
+        await pool.query(`UPDATE booking_smart_reminder_manual_tests SET status='unknown',detail='Provider outcome unknown; verify provider logs before retry',completed_at=NOW() WHERE id=$1`,[test.id]).catch(()=>{});
+        return fail(res,502,'Provider outcome unknown. Check provider logs before retrying; do not resend immediately');
+      }
+    }catch(e){console.error('Smart manual test:',e.message);return fail(res,503,'Unable to complete manual test');}
+  });
   app.get('/api/admin/booking/smart-reminders/settings',admin,async(req,res)=>{
     try {const r=await pool.query(`SELECT settings->'smart_reminders' AS smart FROM booking_settings WHERE id=1`);const stored=r.rows[0]?.smart;res.json({success:true,data:smartValid(stored)?{...stored,master_enabled:false}:smartDefaults()});}
     catch(e){console.error('Smart reminder settings read:',e.message);fail(res,503,'Smart reminder settings unavailable');}

@@ -5776,7 +5776,30 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
   }
 }
 
-installBookingRoutes(app, pool, { onBookingCreated: onBookingCreatedWhatsApp, onBookingRescheduled: onBookingRescheduledWhatsApp, onBookingCancelled: onBookingCancelledRebook, onRebookLinkRequested: ({booking_ref,mobile})=>sendGuruVidyaRebookingCard({mobile},booking_ref), onInternalAppointmentEvent: sendInternalAppointmentAlert });
+installBookingRoutes(app, pool, { onBookingCreated: onBookingCreatedWhatsApp, onBookingRescheduled: onBookingRescheduledWhatsApp, onBookingCancelled: onBookingCancelledRebook, onRebookLinkRequested: ({booking_ref,mobile})=>sendGuruVidyaRebookingCard({mobile},booking_ref), onInternalAppointmentEvent: sendInternalAppointmentAlert,
+  sendSmartReminderManualTest: async ({booking,recipient_type,channel,stage,destination}) => {
+    const name=recipient_type==='student'?booking.student_name:(booking.parent_name||booking.student_name);
+    const when=new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',dateStyle:'medium',timeStyle:'short'}).format(new Date(booking.starts_at));
+    if(channel==='email'){
+      const subject=`Guruvidya | TEST ${stage} Appointment Reminder | ${booking.booking_ref}`;
+      const text=`Dear ${name},\n\nThis is a manually requested TEST appointment reminder from Guruvidya Academy Pvt. Ltd.\nBooking Ref: ${booking.booking_ref}\nCourse: ${booking.course}\nAppointment: ${when} IST\n\nThis is a test message. No action is required.`;
+      const result=await sendEmailWithFailover({to:destination,subject,text,html:`<div style="font-family:Arial,sans-serif"><h2>Guruvidya Academy Pvt. Ltd.</h2><p>TEST Appointment Reminder</p><p>${text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>')}</p></div>`});
+      return {success:true,message:'Email provider accepted test',message_id:result?.id||result?.messageId||null};
+    }
+    // Only the explicitly mapped approved template can be used. Never fall back to an unrelated template.
+    const envKey=`SMART_REMINDER_TEST_TEMPLATE_${String(booking.mode).toUpperCase()}_ID`;
+    const id=String(process.env[envKey]||'').trim();
+    if(!id)return {success:false,status:'template_not_configured',message:`Configure ${envKey} with the approved reminder Utility Template ID`};
+    const r=await pool.query(`SELECT botsailor_id,template_name,status,body_content,variable_map FROM whatsapp_templates WHERE botsailor_id=$1 LIMIT 1`,[id]);
+    const t=r.rows[0];
+    if(!t||String(t.status).toLowerCase()!=='approved'||!/remind/i.test(String(t.template_name||'')))return {success:false,status:'template_not_approved',message:'Approved reminder-specific BotSailor template not found'};
+    // A template requiring dynamic variables must have an explicitly verified mapping, not guessed positional substitutions.
+    let mapping=t.variable_map||{};if(typeof mapping==='string'){try{mapping=JSON.parse(mapping)}catch{mapping={}}}
+    const keys=[...new Set((JSON.stringify(mapping).match(/templateVariable-[A-Za-z0-9_-]+-\d+/g)||[]))];
+    if(keys.length)return {success:false,status:'variable_mapping_review',message:'Template variable mapping requires verification before live test'};
+    const result=await sendBotSailorTemplate({mobile:destination,name,course:booking.course},t,{});
+    return {success:result?.success===true,status:result?.status,message:result?.message||'BotSailor response',message_id:result?.wa_message_id||result?.message_id||result?.response?.message_id||null};
+  } });
 
 async function bootstrap() {
   try {
