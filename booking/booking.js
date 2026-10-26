@@ -1,3 +1,4 @@
+import { initSmartReminderTrackingSchema } from './smart-reminder-tracking-schema.js';
 import { revisionSetClause } from './smart-reminder-revision-gate.js';
 import { findMatchingBookingSlot } from './booking-slot-match.js';
 import { getBookingMonitoringSummary } from './booking-monitoring-summary.js';
@@ -170,6 +171,14 @@ export async function initBooking(pool) {
   await pool.query(`ALTER TABLE booking_internal_alert_deliveries ADD COLUMN IF NOT EXISTS whatsapp_click_history JSONB NOT NULL DEFAULT '[]'::jsonb`);
   await pool.query(`CREATE INDEX IF NOT EXISTS booking_internal_alert_button_message_idx ON booking_internal_alert_deliveries(button_message_id) WHERE button_message_id IS NOT NULL`);
   await pool.query(`CREATE INDEX IF NOT EXISTS booking_internal_alert_provider_message_idx ON booking_internal_alert_deliveries(provider_message_id) WHERE provider_message_id IS NOT NULL`);
+  // Smart Reminders Step 1: additive tracking schema only; never sends messages.
+  // Run automatically at startup so deployment does not require a manual SQL step.
+  // Fail open for legacy booking: a missing CREATE privilege must not break existing CRM.
+  try {
+    await initSmartReminderTrackingSchema(pool);
+  } catch (error) {
+    console.error('[Smart Reminders] Tracking schema unavailable; legacy booking stays active:', error.message);
+  }
 
 }
 
