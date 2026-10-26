@@ -8,3 +8,6 @@ export function planSmartReminderDisabled({ booking, expectedStartsAt, expectedR
 export async function runSmartReminderDisabledScheduler() {
   return { skipped: true, reason: 'transport_hold', claimed: 0, sent: 0 };
 }
+
+// Read-only Step 2 schedule preview. Never executes or claims the planned items.
+export { planSmartReminderStages } from './smart-reminder-stage-planner.js';
