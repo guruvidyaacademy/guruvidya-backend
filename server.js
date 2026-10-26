@@ -1,3 +1,4 @@
+import { startSmartReminderQueuePlanner } from './booking/smart-reminder-step4-queue-reconciler.js';
 import { internalActor, internalCaption, internalAlertHtml, internalAlertPng } from './booking/internal-team-alert-design.js';
 import { initInternalAlertReminderScheduler, runInternalAlertReminderScheduler } from './booking/internal-alert-reminder-scheduler.js';
 import { reconcileStaleBookingAttempts } from './booking/booking-stale-attempts.js';
@@ -5807,6 +5808,7 @@ async function bootstrap() {
     console.log("✅ PostgreSQL connected successfully");
     await initDatabase();
     await initBooking(pool);
+    startSmartReminderQueuePlanner(pool);
     await initInternalAlertReminderScheduler(pool);
     await loadPersistedConfig();
     // Refresh BotSailor flow list first so exported Flow Data can attach by exact flow title.
