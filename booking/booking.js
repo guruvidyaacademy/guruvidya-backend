@@ -1,3 +1,4 @@
+import { initSmartReminderJobSchema } from './smart-reminder-job-schema.js';
 import { initSmartReminderTrackingSchema } from './smart-reminder-tracking-schema.js';
 import { revisionSetClause } from './smart-reminder-revision-gate.js';
 import { findMatchingBookingSlot } from './booking-slot-match.js';
@@ -177,6 +178,7 @@ export async function initBooking(pool) {
   // Fail open for legacy booking: a missing CREATE privilege must not break existing CRM.
   try {
     await initSmartReminderTrackingSchema(pool);
+    await initSmartReminderJobSchema(pool);
   } catch (error) {
     console.error('[Smart Reminders] Tracking schema unavailable; legacy booking stays active:', error.message);
   }
