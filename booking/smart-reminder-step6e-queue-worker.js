@@ -19,11 +19,6 @@ export function startSmartReminderStep6EQueueWorker(pool, {intervalMs=60000}={})
       }
       const settingsRow=await pool.query("SELECT settings->'smart_reminders' AS smart FROM booking_settings WHERE id=1");
       const settings=settingsRow.rows[0]?.smart;
-      // Master OFF means no jobs are enqueued; it never enables dispatch.
-      if (settings?.master_enabled!==true) {
-        console.info('[Smart Reminders Step 6E] QUEUE HOLD',JSON.stringify({reason:'master_off',inserted:0,dispatchEnabled:false}));
-        return;
-      }
       // Cancel pending jobs whose booking was cancelled, trashed, or rescheduled.
       // This is queue housekeeping only: no provider calls or master unlock.
       const invalidated = await pool.query(`UPDATE booking_smart_reminder_jobs j
@@ -36,6 +31,13 @@ export function startSmartReminderStep6EQueueWorker(pool, {intervalMs=60000}={})
             OR j.starts_at<>b.starts_at)`);
       console.info('[Smart Reminders Step 6F] QUEUE INVALIDATION',
         JSON.stringify({cancelledPending:invalidated.rowCount||0,dispatchEnabled:false}));
+      // Always invalidate stale pending reminders, including while the master switch
+      // is OFF. Otherwise cancelled/rescheduled bookings can retain stale jobs.
+      // Master OFF means no jobs are enqueued; it never enables dispatch.
+      if (settings?.master_enabled!==true) {
+        console.info('[Smart Reminders Step 6E] QUEUE HOLD',JSON.stringify({reason:'master_off',inserted:0,dispatchEnabled:false}));
+        return;
+      }
       const now=new Date();
       const bookings=await pool.query(`SELECT id,status,mode,starts_at,appointment_revision,trashed_at,cancelled_at,
         student_mobile,parent_mobile,student_email,parent_email FROM student_bookings
