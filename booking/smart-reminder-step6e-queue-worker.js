@@ -55,12 +55,14 @@ export function startSmartReminderStep6EQueueWorker(pool, {intervalMs=60000}={})
         for (const item of plan.items) {
           planned++;
           // Atomic booking recheck prevents queuing after cancellation/reschedule.
+          // Reject expired reminder stages so delayed ticks never enqueue stale sends.
           const result=await pool.query(`INSERT INTO booking_smart_reminder_jobs
             (booking_id,appointment_revision,recipient,channel,stage,mode,starts_at,due_at,status)
             SELECT b.id,b.appointment_revision,$3,$4,$5,$6,b.starts_at,$7::timestamptz,'pending'
             FROM student_bookings b WHERE b.id=$1 AND b.appointment_revision=$2
             AND b.starts_at=$8::timestamptz AND b.status IN ('requested','approved','confirmed','rescheduled')
             AND b.trashed_at IS NULL AND b.cancelled_at IS NULL AND b.starts_at>NOW()
+            AND $7::timestamptz>NOW()
             ON CONFLICT (booking_id,appointment_revision,recipient,channel,stage) DO NOTHING
             RETURNING id`,[item.bookingId,item.appointmentRevision,item.recipient,item.channel,item.stage,item.mode,item.dueAt,item.startsAt]);
           inserted+=result.rowCount||0;
