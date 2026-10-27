@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {createSmartReminderApprovedTransport} from './smart-reminder-approved-transport.js';
+const job={bookingId:1,revision:1,recipient:'student',channel:'whatsapp',stage:'4h',mode:'offline',expectedStartsAt:'2026-11-01T10:00:00+05:30'};
+let calls=0;
+const deliver=createSmartReminderApprovedTransport({resolveApprovedTemplate:async()=>({approved:true,id:'approved-test',channel:'whatsapp',stage:'4h',mode:'offline'}),sendWhatsAppTemplate:async()=>{calls++;return {success:true,message_id:'test-receipt'}}});
+const gates={workerEnabled:true,masterEnabled:true,migrationVerified:true,consentVerified:true,bookingRevisionVerified:true,uniqueClaimVerified:true,approvedTemplateVerified:true};
+assert.equal((await deliver(job)).dispatched,false);
+assert.equal(calls,0);
+assert.equal((await deliver(job,gates)).dispatched,true);
+assert.equal(calls,1);
+const reject=createSmartReminderApprovedTransport({resolveApprovedTemplate:async()=>({approved:false,id:'x',channel:'whatsapp',stage:'4h',mode:'offline'}),sendWhatsAppTemplate:async()=>{calls++}});
+await assert.rejects(()=>reject(job,gates),/approved_reminder_template_missing/);
+assert.equal(calls,1);
+console.log('Smart reminder transport adapter tests passed');
