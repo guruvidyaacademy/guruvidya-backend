@@ -1,0 +1,6 @@
+STEP 6C: Read-only queue compatibility audit (NOT live scheduler activation).
+Baseline: 27 Oct 11:08 AM full backend ZIP.
+Copy server.js and booking/smart-reminder-step6c-queue-audit.js to the same relative paths in backend GitHub repository. Commit and deploy Render.
+In Render Environment add GV_SMART_REMINDER_STEP6C_AUDIT=1 and redeploy. Search Logs for [Smart Reminders Step 6C] QUEUE AUDIT.
+Send the full JSON audit result before enabling queue planning. Do NOT set GV_SMART_REMINDER_QUEUE_PLANNING or GV_SMART_REMINDER_REVISION_WRITES to enabled. Keep Master Automation OFF.
+This step reads schema/settings/appointments, previews job counts, and sends zero WhatsApp/email messages. It does not write jobs or turn on the worker.
