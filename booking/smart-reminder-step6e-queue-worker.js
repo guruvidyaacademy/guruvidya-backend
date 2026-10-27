@@ -31,8 +31,7 @@ export function startSmartReminderStep6EQueueWorker(pool, {intervalMs=60000}={})
             OR j.starts_at<>b.starts_at)`);
       console.info('[Smart Reminders Step 6F] QUEUE INVALIDATION',
         JSON.stringify({cancelledPending:invalidated.rowCount||0,dispatchEnabled:false}));
-      // Always invalidate stale pending reminders, including while the master switch
-      // is OFF. Otherwise cancelled/rescheduled bookings can retain stale jobs.
+      // Housekeeping must run even while the master is OFF. It never sends messages.
       // Master OFF means no jobs are enqueued; it never enables dispatch.
       if (settings?.master_enabled!==true) {
         console.info('[Smart Reminders Step 6E] QUEUE HOLD',JSON.stringify({reason:'master_off',inserted:0,dispatchEnabled:false}));
