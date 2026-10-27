@@ -1,0 +1,18 @@
+Guruvidya CRM Phase 3 – Step 6F QUEUE SAFETY ONLY
+
+IMPORTANT: THIS IS NOT THE FINAL LIVE AUTOMATION ZIP.
+This patch replaces booking/smart-reminder-step6e-queue-worker.js.
+It cancels stale PENDING queue jobs when appointments are cancelled,
+trashed or rescheduled, before inserting eligible new jobs.
+
+It does NOT enable Master Automation, claim jobs, or send WhatsApp/Email.
+Do NOT enable Master Automation yet.
+
+Deploy: copy booking/smart-reminder-step6e-queue-worker.js to the same
+path in the backend repo and redeploy Render.
+Existing GV_SMART_REMINDER_STEP6E_QUEUE=1 remains as-is.
+Expected log with Master OFF: QUEUE HOLD (no invalidation run).
+
+Live dispatch requires provider-specific integration, a transactional
+claim + delivery receipt state machine, verified opt-in, and deployment
+checks. Do not represent this patch as live-ready.

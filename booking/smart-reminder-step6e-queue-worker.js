@@ -24,6 +24,18 @@ export function startSmartReminderStep6EQueueWorker(pool, {intervalMs=60000}={})
         console.info('[Smart Reminders Step 6E] QUEUE HOLD',JSON.stringify({reason:'master_off',inserted:0,dispatchEnabled:false}));
         return;
       }
+      // Cancel pending jobs whose booking was cancelled, trashed, or rescheduled.
+      // This is queue housekeeping only: no provider calls or master unlock.
+      const invalidated = await pool.query(`UPDATE booking_smart_reminder_jobs j
+        SET status='cancelled', updated_at=NOW()
+        FROM student_bookings b
+        WHERE j.booking_id=b.id AND j.status='pending'
+          AND (b.status NOT IN ('requested','approved','confirmed','rescheduled')
+            OR b.trashed_at IS NOT NULL OR b.cancelled_at IS NOT NULL
+            OR j.appointment_revision<>b.appointment_revision
+            OR j.starts_at<>b.starts_at)`);
+      console.info('[Smart Reminders Step 6F] QUEUE INVALIDATION',
+        JSON.stringify({cancelledPending:invalidated.rowCount||0,dispatchEnabled:false}));
       const now=new Date();
       const bookings=await pool.query(`SELECT id,status,mode,starts_at,appointment_revision,trashed_at,cancelled_at,
         student_mobile,parent_mobile,student_email,parent_email FROM student_bookings
