@@ -1,3 +1,4 @@
+import { startSmartReminderStep6JReadinessMonitor } from './booking/smart-reminder-step6j-worker-readiness.js';
 import { startSmartReminderStep6EQueueWorker } from './booking/smart-reminder-step6e-queue-worker.js';
 import { auditSmartReminderQueueReadiness } from './booking/smart-reminder-step6c-queue-audit.js';
 import { ensureSmartReminderSettings } from './booking/smart-reminder-step6d-settings-init.js';
@@ -5841,6 +5842,7 @@ async function bootstrap() {
     }
     startSmartReminderQueuePlanner(pool);
     startSmartReminderStep6EQueueWorker(pool);
+    startSmartReminderStep6JReadinessMonitor(pool);
     await initInternalAlertReminderScheduler(pool);
     await loadPersistedConfig();
     // Refresh BotSailor flow list first so exported Flow Data can attach by exact flow title.
