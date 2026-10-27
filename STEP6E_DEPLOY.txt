@@ -1,0 +1,22 @@
+Guruvidya Smart Reminders — Step 6E (guarded queue-only worker)
+
+Changed files:
+  server.js
+  booking/smart-reminder-step6e-queue-worker.js
+
+Deploy both files into the existing backend repository, preserving all other files.
+Render Environment:
+  GV_SMART_REMINDER_STEP6E_QUEUE=1
+  Keep GV_SMART_REMINDER_STEP6C_AUDIT=1
+  Existing Step6D seed can be removed after successful initialization.
+
+Logs:
+  [Smart Reminders Step 6E] QUEUE HOLD — master OFF (expected)
+  [Smart Reminders Step 6E] QUEUE TICK — only if master ON
+  [Smart Reminders Step 6E] QUEUE ERROR — investigate, do not enable live sends
+
+SAFETY: This worker only writes pending jobs, and never sends WhatsApp or Email.
+Do not turn Master Automation ON for live messaging until sender/consent/idempotency
+integration is implemented and verified. The Render free instance can sleep, so
+it is not suitable for dependable scheduled delivery without an always-on worker.
+The worker checks every 60 seconds while the backend is running.
