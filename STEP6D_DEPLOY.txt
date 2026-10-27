@@ -1,0 +1,10 @@
+STEP 6D — Settings missing fix (NON-DESTRUCTIVE, NO LIVE SENDING)
+Baseline: 27 Oct 11:08 AM full ZIP + deployed Step 6C.
+Copy server.js and booking/smart-reminder-step6d-settings-init.js to the same relative paths in Backend GitHub.
+Render Environment: GV_SMART_REMINDER_STEP6D_SEED=1; keep GV_SMART_REMINDER_STEP6C_AUDIT=1. Save/deploy.
+Look for [Smart Reminders Step 6D] SETTINGS INIT and [Smart Reminders Step 6C] QUEUE AUDIT in Render Logs.
+Expected SETTINGS INIT action defaults_initialized or already_exists_preserved. Existing settings are never overwritten.
+After successful initialization remove GV_SMART_REMINDER_STEP6D_SEED or set to 0; redeploy is optional.
+If QUEUE AUDIT still fails, send full log and DO NOT enable scheduler.
+Do NOT enable GV_SMART_REMINDER_QUEUE_PLANNING or GV_SMART_REMINDER_REVISION_WRITES. Keep Master Automation OFF.
+No live WhatsApp/Email messages will be sent by this change.

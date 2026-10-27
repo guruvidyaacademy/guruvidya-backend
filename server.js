@@ -1,4 +1,5 @@
 import { auditSmartReminderQueueReadiness } from './booking/smart-reminder-step6c-queue-audit.js';
+import { ensureSmartReminderSettings } from './booking/smart-reminder-step6d-settings-init.js';
 import { runSmartReminderStep6Preflight } from './booking/smart-reminder-step6-preflight.js';
 import { startSmartReminderQueuePlanner } from './booking/smart-reminder-step4-queue-reconciler.js';
 import { internalActor, internalCaption, internalAlertHtml, internalAlertPng } from './booking/internal-team-alert-design.js';
@@ -5821,6 +5822,14 @@ async function bootstrap() {
     console.log("✅ PostgreSQL connected successfully");
     await initDatabase();
     await initBooking(pool);
+    if (process.env.GV_SMART_REMINDER_STEP6D_SEED === '1') {
+      try {
+        const report = await ensureSmartReminderSettings(pool);
+        console.info('[Smart Reminders Step 6D] SETTINGS INIT', JSON.stringify(report));
+      } catch (error) {
+        console.error('[Smart Reminders Step 6D] SETTINGS INIT ERROR', String(error?.message || error));
+      }
+    }
     if (process.env.GV_SMART_REMINDER_STEP6C_AUDIT === '1') {
       try {
         const report = await auditSmartReminderQueueReadiness(pool);
