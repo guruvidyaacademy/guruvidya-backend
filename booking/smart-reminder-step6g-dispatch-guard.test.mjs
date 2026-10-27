@@ -1,0 +1,15 @@
+import {test} from 'node:test';
+import {strict as assert} from 'node:assert';
+import {checkSmartReminderDispatchEligibility as check} from './smart-reminder-step6g-dispatch-guard.js';
+const booking={id:10,appointment_revision:2,status:'confirmed',mode:'online',starts_at:'2026-11-01T12:00:00Z'};
+const job={booking_id:10,appointment_revision:2,status:'claimed',recipient:'student',channel:'email',stage:'1h',mode:'online',starts_at:booking.starts_at,due_at:'2026-11-01T11:00:00Z'};
+const settings={master_enabled:true,online:{'1h':{email:true}}};
+const args={booking,job,settings,now:'2026-11-01T11:01:00Z',providerReady:true};
+test('holds when master off',()=>assert.equal(check({...args,settings:{...settings,master_enabled:false}}).reason,'master_off'));
+test('holds on revision mismatch',()=>assert.equal(check({...args,booking:{...booking,appointment_revision:3}}).reason,'booking_revision_mismatch'));
+test('holds on cancelled booking',()=>assert.equal(check({...args,booking:{...booking,status:'cancelled'}}).reason,'booking_inactive'));
+test('holds unclaimed job',()=>assert.equal(check({...args,job:{...job,status:'pending'}}).reason,'job_not_claimed'));
+test('holds unverified whatsapp consent',()=>assert.equal(check({...args,job:{...job,channel:'whatsapp'},settings:{...settings,online:{'1h':{whatsapp:true}}}}).reason,'consent_unverified'));
+test('holds when provider unverified',()=>assert.equal(check({...args,providerReady:false}).reason,'provider_not_verified'));
+test('holds after appointment',()=>assert.equal(check({...args,now:'2026-11-01T12:01:00Z'}).reason,'outside_delivery_window'));
+test('allows eligible email but does not send',()=>assert.deepEqual(check(args),{eligible:true,reason:'guard_passed_not_sent'}));
