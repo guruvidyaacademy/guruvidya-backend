@@ -5897,10 +5897,10 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
 // Smart Reminder OPEN-window manual test: signed, recipient-scoped attendance link.
 // Isolated from booking management tokens, scheduled reminders and other webhook flows.
 function smartOpenAttendSecret(){return String(process.env.SMART_REMINDER_ACTION_SECRET||'').trim();}
-function smartOpenAttendUrl(booking,recipientType){
+function smartOpenAttendUrl(booking,recipientType,manualTestId=null){
   const secret=smartOpenAttendSecret();
   if(secret.length<32)throw new Error('SMART_REMINDER_ACTION_SECRET must be at least 32 characters');
-  const data=Buffer.from(JSON.stringify({b:String(booking.id),r:recipientType,v:String(booking.appointment_revision??''),exp:Date.now()+48*3600000})).toString('base64url');
+  const data=Buffer.from(JSON.stringify({b:String(booking.id),r:recipientType,v:String(booking.appointment_revision??''),...(manualTestId==null?{}:{mt:String(manualTestId)}),exp:Date.now()+48*3600000})).toString('base64url');
   const sig=createHmac('sha256',secret).update(data).digest('base64url');
   const base=String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'');
   return `${base}/api/public/booking/smart-reminder/open-attend?t=${encodeURIComponent(data)}&s=${encodeURIComponent(sig)}`;
@@ -5988,11 +5988,11 @@ async function smartOpenAttendVerify(req){
   const expected=createHmac('sha256',secret).update(t).digest(),actual=Buffer.from(sig,'base64url');
   if(actual.length!==expected.length||!timingSafeEqual(expected,actual))return null;
   const payload=JSON.parse(Buffer.from(t,'base64url').toString('utf8'));
-  if(!/^[1-9][0-9]*$/.test(String(payload.b))||!['student','parent'].includes(payload.r)||!Number.isSafeInteger(payload.exp)||payload.exp<Date.now()||payload.exp>Date.now()+48*3600000)return null;
+  if(!/^[1-9][0-9]*$/.test(String(payload.b))||!['student','parent'].includes(payload.r)||!Number.isSafeInteger(payload.exp)||payload.exp<Date.now()||payload.exp>Date.now()+48*3600000||(payload.mt!=null&&!/^[1-9][0-9]*$/.test(String(payload.mt))))return null;
   const found=await pool.query('SELECT id,booking_ref,student_name,parent_name,status,appointment_revision,starts_at FROM student_bookings WHERE id=$1 LIMIT 1',[payload.b]);
   const b=found.rows[0];
   if(!b||!['approved','confirmed','rescheduled'].includes(String(b.status).toLowerCase())||String(b.appointment_revision??'')!==payload.v||new Date(b.starts_at).getTime()<=Date.now())return null;
-  return {booking:b,recipient:payload.r,t,sig};
+  return {booking:b,recipient:payload.r,manualTestId:payload.mt||null,t,sig};
 }
 app.get('/api/public/booking/smart-reminder/open-attend',async(req,res)=>{
   try{
@@ -6000,10 +6000,7 @@ app.get('/api/public/booking/smart-reminder/open-attend',async(req,res)=>{
     res.set('Cache-Control','no-store');
     if(!valid)return res.status(403).type('text/plain').send('This attendance link is invalid or expired.');
     const esc=x=>String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-    // A deliberate WhatsApp link tap opens this page. Browser JS submits the existing
-    // POST confirmation once, avoiding a second tap and any WhatsApp reply message.
-    // Do not record attendance in GET: link previews / crawlers can prefetch GET URLs.
-    return res.type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Guruvidya Attendance</title><style>body{font:16px Arial,sans-serif;background:#eef5ff;color:#153463;margin:0;padding:35px 16px}.card{max-width:480px;margin:35px auto;background:#fff;border-radius:18px;padding:32px 25px;text-align:center;box-shadow:0 10px 30px #d9e4f4}h2{margin-top:0}.muted{color:#63738a;font-size:14px}button{padding:13px 22px;background:#1457a8;color:#fff;border:0;border-radius:8px;font-weight:bold;cursor:pointer}#retry{display:none}</style></head><body><main class="card"><h2>Guruvidya Academy</h2><p id="status" role="status" aria-live="polite">Recording your attendance confirmation…</p><p class="muted">Booking: <strong>${esc(valid.booking.booking_ref)}</strong></p><form id="confirm" method="POST" action="/api/public/booking/smart-reminder/open-attend"><input type="hidden" name="t" value="${esc(valid.t)}"><input type="hidden" name="s" value="${esc(valid.sig)}"><button id="retry" type="submit">Confirm Attendance</button></form><p class="muted">This will not reschedule or cancel your booking.</p></main><script>(function(){var form=document.getElementById('confirm');var retry=document.getElementById('retry');var status=document.getElementById('status');if(!window.fetch){status.textContent='Please confirm your attendance.';retry.style.display='inline-block';return;}fetch(form.action,{method:'POST',body:new URLSearchParams(new FormData(form)),credentials:'same-origin',redirect:'follow',referrerPolicy:'no-referrer',headers:{'Content-Type':'application/x-www-form-urlencoded'}}).then(async function(r){if(!r.ok)throw Error('Unable to confirm');var html=await r.text();document.open();document.write(html);document.close();}).catch(function(){status.textContent='We could not confirm automatically. Please use the button below.';retry.style.display='inline-block';});})();</script><noscript><style>#retry{display:inline-block!important}</style><p>Please select Confirm Attendance to continue.</p></noscript></body></html>`);
+    return res.type('html').send(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Guruvidya Attendance</title></head><body style="font:16px Arial,sans-serif;max-width:480px;margin:40px auto;padding:20px"><h2>Guruvidya Academy</h2><p>Confirm attendance for booking <strong>${esc(valid.booking.booking_ref)}</strong>?</p><form method="POST" action="/api/public/booking/smart-reminder/open-attend"><input type="hidden" name="t" value="${esc(valid.t)}"><input type="hidden" name="s" value="${esc(valid.sig)}"><button style="padding:14px;background:#1457a8;color:white;border:0;border-radius:6px" type="submit">Yes, I'll Attend</button></form><p>This will not reschedule or cancel your booking.</p></body></html>`);
   }catch(e){console.error('Smart OPEN attend view:',e.message);return res.status(400).send('Invalid link');}
 });
 app.post('/api/public/booking/smart-reminder/open-attend',express.urlencoded({extended:false,limit:'2kb'}),async(req,res)=>{
@@ -6013,7 +6010,12 @@ app.post('/api/public/booking/smart-reminder/open-attend',express.urlencoded({ex
     if(!valid)return res.status(403).send('This attendance link is invalid or expired.');
     // Attendance is recorded only after the recipient explicitly confirms on this page.
     // The booking status and existing booking management token are never modified.
-    const test=await pool.query(`SELECT id FROM booking_smart_reminder_manual_tests WHERE booking_id=$1 AND recipient_type=$2 AND channel='whatsapp' AND status='accepted' AND created_at>=NOW()-INTERVAL '48 hours' ORDER BY id DESC LIMIT 1`,[valid.booking.id,valid.recipient]);
+    // New links carry the exact signed manual-test ID, preventing a later stage's
+    // test from receiving this acknowledgement. Legacy issued links retain their
+    // previous latest-test lookup for backwards compatibility.
+    const test=valid.manualTestId
+      ?await pool.query(`SELECT id FROM booking_smart_reminder_manual_tests WHERE id=$1 AND booking_id=$2 AND recipient_type=$3 AND channel='whatsapp' AND status='accepted' AND created_at>=NOW()-INTERVAL '48 hours' LIMIT 1`,[valid.manualTestId,valid.booking.id,valid.recipient])
+      :await pool.query(`SELECT id FROM booking_smart_reminder_manual_tests WHERE booking_id=$1 AND recipient_type=$2 AND channel='whatsapp' AND status='accepted' AND created_at>=NOW()-INTERVAL '48 hours' ORDER BY id DESC LIMIT 1`,[valid.booking.id,valid.recipient]);
     if(!test.rowCount)return res.status(409).send('No matching recent manual reminder test.');
     await pool.query(`INSERT INTO booking_smart_reminder_manual_clicks(manual_test_id,provider_event_id,button_key) VALUES($1,$2,'yes_attend') ON CONFLICT(manual_test_id,provider_event_id) DO NOTHING`,[test.rows[0].id,'open-attend:'+valid.sig]);
     return res.type('html').send('<!doctype html><html><meta name="viewport" content="width=device-width,initial-scale=1"><body style="font:16px Arial,sans-serif;max-width:480px;margin:50px auto;padding:20px"><h2>Attendance confirmed</h2><p>Thank you. Your response has been recorded for this reminder.</p></body></html>');
@@ -6023,7 +6025,7 @@ app.post('/api/public/booking/smart-reminder/open-attend',express.urlencoded({ex
 installSmartReminderTestMediaRoute(app, pool);
 
 installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminderBookingSlots=fn;}, verifySmartReminderAction:smartOpenActionVerify, onBookingCreated: onBookingCreatedWhatsApp, onBookingRescheduled: onBookingRescheduledWhatsApp, onBookingCancelled: onBookingCancelledRebook, onRebookLinkRequested: ({booking_ref,mobile})=>sendGuruVidyaRebookingCard({mobile},booking_ref), onInternalAppointmentEvent: sendInternalAppointmentAlert,
-  sendSmartReminderManualTest: async ({booking,recipient_type,channel,stage,destination}) => {
+  sendSmartReminderManualTest: async ({booking,recipient_type,channel,stage,destination,manual_test_id}) => {
     const name=recipient_type==='student'?booking.student_name:(booking.parent_name||booking.student_name);
     const when=new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',dateStyle:'medium',timeStyle:'short'}).format(new Date(booking.starts_at));
     if(channel==='email'){
@@ -6039,7 +6041,7 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
       const last=win.rows[0]?.last_incoming;
       if(!last||Date.now()-new Date(last).getTime()>=24*3600000)return {success:false,status:'window_closed',message:'Real WhatsApp 24-hour window is CLOSED; OPEN manual test not sent'};
       let attend,media;
-      try{attend=smartOpenAttendUrl(booking,recipient_type);media=await createSmartReminderTestMedia(pool,booking,String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,''));}
+      try{attend=smartOpenAttendUrl(booking,recipient_type,manual_test_id);media=await createSmartReminderTestMedia(pool,booking,String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,''));}
       catch(e){return {success:false,status:'open_attend_setup_error',message:e.message};}
       const rescheduleLink=smartOpenActionUrl(booking,recipient_type,'reschedule');
       const cancelLink=smartOpenActionUrl(booking,recipient_type,'cancel');

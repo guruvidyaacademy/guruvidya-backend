@@ -1131,7 +1131,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
         const inserted=await db.query(`INSERT INTO booking_smart_reminder_manual_tests(booking_id,booking_ref,recipient_type,channel,stage) VALUES($1,$2,$3,$4,$5) RETURNING id`,[booking_id,record.booking_ref,recipient_type,channel,stage]);test=inserted.rows[0];await db.query('COMMIT');
       }catch(e){await db.query('ROLLBACK').catch(()=>{});throw e;}finally{db.release();}
       // Never retry an unknown provider outcome automatically.
-      try {const result=await hooks.sendSmartReminderManualTest({booking:record,recipient_type,channel,stage,destination});
+      try {const result=await hooks.sendSmartReminderManualTest({booking:record,recipient_type,channel,stage,destination,manual_test_id:test.id});
         const success=result?.success===true;
         await pool.query(`UPDATE booking_smart_reminder_manual_tests SET status=$2,provider_message_id=$3,detail=$4,completed_at=NOW() WHERE id=$1`,[test.id,success?'accepted':'failed',result?.message_id||null,String(result?.message||result?.status||'Provider response').slice(0,400)]);
         return res.status(success?200:502).json({success,data:{id:test.id,status:success?'accepted':'failed',channel,recipient_type,stage},message:success?'Provider accepted manual test; delivery/read is not yet confirmed':'Provider did not accept manual test'});
