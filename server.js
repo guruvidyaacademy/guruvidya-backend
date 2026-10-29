@@ -5894,6 +5894,52 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
   }
 }
 
+// Smart Reminder OPEN-window manual test: signed, recipient-scoped attendance link.
+// Isolated from booking management tokens, scheduled reminders and other webhook flows.
+function smartOpenAttendSecret(){return String(process.env.SMART_REMINDER_ACTION_SECRET||'').trim();}
+function smartOpenAttendUrl(booking,recipientType){
+  const secret=smartOpenAttendSecret();
+  if(secret.length<32)throw new Error('SMART_REMINDER_ACTION_SECRET must be at least 32 characters');
+  const data=Buffer.from(JSON.stringify({b:String(booking.id),r:recipientType,v:String(booking.appointment_revision??''),exp:Date.now()+48*3600000})).toString('base64url');
+  const sig=createHmac('sha256',secret).update(data).digest('base64url');
+  const base=String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'');
+  return `${base}/api/public/booking/smart-reminder/open-attend?t=${encodeURIComponent(data)}&s=${encodeURIComponent(sig)}`;
+}
+async function smartOpenAttendVerify(req){
+  const secret=smartOpenAttendSecret(),t=String(req.query.t||req.body?.t||''),sig=String(req.query.s||req.body?.s||'');
+  if(secret.length<32||t.length>600||!(/^[A-Za-z0-9_-]+$/.test(t))||!(/^[A-Za-z0-9_-]+$/.test(sig)))return null;
+  const expected=createHmac('sha256',secret).update(t).digest(),actual=Buffer.from(sig,'base64url');
+  if(actual.length!==expected.length||!timingSafeEqual(expected,actual))return null;
+  const payload=JSON.parse(Buffer.from(t,'base64url').toString('utf8'));
+  if(!/^[1-9][0-9]*$/.test(String(payload.b))||!['student','parent'].includes(payload.r)||!Number.isSafeInteger(payload.exp)||payload.exp<Date.now()||payload.exp>Date.now()+48*3600000)return null;
+  const found=await pool.query('SELECT id,booking_ref,student_name,parent_name,status,appointment_revision,starts_at FROM student_bookings WHERE id=$1 LIMIT 1',[payload.b]);
+  const b=found.rows[0];
+  if(!b||!['approved','confirmed','rescheduled'].includes(String(b.status).toLowerCase())||String(b.appointment_revision??'')!==payload.v||new Date(b.starts_at).getTime()<=Date.now())return null;
+  return {booking:b,recipient:payload.r,t,sig};
+}
+app.get('/api/public/booking/smart-reminder/open-attend',async(req,res)=>{
+  try{
+    const valid=await smartOpenAttendVerify(req);
+    res.set('Cache-Control','no-store');
+    if(!valid)return res.status(403).type('text/plain').send('This attendance link is invalid or expired.');
+    const esc=x=>String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    return res.type('html').send(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Guruvidya Attendance</title></head><body style="font:16px Arial,sans-serif;max-width:480px;margin:40px auto;padding:20px"><h2>Guruvidya Academy</h2><p>Confirm attendance for booking <strong>${esc(valid.booking.booking_ref)}</strong>?</p><form method="POST" action="/api/public/booking/smart-reminder/open-attend"><input type="hidden" name="t" value="${esc(valid.t)}"><input type="hidden" name="s" value="${esc(valid.sig)}"><button style="padding:14px;background:#1457a8;color:white;border:0;border-radius:6px" type="submit">Yes, I'll Attend</button></form><p>This will not reschedule or cancel your booking.</p></body></html>`);
+  }catch(e){console.error('Smart OPEN attend view:',e.message);return res.status(400).send('Invalid link');}
+});
+app.post('/api/public/booking/smart-reminder/open-attend',express.urlencoded({extended:false,limit:'2kb'}),async(req,res)=>{
+  try{
+    const valid=await smartOpenAttendVerify(req);
+    res.set('Cache-Control','no-store');
+    if(!valid)return res.status(403).send('This attendance link is invalid or expired.');
+    // Attendance is recorded only after the recipient explicitly confirms on this page.
+    // The booking status and existing booking management token are never modified.
+    const test=await pool.query(`SELECT id FROM booking_smart_reminder_manual_tests WHERE booking_id=$1 AND recipient_type=$2 AND channel='whatsapp' AND status='accepted' AND created_at>=NOW()-INTERVAL '48 hours' ORDER BY id DESC LIMIT 1`,[valid.booking.id,valid.recipient]);
+    if(!test.rowCount)return res.status(409).send('No matching recent manual reminder test.');
+    await pool.query(`INSERT INTO booking_smart_reminder_manual_clicks(manual_test_id,provider_event_id,button_key) VALUES($1,$2,'yes_attend') ON CONFLICT(manual_test_id,provider_event_id) DO NOTHING`,[test.rows[0].id,'open-attend:'+valid.sig]);
+    return res.type('html').send('<!doctype html><html><meta name="viewport" content="width=device-width,initial-scale=1"><body style="font:16px Arial,sans-serif;max-width:480px;margin:50px auto;padding:20px"><h2>Attendance confirmed</h2><p>Thank you. Your response has been recorded for this reminder.</p></body></html>');
+  }catch(e){console.error('Smart OPEN attend confirm:',e.message);return res.status(503).send('Unable to record confirmation. Please retry later.');}
+});
+
 installSmartReminderTestMediaRoute(app, pool);
 
 installBookingRoutes(app, pool, { onBookingCreated: onBookingCreatedWhatsApp, onBookingRescheduled: onBookingRescheduledWhatsApp, onBookingCancelled: onBookingCancelledRebook, onRebookLinkRequested: ({booking_ref,mobile})=>sendGuruVidyaRebookingCard({mobile},booking_ref), onInternalAppointmentEvent: sendInternalAppointmentAlert,
@@ -5906,34 +5952,18 @@ installBookingRoutes(app, pool, { onBookingCreated: onBookingCreatedWhatsApp, on
       const result=await sendEmailWithFailover({to:destination,subject,text,html:`<div style="font-family:Arial,sans-serif"><h2>Guruvidya Academy Pvt. Ltd.</h2><p>TEST Appointment Reminder</p><p>${text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>')}</p></div>`});
       return {success:true,message:'Email provider accepted test',message_id:result?.id||result?.messageId||null};
     }
-    // Opt-in OPEN-window manual test only. Existing CLOSED Utility Template path remains unchanged.
-    // A real inbound customer message within 24h is mandatory; never trust test overrides.
-    if(process.env.SMART_REMINDER_MANUAL_OPEN_WINDOW_TEST==='true'){
-      const national=String(destination||'').replace(/\D/g,'').slice(-10);
-      const windowResult=await pool.query(`SELECT GREATEST(
-        COALESCE((SELECT MAX(received_at) FROM whatsapp_window_events WHERE mobile IN ($1,$2)),'epoch'::timestamptz),
-        COALESCE((SELECT MAX(last_customer_message_at) FROM leads WHERE regexp_replace(COALESCE(mobile,''),'[^0-9]','','g') IN ($1,$2)),'epoch'::timestamptz)
-      ) AS last_incoming`,['91'+national,national]);
-      const last=new Date(windowResult.rows[0]?.last_incoming||0).getTime();
-      if(!Number.isFinite(last)||last>Date.now()+60000||Date.now()-last>=24*60*60*1000)
-        return {success:false,status:'real_window_closed',message:'Actual WhatsApp 24-hour window is CLOSED. OPEN test not sent; approved Utility Template untouched.'};
-      await loadPersistedConfig();
-      const publicBase=String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').trim().replace(/\/$/,'');
-      let mediaUrl;
-      try{mediaUrl=await createSmartReminderTestMedia(pool,booking,publicBase)}
-      catch(err){return {success:false,status:'reminder_image_preparation_failed',message:String(err?.message||err)}}
-      const caption=`Dear ${name},\n\nThis is your Guruvidya ${stage} counselling reminder (manual test).\nCourse: ${booking.course}\nDate & Time: ${when} IST\nMode: ${booking.mode}\nBooking Ref: ${booking.booking_ref}\n\nPlease choose one option below.`;
-      const buttons=[
-        {id:'gv_smart_attend',title:"Yes, I'll Attend"},
-        {id:'gv_smart_reschedule',title:'Reschedule'},
-        {id:'gv_smart_cancel',title:'Cancel Appointment'}
-      ];
-      const result=await sendBotSailorReplyButtons(
-        {mobile:destination,name,course:booking.course},caption,buttons,
-        'smart_reminder_manual_open_image_buttons',{mediaUrl,mediaType:'image'}
-      );
-      console.info('SMART REMINDER OPEN MANUAL TEST',{accepted:result?.success===true,mode:booking.mode,stage,recipient_type,hasMessageId:!!bookingProviderMessageId(result)});
-      return {success:result?.success===true,status:result?.status,message:result?.message||'BotSailor OPEN interactive result',message_id:bookingProviderMessageId(result)||null};
+    if(process.env.SMART_REMINDER_MANUAL_OPEN_WINDOW_TEST==='true' && stage==='4h'){
+      // Check the actual 24-hour customer service window; do not use admin test overrides.
+      const phone=botSailorPhone(destination),ten=phone.replace(/^91(?=\d{10}$)/,'');
+      const win=await pool.query(`SELECT MAX(received_at) AS last_incoming FROM whatsapp_window_events WHERE mobile IN ($1,$2)`,[phone,ten]);
+      const last=win.rows[0]?.last_incoming;
+      if(!last||Date.now()-new Date(last).getTime()>=24*3600000)return {success:false,status:'window_closed',message:'Real WhatsApp 24-hour window is CLOSED; OPEN manual test not sent'};
+      let attend,media;
+      try{attend=smartOpenAttendUrl(booking,recipient_type);media=await createSmartReminderTestMedia(pool,booking,String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,''));}
+      catch(e){return {success:false,status:'open_attend_setup_error',message:e.message};}
+      const caption=`Guruvidya Academy | TEST ${stage} Reminder\nDear ${name},\nBooking: ${booking.booking_ref}\nCourse: ${booking.course}\nTime: ${when} IST\n\nConfirm attendance securely:\n${attend}\n\nReschedule/Cancel links are not enabled in this Step 5 test.`;
+      const sent=await sendBotSailorReplyButtons({mobile:destination,name,course:booking.course},caption,[{id:'gv_smart_attend',title:"Yes, I'll Attend"},{id:'gv_smart_reschedule',title:'Reschedule'},{id:'gv_smart_cancel',title:'Cancel Appointment'}],'smart_reminder_open_attend_step5',{mediaUrl:media,mediaType:'image'});
+      return {success:sent?.success===true,status:sent?.status,message:sent?.message||'BotSailor response',message_id:bookingProviderMessageId(sent)};
     }
     // Only the explicitly mapped approved template can be used. Never fall back to an unrelated template.
     const envKey=`SMART_REMINDER_TEST_TEMPLATE_${String(booking.mode).toUpperCase()}_ID`;
