@@ -1009,10 +1009,12 @@ export function installBookingRoutes(app,pool,hooks={}) {
         VALUES($1,$2,$3,TRUE,TRUE,'verified_staff_record',NOW(),NOW(),NULL)
         ON CONFLICT(booking_id,kind) DO UPDATE SET mobile=EXCLUDED.mobile,verified=TRUE,opted_in=TRUE,source='verified_staff_record',verified_at=NOW(),consented_at=NOW()
         WHERE booking_recipient_consents.revoked_at IS NULL`,[booking_id,recipient_type,mobile]);
-      await db.query(`CREATE TABLE IF NOT EXISTS booking_smart_reminder_consent_audit(
-        id BIGSERIAL PRIMARY KEY,booking_id BIGINT NOT NULL,recipient_type TEXT NOT NULL,
-        mobile_snapshot TEXT NOT NULL,evidence TEXT NOT NULL,recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
-      await db.query(`INSERT INTO booking_smart_reminder_consent_audit(booking_id,recipient_type,mobile_snapshot,evidence) VALUES($1,$2,$3,$4)`,[booking_id,recipient_type,mobile,evidence.trim()]);
+      // Use the existing durable booking audit table. Creating a new table inside
+      // a live consent request can fail under restricted PostgreSQL roles and
+      // rolls back the otherwise valid consent update.
+      await db.query(`INSERT INTO booking_events(booking_id,actor,action,details)
+        VALUES($1,'booking_admin','smart_reminder_whatsapp_opt_in_recorded',$2::jsonb)`,
+        [booking_id,JSON.stringify({recipient_type,mobile_snapshot:mobile,evidence:evidence.trim(),source:'verified_staff_record'})]);
       await db.query('COMMIT');return res.json({success:true,message:'Verified recipient opt-in recorded. This does not send a WhatsApp message.'});
     }catch(e){await db.query('ROLLBACK').catch(()=>{});console.error('Smart reminder consent attestation:',e.message);return fail(res,503,'Unable to record consent');}
     finally{db.release();}
