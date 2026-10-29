@@ -680,11 +680,16 @@ export function installBookingRoutes(app,pool,hooks={}) {
     res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer','Pragma':'no-cache'});
     if(!smartAuth && !/^[a-f0-9]{64}$/i.test(String(req.body?.token||'')))return fail(res,404,'Booking not found');
     if(!validateLifecycleAction(req.body.action,['confirm','cancel','reschedule']))return fail(res,400,'Invalid action');
+    let lifecyclePhase='connect';
     const db=await pool.connect();try{
+      lifecyclePhase='begin';
       await db.query('BEGIN');
+      lifecyclePhase='identity';
       const identity=smartAuth ? await db.query('SELECT id FROM student_bookings WHERE id=$1 AND booking_ref=$2 AND appointment_revision IS NOT DISTINCT FROM $3',[smartAuth.booking.id,smartAuth.booking.booking_ref,smartAuth.booking.appointment_revision]) : await db.query('SELECT id FROM student_bookings WHERE booking_ref=$1 AND token_hash=$2',[req.params.ref,hash(String(req.body.token||''))]);
       if(!identity.rowCount){await db.query('ROLLBACK');return fail(res,404,'Booking not found');}
+      lifecyclePhase='dispatch_lock';
       await db.query(bookingDispatchLockSql(true),bookingDispatchLockArgs(identity.rows[0].id));
+      lifecyclePhase='booking_lock';
       const r=await db.query('SELECT * FROM student_bookings WHERE id=$1 FOR UPDATE',[identity.rows[0].id]);
       if(!r.rowCount){await db.query('ROLLBACK');return fail(res,404,'Booking not found');}
       const b=r.rows[0];if(smartAuth && (String(b.appointment_revision??'')!==String(smartAuth.booking.appointment_revision??'') || smartAuth.action!==req.body.action)){await db.query('ROLLBACK');return fail(res,409,'Reminder link is no longer valid');}if(!active.includes(b.status)){await db.query('ROLLBACK');return fail(res,409,'Booking is no longer active');}
@@ -692,13 +697,17 @@ export function installBookingRoutes(app,pool,hooks={}) {
       if(req.body.action==='reschedule'){
         const slotError=validateLifecycleSlot(req.body.starts_at,b.starts_at);
         if(slotError){await db.query('ROLLBACK');return fail(res,400,slotError);}
+        lifecyclePhase='counsellor_lock';
         await db.query('SELECT pg_advisory_xact_lock($1)',[Number(b.counsellor_id)]);
         const date=new Date(new Date(req.body.starts_at).getTime()+330*60000).toISOString().slice(0,10);
         // Temporarily ignore own slot by excluding current booking in availability query is not needed for a different slot.
+        lifecyclePhase='slot_lookup';
         const available=await slots(db,date,b.mode,b.counsellor_id,{excludeBookingId:Number(b.id)});
         const slot=findMatchingBookingSlot(available,req.body.starts_at);
         if(!slot){await db.query('ROLLBACK');return fail(res,409,'New slot unavailable');}
+        lifecyclePhase='settings';
         const cfg=await settings();
+        lifecyclePhase='reschedule_update';
         await db.query(`UPDATE student_bookings SET starts_at=$2,ends_at=$3,status=$4,customer_response=$5,response_at=NOW(),admin_alert_sent_at=NULL,admin_alert_ack_at=NULL,admin_alert_ack_note=NULL,updated_at=NOW()${revisionSetClause(b,'reschedule')} WHERE id=$1`,[b.id,slot.starts_at,slot.ends_at,cfg.approval_required?'requested':'confirmed',cfg.approval_required?'awaiting':'confirmed']);
       }else if(req.body.action==='cancel'){
         const reason=String(req.body.cancellation_reason||'').trim();
@@ -706,12 +715,16 @@ export function installBookingRoutes(app,pool,hooks={}) {
         const note=String(req.body.cancellation_note||'').trim();
         const cancelledBy=['Student','Parent / Guardian'].includes(req.body.cancelled_by)?req.body.cancelled_by:'Student';
         if(!allowed.includes(reason)||(reason==='Other Reason'&&(!note||note.length>500))){await db.query('ROLLBACK');return fail(res,400,'Please select a valid cancellation reason');}
+        lifecyclePhase='cancel_update';
         await db.query(`UPDATE student_bookings SET status='cancelled',customer_response='cancelled',response_at=NOW(),updated_at=NOW(),cancellation_reason=$2,cancellation_note=$3,cancelled_via='Browser',cancelled_by=$4,cancelled_at=NOW()${revisionSetClause(b,'cancel')} WHERE id=$1`,[b.id,reason,reason==='Other Reason'?note:null,cancelledBy]);
       }
       else await db.query(`UPDATE student_bookings SET customer_response='confirmed',response_at=NOW(),status='confirmed',updated_at=NOW() WHERE id=$1`,[b.id]);
       const customerActor=req.body.action==='reschedule'&&['Student','Parent'].includes(req.body.rescheduled_by)?req.body.rescheduled_by:null;
+      lifecyclePhase='event_log';
       await log(db,b.id,'customer',req.body.action,{old_starts_at:b.starts_at,new_starts_at:req.body.starts_at||null,...(customerActor?{rescheduled_by:customerActor}:{})});
+      lifecyclePhase='notification_queue';
       if(req.body.action!=='cancel') await enqueueLifecycleBlockedIntents(db,{bookingId:Number(b.id),event:req.body.action==='confirm'?'confirmed':'rescheduled',eventKey:req.body.action+':'+randomUUID()});
+      lifecyclePhase='commit';
       await db.query('COMMIT');
       // The reschedule is already committed. Confirm it to the browser immediately.
       // WhatsApp delivery continues after the HTTP response so its media/action-card
@@ -728,7 +741,22 @@ export function installBookingRoutes(app,pool,hooks={}) {
           .then(()=>hooks.onBookingRescheduled({booking_ref:smartAuth?.booking.booking_ref||req.params.ref,manage_token:String(smartAuth?.manageToken||req.body.token||''),rescheduled:true}))
           .catch(e=>console.error('Booking reschedule WhatsApp confirmation failed:',e?.message||e));
       }
-    }catch(e){await db.query('ROLLBACK');fail(res,500,'Unable to update booking');}finally{db.release();}
+    }catch(e){
+      // Safe operational diagnostics: never log request bodies, tokens, links, names or SQL parameters.
+      if(smartAuth){
+        const sqlState=typeof e?.code==='string'&&/^[A-Z0-9]{5}$/.test(e.code)?e.code:'unknown';
+        const safePhase=String(lifecyclePhase||'unknown');
+        console.error('SMART REMINDER OPEN ACTION FAILURE',{
+          action:smartAuth.action==='reschedule'?'reschedule':'cancel',
+          phase:safePhase,
+          sqlState,
+          // PostgreSQL constraint names may disclose schema, not personal data.
+          constraint:typeof e?.constraint==='string'&&/^[a-zA-Z0-9_]{1,100}$/.test(e.constraint)?e.constraint:null
+        });
+      }
+      try{await db.query('ROLLBACK');}catch(_rollbackError){}
+      return fail(res,500,'Unable to update booking');
+    }finally{db.release();}
   };
   app.post('/api/public/booking/manage/:ref/action',(req,res)=>executeBookingLifecycleAction(req,res));
   // Smart Reminder uses the same locked lifecycle logic; no token_hash changes.
