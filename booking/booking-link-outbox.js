@@ -27,7 +27,7 @@ export async function enqueueBlockedLinkIntent(pool,input,{now=new Date()}={}) {
     if(!decision.eligible) {await client.query('ROLLBACK');return {queued:false,reason:decision.reasons[0]};}
     const inserted=await client.query(`INSERT INTO booking_private_link_outbox
       (booking_id,kind,event,event_key,mobile_snapshot,slot_snapshot,status)
-      VALUES($1,$2,$3,$4,$5,$6,'blocked') ON CONFLICT(booking_id,kind,event_key) DO NOTHING RETURNING id`,
+      VALUES($1,$2,$3,$4,$5,$6,'blocked') ON CONFLICT DO NOTHING RETURNING id`,
       [bookingId,kind,event,eventKey,consent.mobile,booking.starts_at]);
     await client.query('COMMIT');
     return {queued:inserted.rows.length===1,reason:inserted.rows.length?'blocked_pending_verified_delivery':'duplicate'};
@@ -54,7 +54,7 @@ export async function enqueueLifecycleBlockedIntents(db,{bookingId,event,eventKe
     const inserted=await db.query(`INSERT INTO booking_private_link_outbox
       (booking_id,kind,event,event_key,mobile_snapshot,slot_snapshot,status)
       VALUES($1,$2,$3,$4,$5,$6,'blocked')
-      ON CONFLICT(booking_id,kind,event_key) DO NOTHING RETURNING id`,
+      ON CONFLICT DO NOTHING RETURNING id`,
       [bookingId,kind,event,eventKey,consent.mobile,booking.starts_at]);
     queued+=inserted.rows.length;
   }
