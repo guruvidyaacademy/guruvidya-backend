@@ -5932,6 +5932,27 @@ app.get('/api/public/booking/smart-reminder/open-action',async(req,res)=>{
     const valid=await smartOpenActionVerify(req);
     if(!valid)return res.status(403).type('text/plain').send('This reminder link is invalid or expired.');
     if(valid.action==='attend')return res.redirect(303,smartOpenAttendUrl(valid.booking,valid.recipient));
+    // Smart Reminder only: reuse the EXACT existing booking management UI when the
+    // ORIGINAL valid management token is already available. Do not rotate token_hash,
+    // alter existing booking links, or modify the existing WhatsApp button flow.
+    // The existing /booking page handles action=cancel/reschedule and opens its own popup.
+    const originalTokenRows=await pool.query(
+      `SELECT s.payload->>'manage_token' AS token
+       FROM booking_whatsapp_states s
+       WHERE s.booking_ref=$1 AND s.payload ? 'manage_token'`,
+      [valid.booking.booking_ref]
+    );
+    const originalHashRows=await pool.query('SELECT token_hash FROM student_bookings WHERE id=$1 LIMIT 1',[valid.booking.id]);
+    const originalHash=String(originalHashRows.rows[0]?.token_hash||'');
+    const originalToken=originalTokenRows.rows.map(row=>String(row.token||''))
+      .find(token=>/^[a-f0-9]{64}$/i.test(token)&&createHash('sha256').update(token).digest('hex')===originalHash);
+    if(originalToken){
+      const destination='/booking?ref='+encodeURIComponent(valid.booking.booking_ref)
+        +'&token='+encodeURIComponent(originalToken)+'&action='+encodeURIComponent(valid.action);
+      return res.redirect(303,destination);
+    }
+    // Legacy test bookings may lack the original raw token. Keep the already-tested
+    // signed-action page as fallback rather than invalidating a working reminder link.
     const esc=x=>String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
     const formAction='/api/public/booking/smart-reminder/open-action/submit';
     const hidden=`<input type="hidden" name="t" value="${esc(valid.t)}"><input type="hidden" name="s" value="${esc(valid.sig)}">`;
