@@ -1003,12 +1003,21 @@ export function installBookingRoutes(app,pool,hooks={}) {
       const booking=r.rows[0],mobile=bookingPhone(booking[recipient_type+'_mobile']);
       if(!/^\d{10}$/.test(mobile)||booking[recipient_type+'_whatsapp_verified']!==true){await db.query('ROLLBACK');return fail(res,409,'Recipient WhatsApp verification is required before recording consent');}
       const old=await db.query(`SELECT revoked_at FROM booking_recipient_consents WHERE booking_id=$1 AND kind=$2 FOR UPDATE`,[booking_id,recipient_type]);
+      if(old.rowCount>1){await db.query('ROLLBACK');return fail(res,409,'Multiple recipient consent records exist; administrator review required before updating');}
       if(old.rows[0]?.revoked_at){await db.query('ROLLBACK');return fail(res,409,'Consent was revoked. Do not reinstate without a new independently verified opt-in process');}
-      // Source and timestamp are durable; the staff-provided evidence is kept in a separate audit log.
-      await db.query(`INSERT INTO booking_recipient_consents(booking_id,kind,mobile,verified,opted_in,source,verified_at,consented_at,revoked_at)
-        VALUES($1,$2,$3,TRUE,TRUE,'verified_staff_record',NOW(),NOW(),NULL)
-        ON CONFLICT(booking_id,kind) DO UPDATE SET mobile=EXCLUDED.mobile,verified=TRUE,opted_in=TRUE,source='verified_staff_record',verified_at=NOW(),consented_at=NOW()
-        WHERE booking_recipient_consents.revoked_at IS NULL`,[booking_id,recipient_type,mobile]);
+      // The existing production table has no UNIQUE(booking_id,kind), so ON CONFLICT
+      // cannot work. The parent booking row is locked FOR UPDATE above, serializing
+      // consent writes for this booking without changing the database schema.
+      // Preserve any existing consent row and never overwrite a revoked consent.
+      if(old.rowCount){
+        await db.query(`UPDATE booking_recipient_consents SET mobile=$3,verified=TRUE,opted_in=TRUE,
+          source='verified_staff_record',verified_at=NOW(),consented_at=NOW()
+          WHERE booking_id=$1 AND kind=$2 AND revoked_at IS NULL`,[booking_id,recipient_type,mobile]);
+      }else{
+        await db.query(`INSERT INTO booking_recipient_consents
+          (booking_id,kind,mobile,verified,opted_in,source,verified_at,consented_at,revoked_at)
+          VALUES($1,$2,$3,TRUE,TRUE,'verified_staff_record',NOW(),NOW(),NULL)`,[booking_id,recipient_type,mobile]);
+      }
       // Use the existing durable booking audit table. Creating a new table inside
       // a live consent request can fail under restricted PostgreSQL roles and
       // rolls back the otherwise valid consent update.
