@@ -3463,30 +3463,6 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       "reschedule":"reschedule",
       "cancel appointment":"cancel"
     })[smartManualRaw];
-    // Smart Reminder diagnostic only: BotSailor sometimes forwards quick-reply
-    // clicks as an attachment marker with no button ID/title. Correlate the
-    // original provider message for troubleshooting, but NEVER guess an action.
-    if (mobile && smartManualContext && !smartManualButton &&
-        /^#attachment:button#(?:\s*\|caption:.*)?$/i.test(String(payload.user_message || '').trim())) {
-      try {
-        const phone10 = botSailorPhone(mobile).replace(/^91(?=\d{10}$)/, '');
-        const lookup = await pool.query(`SELECT t.id, t.stage, t.recipient_type
-          FROM booking_smart_reminder_manual_tests t
-          JOIN student_bookings b ON b.id=t.booking_id
-          WHERE t.channel='whatsapp' AND t.status='accepted'
-            AND t.provider_message_id=$1 AND t.created_at>=NOW()-INTERVAL '15 days'
-            AND regexp_replace(COALESCE(CASE WHEN t.recipient_type='parent' THEN b.parent_mobile ELSE b.student_mobile END,''),'[^0-9]','','g')
-                IN ($2,'91'||$2)
-          ORDER BY t.created_at DESC LIMIT 2`, [smartManualContext,phone10]);
-        console.info('SMART REMINDER MANUAL BUTTON UNRESOLVED', {
-          matchedManualTests: lookup.rowCount,
-          reason: lookup.rowCount === 1 ? 'provider_button_title_missing' : 'manual_test_context_not_unique_or_missing',
-          // No mobile, provider IDs, booking reference or other personal data in log.
-        });
-      } catch (error) {
-        console.warn('SMART REMINDER MANUAL BUTTON DIAGNOSTIC FAILED', error.message);
-      }
-    }
     if(mobile && smartManualContext && smartManualButton){
       const smartManualEventId=String(
         payload.wa_message_id||payload.message_id||payload.message?.id||
@@ -3506,6 +3482,41 @@ app.post("/api/webhook/botsailor", async (req, res) => {
             [smartManualContext,smartManualMobile,smartManualEventId,smartManualButton]);
           if(saved.rowCount)console.info('Smart manual reminder click recorded',{button:smartManualButton});
         }catch(err){console.error('Smart manual reminder click audit:',err.message);}
+      }
+    }
+
+    // Smart Reminder diagnostic only: BotSailor can emit an attachment placeholder
+    // instead of a selected quick-reply value. Correlate by exact provider context
+    // and recipient; never infer a button, update a booking, or send a link.
+    if (mobile && smartManualContext && !smartManualButton &&
+        /^#attachment:button#/i.test(String(payload.user_message || payload.userMessage || '').trim())) {
+      try {
+        const canonicalMobile = botSailorPhone(mobile);
+        const lastTen = canonicalMobile.replace(/^91(?=\d{10}$)/, '');
+        const diagnostic = await pool.query(`
+          SELECT t.id, t.stage, t.recipient_type,
+                 t.provider_message_id = $1 AS exact_provider_id
+          FROM booking_smart_reminder_manual_tests t
+          JOIN student_bookings b ON b.id = t.booking_id
+          WHERE t.channel = 'whatsapp' AND t.status = 'accepted'
+            AND t.created_at >= NOW() - INTERVAL '15 days'
+            AND regexp_replace(COALESCE(CASE WHEN t.recipient_type = 'parent'
+              THEN b.parent_mobile ELSE b.student_mobile END, ''), '[^0-9]', '', 'g')
+              IN ($2, $3)
+            AND t.provider_message_id = $1
+          ORDER BY t.id DESC LIMIT 2`,
+          [smartManualContext, lastTen, canonicalMobile]);
+        console.info('SMART REMINDER MANUAL BUTTON UNRESOLVED', {
+          reason: 'botsailor_button_value_missing',
+          hasContextMessageId: true,
+          matchedManualTests: diagnostic.rowCount,
+          uniqueMatch: diagnostic.rowCount === 1,
+          stage: diagnostic.rowCount === 1 ? diagnostic.rows[0].stage : null,
+          recipientType: diagnostic.rowCount === 1 ? diagnostic.rows[0].recipient_type : null,
+          actionTaken: false
+        });
+      } catch (err) {
+        console.error('SMART REMINDER MANUAL BUTTON DIAGNOSTIC ERROR', err.message);
       }
     }
 
