@@ -6017,7 +6017,14 @@ app.post('/api/public/booking/smart-reminder/open-attend',express.urlencoded({ex
       ?await pool.query(`SELECT id FROM booking_smart_reminder_manual_tests WHERE id=$1 AND booking_id=$2 AND recipient_type=$3 AND channel='whatsapp' AND status='accepted' AND created_at>=NOW()-INTERVAL '48 hours' LIMIT 1`,[valid.manualTestId,valid.booking.id,valid.recipient])
       :await pool.query(`SELECT id FROM booking_smart_reminder_manual_tests WHERE booking_id=$1 AND recipient_type=$2 AND channel='whatsapp' AND status='accepted' AND created_at>=NOW()-INTERVAL '48 hours' ORDER BY id DESC LIMIT 1`,[valid.booking.id,valid.recipient]);
     if(!test.rowCount)return res.status(409).send('No matching recent manual reminder test.');
-    await pool.query(`INSERT INTO booking_smart_reminder_manual_clicks(manual_test_id,provider_event_id,button_key) VALUES($1,$2,'yes_attend') ON CONFLICT(manual_test_id,provider_event_id) DO NOTHING`,[test.rows[0].id,'open-attend:'+valid.sig]);
+    await pool.query(`INSERT INTO booking_smart_reminder_manual_clicks(manual_test_id,provider_event_id,button_key,last_clicked_at,click_count,click_history)
+      VALUES($1,$2,'yes_attend',NOW(),1,jsonb_build_array(NOW()))
+      ON CONFLICT(manual_test_id,provider_event_id) DO UPDATE SET
+        last_clicked_at=NOW(),
+        click_count=booking_smart_reminder_manual_clicks.click_count+1,
+        click_history=(CASE WHEN jsonb_array_length(booking_smart_reminder_manual_clicks.click_history)=0
+          THEN jsonb_build_array(booking_smart_reminder_manual_clicks.clicked_at)
+          ELSE booking_smart_reminder_manual_clicks.click_history END)||jsonb_build_array(NOW())`,[test.rows[0].id,'open-attend:'+valid.sig]);
     return res.type('html').send('<!doctype html><html><meta name="viewport" content="width=device-width,initial-scale=1"><body style="font:16px Arial,sans-serif;max-width:480px;margin:50px auto;padding:20px"><h2>Attendance confirmed</h2><p>Thank you. Your response has been recorded for this reminder.</p></body></html>');
   }catch(e){console.error('Smart OPEN attend confirm:',e.message);return res.status(503).send('Unable to record confirmation. Please retry later.');}
 });

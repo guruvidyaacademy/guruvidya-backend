@@ -183,6 +183,11 @@ export async function initBooking(pool) {
     UNIQUE(manual_test_id,provider_event_id)
   )`);
 
+  // Additive manual secure-link click history; preserve original first-click timestamp.
+  await pool.query(`ALTER TABLE booking_smart_reminder_manual_clicks ADD COLUMN IF NOT EXISTS last_clicked_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE booking_smart_reminder_manual_clicks ADD COLUMN IF NOT EXISTS click_count INTEGER NOT NULL DEFAULT 1`);
+  await pool.query(`ALTER TABLE booking_smart_reminder_manual_clicks ADD COLUMN IF NOT EXISTS click_history JSONB NOT NULL DEFAULT '[]'::jsonb`);
+
   // Smart Reminders Step 1: additive tracking schema only; never sends messages.
   // Run automatically at startup so deployment does not require a manual SQL step.
   // Fail open for legacy booking: a missing CREATE privilege must not break existing CRM.
@@ -1094,7 +1099,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
   // Separate audit table: test messages must not masquerade as scheduled reminders.
   app.get('/api/admin/booking/smart-reminders/manual-tests',admin,async(req,res)=>{
     try {const r=await pool.query(`SELECT t.id,t.booking_id,t.booking_ref,t.recipient_type,t.channel,t.stage,t.status,t.provider_message_id,t.detail,t.created_at,t.completed_at,
-      COALESCE((SELECT json_agg(json_build_object('button_key',c.button_key,'clicked_at',c.clicked_at) ORDER BY c.clicked_at,c.id)
+      COALESCE((SELECT json_agg(json_build_object('button_key',c.button_key,'clicked_at',c.clicked_at,'last_clicked_at',COALESCE(c.last_clicked_at,c.clicked_at),'click_count',c.click_count,'click_history',CASE WHEN jsonb_array_length(c.click_history)>0 THEN c.click_history ELSE jsonb_build_array(c.clicked_at) END) ORDER BY c.clicked_at,c.id)
       FROM booking_smart_reminder_manual_clicks c WHERE c.manual_test_id=t.id),'[]'::json) AS manual_clicks
       FROM booking_smart_reminder_manual_tests t WHERE t.created_at >= NOW()-INTERVAL '15 days' ORDER BY t.id DESC LIMIT 500`);res.json({success:true,data:r.rows});}
     catch(e){console.error('Smart manual tests list:',e.message);fail(res,503,'Manual test history unavailable');}
