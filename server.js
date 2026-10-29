@@ -3484,16 +3484,9 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     ].filter(value => typeof value === 'string').map(value =>
       value.replace(/^#button[ _-]*reply#/i, '').trim().toLowerCase()
     );
-    // Accept the known BotSailor template button payloads only when they are
-    // explicitly present in an incoming field. A reply context ID alone cannot
-    // reveal which button was selected.
     const smartRecognized = [...new Set(smartExplicitCandidates.map(value => ({
-      "yes, i'll attend": 'yes_attend',
-      'sjlv2qcfcojmkrk': 'yes_attend',
-      'reschedule': 'reschedule',
-      'appointment-reschedule': 'reschedule',
-      'cancel appointment': 'cancel',
-      'appointment-cancel': 'cancel'
+      "yes, i'll attend": 'yes_attend', 'reschedule': 'reschedule',
+      'cancel appointment': 'cancel'
     })[value]).filter(Boolean))];
     // Conflicting explicit values are not safe to act on.
     const smartSelectedButton = smartRecognized.length === 1 ? smartRecognized[0] : null;
@@ -5912,6 +5905,35 @@ installBookingRoutes(app, pool, { onBookingCreated: onBookingCreatedWhatsApp, on
       const text=`Dear ${name},\n\nThis is a manually requested TEST appointment reminder from Guruvidya Academy Pvt. Ltd.\nBooking Ref: ${booking.booking_ref}\nCourse: ${booking.course}\nAppointment: ${when} IST\n\nThis is a test message. No action is required.`;
       const result=await sendEmailWithFailover({to:destination,subject,text,html:`<div style="font-family:Arial,sans-serif"><h2>Guruvidya Academy Pvt. Ltd.</h2><p>TEST Appointment Reminder</p><p>${text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>')}</p></div>`});
       return {success:true,message:'Email provider accepted test',message_id:result?.id||result?.messageId||null};
+    }
+    // Opt-in OPEN-window manual test only. Existing CLOSED Utility Template path remains unchanged.
+    // A real inbound customer message within 24h is mandatory; never trust test overrides.
+    if(process.env.SMART_REMINDER_MANUAL_OPEN_WINDOW_TEST==='true'){
+      const national=String(destination||'').replace(/\D/g,'').slice(-10);
+      const windowResult=await pool.query(`SELECT GREATEST(
+        COALESCE((SELECT MAX(received_at) FROM whatsapp_window_events WHERE mobile IN ($1,$2)),'epoch'::timestamptz),
+        COALESCE((SELECT MAX(last_customer_message_at) FROM leads WHERE regexp_replace(COALESCE(mobile,''),'[^0-9]','','g') IN ($1,$2)),'epoch'::timestamptz)
+      ) AS last_incoming`,['91'+national,national]);
+      const last=new Date(windowResult.rows[0]?.last_incoming||0).getTime();
+      if(!Number.isFinite(last)||last>Date.now()+60000||Date.now()-last>=24*60*60*1000)
+        return {success:false,status:'real_window_closed',message:'Actual WhatsApp 24-hour window is CLOSED. OPEN test not sent; approved Utility Template untouched.'};
+      await loadPersistedConfig();
+      const publicBase=String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').trim().replace(/\/$/,'');
+      let mediaUrl;
+      try{mediaUrl=await createSmartReminderTestMedia(pool,booking,publicBase)}
+      catch(err){return {success:false,status:'reminder_image_preparation_failed',message:String(err?.message||err)}}
+      const caption=`Dear ${name},\n\nThis is your Guruvidya ${stage} counselling reminder (manual test).\nCourse: ${booking.course}\nDate & Time: ${when} IST\nMode: ${booking.mode}\nBooking Ref: ${booking.booking_ref}\n\nPlease choose one option below.`;
+      const buttons=[
+        {id:'gv_smart_attend',title:"Yes, I'll Attend"},
+        {id:'gv_smart_reschedule',title:'Reschedule'},
+        {id:'gv_smart_cancel',title:'Cancel Appointment'}
+      ];
+      const result=await sendBotSailorReplyButtons(
+        {mobile:destination,name,course:booking.course},caption,buttons,
+        'smart_reminder_manual_open_image_buttons',{mediaUrl,mediaType:'image'}
+      );
+      console.info('SMART REMINDER OPEN MANUAL TEST',{accepted:result?.success===true,mode:booking.mode,stage,recipient_type,hasMessageId:!!bookingProviderMessageId(result)});
+      return {success:result?.success===true,status:result?.status,message:result?.message||'BotSailor OPEN interactive result',message_id:bookingProviderMessageId(result)||null};
     }
     // Only the explicitly mapped approved template can be used. Never fall back to an unrelated template.
     const envKey=`SMART_REMINDER_TEST_TEMPLATE_${String(booking.mode).toUpperCase()}_ID`;
