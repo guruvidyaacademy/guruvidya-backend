@@ -3484,9 +3484,16 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     ].filter(value => typeof value === 'string').map(value =>
       value.replace(/^#button[ _-]*reply#/i, '').trim().toLowerCase()
     );
+    // Accept the known BotSailor template button payloads only when they are
+    // explicitly present in an incoming field. A reply context ID alone cannot
+    // reveal which button was selected.
     const smartRecognized = [...new Set(smartExplicitCandidates.map(value => ({
-      "yes, i'll attend": 'yes_attend', 'reschedule': 'reschedule',
-      'cancel appointment': 'cancel'
+      "yes, i'll attend": 'yes_attend',
+      'sjlv2qcfcojmkrk': 'yes_attend',
+      'reschedule': 'reschedule',
+      'appointment-reschedule': 'reschedule',
+      'cancel appointment': 'cancel',
+      'appointment-cancel': 'cancel'
     })[value]).filter(Boolean))];
     // Conflicting explicit values are not safe to act on.
     const smartSelectedButton = smartRecognized.length === 1 ? smartRecognized[0] : null;
