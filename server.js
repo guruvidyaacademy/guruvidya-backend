@@ -5807,9 +5807,20 @@ installBookingRoutes(app, pool, { onBookingCreated: onBookingCreatedWhatsApp, on
     const envKey=`SMART_REMINDER_TEST_TEMPLATE_${String(booking.mode).toUpperCase()}_ID`;
     const id=String(process.env[envKey]||'').trim();
     if(!id)return {success:false,status:'template_not_configured',message:`Configure ${envKey} with the approved reminder Utility Template ID`};
-    const r=await pool.query(`SELECT botsailor_id,template_name,status,body_content,variable_map FROM whatsapp_templates WHERE botsailor_id=$1 LIMIT 1`,[id]);
-    const t=r.rows[0];
-    if(!t||String(t.status).toLowerCase()!=='approved'||!/remind/i.test(String(t.template_name||'')))return {success:false,status:'template_not_approved',message:'Approved reminder-specific BotSailor template not found'};
+    // Smart Reminder manual test only: refresh a missing template once, without changing
+    // the existing booking alerts, other template sends, or automation settings.
+    const findTestTemplate=async()=>{
+      const q=await pool.query(`SELECT botsailor_id,template_name,status,body_content,variable_map FROM whatsapp_templates WHERE botsailor_id=$1 LIMIT 1`,[id]);
+      return q.rows[0]||null;
+    };
+    let t=await findTestTemplate();
+    if(!t){
+      const imported=await importBotSailorTemplates();
+      if(!imported.success)return {success:false,status:'template_sync_failed',message:`BotSailor template refresh failed: ${imported.message||'Unknown error'}`};
+      t=await findTestTemplate();
+    }
+    if(!t)return {success:false,status:'template_not_found',message:`Configured BotSailor template ID ${id} was not found after refresh`};
+    if(String(t.status).trim().toLowerCase()!=='approved'||!/remind/i.test(String(t.template_name||'')))return {success:false,status:'template_not_approved',message:`Configured template ${id} is not an approved reminder template (name: ${t.template_name||'unknown'}, status: ${t.status||'unknown'})`};
     // A template requiring dynamic variables must have an explicitly verified mapping, not guessed positional substitutions.
     let mapping=t.variable_map||{};if(typeof mapping==='string'){try{mapping=JSON.parse(mapping)}catch{mapping={}}}
     const keys=[...new Set((JSON.stringify(mapping).match(/templateVariable-[A-Za-z0-9_-]+-\d+/g)||[]))];
