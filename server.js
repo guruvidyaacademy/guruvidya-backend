@@ -5905,6 +5905,37 @@ function smartOpenAttendUrl(booking,recipientType){
   const base=String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'');
   return `${base}/api/public/booking/smart-reminder/open-attend?t=${encodeURIComponent(data)}&s=${encodeURIComponent(sig)}`;
 }
+function smartOpenActionUrl(booking,recipientType,action){
+  if(!['attend','reschedule','cancel'].includes(action))throw new Error('Invalid reminder action');
+  const secret=smartOpenAttendSecret();
+  if(secret.length<32)throw new Error('SMART_REMINDER_ACTION_SECRET must be at least 32 characters');
+  const data=Buffer.from(JSON.stringify({b:String(booking.id),r:recipientType,v:String(booking.appointment_revision??''),a:action,exp:Date.now()+48*3600000})).toString('base64url');
+  const sig=createHmac('sha256',secret).update(data).digest('base64url');
+  const base=String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'');
+  return `${base}/api/public/booking/smart-reminder/open-action?t=${encodeURIComponent(data)}&s=${encodeURIComponent(sig)}`;
+}
+async function smartOpenActionVerify(req){
+  const secret=smartOpenAttendSecret(),t=String(req.query.t||''),sig=String(req.query.s||'');
+  if(secret.length<32||t.length>600||!/^[A-Za-z0-9_-]+$/.test(t)||!/^[A-Za-z0-9_-]+$/.test(sig))return null;
+  const expected=createHmac('sha256',secret).update(t).digest(),actual=Buffer.from(sig,'base64url');
+  if(actual.length!==expected.length||!timingSafeEqual(expected,actual))return null;
+  const payload=JSON.parse(Buffer.from(t,'base64url').toString('utf8'));
+  if(!/^[1-9][0-9]*$/.test(String(payload.b))||!['student','parent'].includes(payload.r)||!['attend','reschedule','cancel'].includes(payload.a)||!Number.isSafeInteger(payload.exp)||payload.exp<Date.now()||payload.exp>Date.now()+48*3600000)return null;
+  const result=await pool.query('SELECT id,booking_ref,status,appointment_revision,starts_at FROM student_bookings WHERE id=$1 LIMIT 1',[payload.b]);
+  const booking=result.rows[0];
+  if(!booking||!['approved','confirmed','rescheduled'].includes(String(booking.status).toLowerCase())||String(booking.appointment_revision??'')!==payload.v||new Date(booking.starts_at).getTime()<=Date.now())return null;
+  return {booking,action:payload.a};
+}
+app.get('/api/public/booking/smart-reminder/open-action',async(req,res)=>{
+  res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'});
+  try{
+    const valid=await smartOpenActionVerify(req);
+    if(!valid)return res.status(403).type('text/plain').send('This reminder link is invalid or expired.');
+    if(valid.action==='attend')return res.redirect(303,smartOpenAttendUrl(valid.booking,'student'));
+    // Deliberately do not mutate a booking or bypass the original booking-management token.
+    return res.type('html').send('<!doctype html><html><meta name="viewport" content="width=device-width,initial-scale=1"><body style="font:16px Arial,sans-serif;max-width:480px;margin:40px auto;padding:20px"><h2>Guruvidya Academy</h2><p>This secure '+(valid.action==='reschedule'?'reschedule':'cancellation')+' request link has been verified.</p><p>Online changes are not yet enabled through Smart Reminders. Please use your original booking management link or contact Guruvidya Academy.</p><p>No booking changes have been made.</p></body></html>');
+  }catch(e){console.error('Smart reminder action view:',e.message);return res.status(400).send('Invalid reminder link');}
+});
 async function smartOpenAttendVerify(req){
   const secret=smartOpenAttendSecret(),t=String(req.query.t||req.body?.t||''),sig=String(req.query.s||req.body?.s||'');
   if(secret.length<32||t.length>600||!(/^[A-Za-z0-9_-]+$/.test(t))||!(/^[A-Za-z0-9_-]+$/.test(sig)))return null;
@@ -5961,18 +5992,24 @@ installBookingRoutes(app, pool, { onBookingCreated: onBookingCreatedWhatsApp, on
       let attend,media;
       try{attend=smartOpenAttendUrl(booking,recipient_type);media=await createSmartReminderTestMedia(pool,booking,String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,''));}
       catch(e){return {success:false,status:'open_attend_setup_error',message:e.message};}
-      const caption=`Guruvidya Academy | TEST ${stage} Reminder\nDear ${name},\nBooking: ${booking.booking_ref}\nCourse: ${booking.course}\nTime: ${when} IST\n\nConfirm attendance securely:\n${attend}\n\nReschedule/Cancel links are not enabled in this Step 5 test.`;
-      const sent=await sendBotSailorReplyButtons({mobile:destination,name,course:booking.course},caption,[{id:'gv_smart_attend',title:"Yes, I'll Attend"},{id:'gv_smart_reschedule',title:'Reschedule'},{id:'gv_smart_cancel',title:'Cancel Appointment'}],'smart_reminder_open_attend_step5',{mediaUrl:media,mediaType:'image'});
+      const rescheduleLink=smartOpenActionUrl(booking,recipient_type,'reschedule');
+      const cancelLink=smartOpenActionUrl(booking,recipient_type,'cancel');
+      const caption=`Guruvidya Academy | TEST ${stage} Reminder\nDear ${name},\nBooking: ${booking.booking_ref}\nCourse: ${booking.course}\nTime: ${when} IST\n\nSecure action links will follow in a separate message.`;
+      // Send the approved graphic without non-working Quick Reply buttons.
+      // The existing CLOSED Utility Template path below remains unchanged.
+      const graphicPayload={apiToken:config.botsailorToken,phone_number_id:config.botsailorInstanceId,phone_number:botSailorPhone(destination),media_url:media,media_type:'image',media_caption_text:caption};
+      const sent=await botSailorPost('https://botsailor.com/api/v1/whatsapp/send/file',graphicPayload);
+      await addIntegrationLog('whatsapp','smart_reminder_open_secure_links_graphic',sent.success?'success':'failed',{phone_number:graphicPayload.phone_number,media_type:'image',booking_ref:booking.booking_ref},sent.success?{status:sent.status}:{error:sent.message});
       // BotSailor interactive-media captions may not display long URLs reliably.
       // Send the link separately through the existing session-message endpoint;
       // do not depend on the unidentifiable Quick Reply webhook.
       if(sent?.success!==true)return {success:false,status:sent?.status,message:sent?.message||'Graphic send failed',message_id:bookingProviderMessageId(sent)};
-      const linkMessage=`Guruvidya Academy | Secure Attendance Confirmation\nBooking: ${booking.booking_ref}\n\nYes, I'll Attend — open this link and confirm:\n${attend}\n\nThis link is only for attendance. It will not cancel or reschedule your booking.`;
+      const linkMessage=`Guruvidya Academy | Secure Reminder Links\nBooking: ${booking.booking_ref}\n\n1. Yes, I'll Attend (working confirmation):\n${attend}\n\n2. Reschedule (verified link; online change not enabled yet):\n${rescheduleLink}\n\n3. Cancel Appointment (verified link; online cancellation not enabled yet):\n${cancelLink}\n\nFor Reschedule/Cancel, please use your original booking management link until these actions are enabled.`;
       const linkPayload={apiToken:config.botsailorToken,phone_number_id:config.botsailorInstanceId,phone_number:botSailorPhone(destination),message:linkMessage};
       const linkSent=await botSailorPost(config.botsailorApiUrl||'https://botsailor.com/api/v1/whatsapp/send',linkPayload);
       // Never write the signed attendance URL to integration logs.
-      await addIntegrationLog('whatsapp','smart_reminder_open_attend_link_step5',linkSent.success?'success':'failed',{phone_number:linkPayload.phone_number,booking_ref:booking.booking_ref,link:'[REDACTED]'},linkSent.success?{status:linkSent.status}:{error:linkSent.error||linkSent.message});
-      console.log('SMART REMINDER OPEN ATTEND LINK', {success:linkSent.success===true,status:linkSent.status,bookingRef:booking.booking_ref,linkIncluded:true});
+      await addIntegrationLog('whatsapp','smart_reminder_open_three_links_step6',linkSent.success?'success':'failed',{phone_number:linkPayload.phone_number,booking_ref:booking.booking_ref,link:'[REDACTED]'},linkSent.success?{status:linkSent.status}:{error:linkSent.error||linkSent.message});
+      console.log('SMART REMINDER OPEN THREE LINKS', {success:linkSent.success===true,status:linkSent.status,bookingRef:booking.booking_ref,linkIncluded:true});
       return {success:linkSent.success===true,status:linkSent.success?'accepted':'attend_link_send_failed',message:linkSent.success?'Graphic and separate secure Attend link accepted':'Graphic sent but secure Attend link failed: '+String(linkSent.message||linkSent.status||'provider error'),message_id:bookingProviderMessageId(sent)};
     }
     // Only the explicitly mapped approved template can be used. Never fall back to an unrelated template.
