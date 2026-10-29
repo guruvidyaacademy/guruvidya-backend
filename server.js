@@ -3451,6 +3451,40 @@ app.post("/api/webhook/botsailor", async (req, res) => {
 
     const buttonReplyId = normalizeLooseText(extractButtonReplyId(payload));
     const buttonReplyTitle = normalizeLooseText(extractButtonReplyTitle(payload));
+    // Smart Reminder MANUAL test click audit only. Never mutate booking status,
+    // trigger cancellation/reschedule or alter scheduled delivery tracking.
+    // A click must carry the exact original provider message context and the
+    // matching booking recipient phone; title-only messages are not sufficient.
+    const smartManualContext=ctaContextMessageId(payload);
+    const smartManualRaw=String(extractButtonReplyTitle(payload)||payload.user_message||payload.userMessage||'')
+      .replace(/^#button[ _-]*reply#/i,'').trim().toLowerCase();
+    const smartManualButton=({
+      "yes, i'll attend":"yes_attend",
+      "reschedule":"reschedule",
+      "cancel appointment":"cancel"
+    })[smartManualRaw];
+    if(mobile && smartManualContext && smartManualButton){
+      const smartManualEventId=String(
+        payload.wa_message_id||payload.message_id||payload.message?.id||
+        payload.messages?.[0]?.id||payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.id||''
+      ).trim();
+      if(smartManualEventId && smartManualEventId!==smartManualContext){
+        try {
+          const smartManualMobile=botSailorPhone(mobile).replace(/^91(?=\d{10}$)/,'');
+          const saved=await pool.query(`INSERT INTO booking_smart_reminder_manual_clicks(manual_test_id,provider_event_id,button_key)
+            SELECT t.id,$3,$4 FROM booking_smart_reminder_manual_tests t
+            JOIN student_bookings b ON b.id=t.booking_id
+            WHERE t.channel='whatsapp' AND t.status='accepted'
+              AND t.provider_message_id=$1 AND t.created_at>=NOW()-INTERVAL '15 days'
+              AND regexp_replace(COALESCE(CASE WHEN t.recipient_type='parent' THEN b.parent_mobile ELSE b.student_mobile END,''),'[^0-9]','','g')
+                  IN ($2,'91'||$2)
+            ON CONFLICT(manual_test_id,provider_event_id) DO NOTHING RETURNING id`,
+            [smartManualContext,smartManualMobile,smartManualEventId,smartManualButton]);
+          if(saved.rowCount)console.info('Smart manual reminder click recorded',{button:smartManualButton});
+        }catch(err){console.error('Smart manual reminder click audit:',err.message);}
+      }
+    }
+
     // Correlate the real WhatsApp quick-reply with a sent internal reminder.
     // Only a reply with a provider context message ID is accepted: an unrelated
     // 'Acknowledge' text must never count as a click.
