@@ -5905,11 +5905,11 @@ function smartOpenAttendUrl(booking,recipientType,manualTestId=null){
   const base=String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'');
   return `${base}/api/public/booking/smart-reminder/open-attend?t=${encodeURIComponent(data)}&s=${encodeURIComponent(sig)}`;
 }
-function smartOpenActionUrl(booking,recipientType,action){
+function smartOpenActionUrl(booking,recipientType,action,manualTestId=null){
   if(!['attend','reschedule','cancel'].includes(action))throw new Error('Invalid reminder action');
   const secret=smartOpenAttendSecret();
   if(secret.length<32)throw new Error('SMART_REMINDER_ACTION_SECRET must be at least 32 characters');
-  const data=Buffer.from(JSON.stringify({b:String(booking.id),r:recipientType,v:String(booking.appointment_revision??''),a:action,exp:Date.now()+48*3600000})).toString('base64url');
+  const data=Buffer.from(JSON.stringify({b:String(booking.id),r:recipientType,v:String(booking.appointment_revision??''),a:action,...(manualTestId==null?{}:{mt:String(manualTestId)}),exp:Date.now()+48*3600000})).toString('base64url');
   const sig=createHmac('sha256',secret).update(data).digest('base64url');
   const base=String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'');
   return `${base}/api/public/booking/smart-reminder/open-action?t=${encodeURIComponent(data)}&s=${encodeURIComponent(sig)}`;
@@ -5925,7 +5925,7 @@ async function smartOpenActionVerify(req){
   const booking=result.rows[0];
   const alreadyCancelled=payload.a==='cancel'&&String(booking?.status||'').toLowerCase()==='cancelled';
   if(!booking||(!alreadyCancelled&&(!['approved','confirmed','rescheduled'].includes(String(booking.status).toLowerCase())||String(booking.appointment_revision??'')!==payload.v||new Date(booking.starts_at).getTime()<=Date.now())))return null;
-  return {booking,action:payload.a,recipient:payload.r,t,sig};
+  return {booking,action:payload.a,recipient:payload.r,manualTestId:/^[1-9][0-9]*$/.test(String(payload.mt||''))?String(payload.mt):null,t,sig};
 }
 app.get('/api/public/booking/smart-reminder/open-action',async(req,res)=>{
   res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'});
@@ -5933,6 +5933,27 @@ app.get('/api/public/booking/smart-reminder/open-action',async(req,res)=>{
     const valid=await smartOpenActionVerify(req);
     if(!valid)return res.status(403).type('text/plain').send('This reminder link is invalid or expired.');
     if(valid.action==='attend')return res.redirect(303,smartOpenAttendUrl(valid.booking,valid.recipient));
+    // Record opening the signed manual Reschedule/Cancel link, NOT completion of
+    // the booking lifecycle action. Only manual links carrying a signed test ID
+    // are tracked; older issued links continue opening normally.
+    if(valid.manualTestId && ['reschedule','cancel'].includes(valid.action)){
+      const test=await pool.query(`SELECT id FROM booking_smart_reminder_manual_tests
+        WHERE id=$1 AND booking_id=$2 AND recipient_type=$3 AND channel='whatsapp'
+          AND status='accepted' AND created_at>=NOW()-INTERVAL '48 hours' LIMIT 1`,
+        [valid.manualTestId,valid.booking.id,valid.recipient]);
+      if(test.rowCount){
+        await pool.query(`INSERT INTO booking_smart_reminder_manual_clicks
+          (manual_test_id,provider_event_id,button_key,last_clicked_at,click_count,click_history)
+          VALUES($1,$2,$3,NOW(),1,jsonb_build_array(NOW()))
+          ON CONFLICT(manual_test_id,provider_event_id) DO UPDATE SET
+            last_clicked_at=NOW(),
+            click_count=booking_smart_reminder_manual_clicks.click_count+1,
+            click_history=(CASE WHEN jsonb_array_length(booking_smart_reminder_manual_clicks.click_history)=0
+              THEN jsonb_build_array(booking_smart_reminder_manual_clicks.clicked_at)
+              ELSE booking_smart_reminder_manual_clicks.click_history END)||jsonb_build_array(NOW())`,
+          [test.rows[0].id,'open-action:'+valid.action+':'+valid.sig,valid.action]);
+      }
+    }
     // Smart Reminder only: reuse the EXACT existing booking management UI when the
     // ORIGINAL valid management token is already available. Do not rotate token_hash,
     // alter existing booking links, or modify the existing WhatsApp button flow.
@@ -6050,8 +6071,8 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
       let attend,media;
       try{attend=smartOpenAttendUrl(booking,recipient_type,manual_test_id);media=await createSmartReminderTestMedia(pool,booking,String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,''));}
       catch(e){return {success:false,status:'open_attend_setup_error',message:e.message};}
-      const rescheduleLink=smartOpenActionUrl(booking,recipient_type,'reschedule');
-      const cancelLink=smartOpenActionUrl(booking,recipient_type,'cancel');
+      const rescheduleLink=smartOpenActionUrl(booking,recipient_type,'reschedule',manual_test_id);
+      const cancelLink=smartOpenActionUrl(booking,recipient_type,'cancel',manual_test_id);
       const caption=`Guruvidya Academy | TEST ${stage} Reminder\nDear ${name},\nBooking: ${booking.booking_ref}\nCourse: ${booking.course}\nTime: ${when} IST\n\nSecure action links will follow in a separate message.`;
       // Send the approved graphic without non-working Quick Reply buttons.
       // The existing CLOSED Utility Template path below remains unchanged.
