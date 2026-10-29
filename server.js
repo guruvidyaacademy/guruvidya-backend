@@ -5923,7 +5923,8 @@ async function smartOpenActionVerify(req){
   if(!/^[1-9][0-9]*$/.test(String(payload.b))||!['student','parent'].includes(payload.r)||!['attend','reschedule','cancel'].includes(payload.a)||!Number.isSafeInteger(payload.exp)||payload.exp<Date.now()||payload.exp>Date.now()+48*3600000)return null;
   const result=await pool.query('SELECT id,booking_ref,status,appointment_revision,starts_at,mode,counsellor_id FROM student_bookings WHERE id=$1 LIMIT 1',[payload.b]);
   const booking=result.rows[0];
-  if(!booking||!['approved','confirmed','rescheduled'].includes(String(booking.status).toLowerCase())||String(booking.appointment_revision??'')!==payload.v||new Date(booking.starts_at).getTime()<=Date.now())return null;
+  const alreadyCancelled=payload.a==='cancel'&&String(booking?.status||'').toLowerCase()==='cancelled';
+  if(!booking||(!alreadyCancelled&&(!['approved','confirmed','rescheduled'].includes(String(booking.status).toLowerCase())||String(booking.appointment_revision??'')!==payload.v||new Date(booking.starts_at).getTime()<=Date.now())))return null;
   return {booking,action:payload.a,recipient:payload.r,t,sig};
 }
 app.get('/api/public/booking/smart-reminder/open-action',async(req,res)=>{
@@ -5948,7 +5949,8 @@ app.get('/api/public/booking/smart-reminder/open-action',async(req,res)=>{
       .find(token=>/^[a-f0-9]{64}$/i.test(token)&&createHash('sha256').update(token).digest('hex')===originalHash);
     if(originalToken){
       const destination='/booking?ref='+encodeURIComponent(valid.booking.booking_ref)
-        +'&token='+encodeURIComponent(originalToken)+'&action='+encodeURIComponent(valid.action);
+        +'&token='+encodeURIComponent(originalToken)+'&action='+encodeURIComponent(valid.action)
+        +(valid.action==='cancel'&&String(valid.booking.status).toLowerCase()==='cancelled'?'&smart_reminder_already_cancelled=1':'');
       return res.redirect(303,destination);
     }
     // Legacy test bookings may lack the original raw token. Keep the already-tested
