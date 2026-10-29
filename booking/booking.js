@@ -8,6 +8,7 @@ import { validateLifecycleSlot, validateLifecycleAction, validateReassignmentCha
 import { bookingSlotConflictQuery } from './booking-slot-conflict.js';
 import { enqueueLifecycleBlockedIntents } from './booking-link-outbox.js';
 import { randomUUID } from 'node:crypto';
+import express from 'express';
 import { bookingDispatchLockSql, bookingDispatchLockArgs } from './booking-dispatch-lock.js';
 import { bookingDeliveryState } from './booking-delivery-state.js';
 import { classifyAttemptForReview } from './booking-attempt-review.js';
@@ -545,6 +546,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
       res.set('Cache-Control','no-store').json({success:true,data:r.rows[0]});
     }catch(e){fail(res,503,'Booking modes unavailable');}
   });
+  if(typeof hooks.setSmartReminderBookingSlots==='function')hooks.setSmartReminderBookingSlots((date,mode,counsellorId,excludeBookingId)=>slots(pool,date,mode,counsellorId,{excludeBookingId:Number(excludeBookingId)}));
   app.get('/api/public/booking/slots',async(req,res)=>{try{res.json({success:true,data:await slots(pool,req.query.date,req.query.mode,req.query.counsellor_id||null,{includeBooked:true})});}catch(e){fail(res,400,e.message);}});
   app.post('/api/public/booking',async(req,res)=>{
     const {student_name,student_mobile,parent_name,parent_mobile,parent_relation,student_email='',parent_email='',address_country='',address_state='',address_city='',address_postal_code='',address_line1='',address_line2='',course,mode,starts_at,counsellor_id,recipient='both',booked_by,primary_verification_id,primary_verification_token,secondary_verification_id,secondary_verification_token}=req.body;
@@ -674,18 +676,18 @@ export function installBookingRoutes(app,pool,hooks={}) {
       res.json({success:true,data:{window_open:effectiveOpen,status:sent?'sent':current?.status||'pending',mobile,whatsapp_url:'https://wa.me/919821627725?text='+encodeURIComponent('VERIFY GV-BOOK-LINK '+b.booking_ref)}});
     }catch(e){console.error('Rebooking window status error',e?.message||e);fail(res,500,'Unable to check WhatsApp status');}
   });
-  app.post('/api/public/booking/manage/:ref/action',async(req,res)=>{
+  const executeBookingLifecycleAction=async(req,res,smartAuth=null)=>{
     res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer','Pragma':'no-cache'});
-    if(!/^[a-f0-9]{64}$/i.test(String(req.body?.token||'')))return fail(res,404,'Booking not found');
+    if(!smartAuth && !/^[a-f0-9]{64}$/i.test(String(req.body?.token||'')))return fail(res,404,'Booking not found');
     if(!validateLifecycleAction(req.body.action,['confirm','cancel','reschedule']))return fail(res,400,'Invalid action');
     const db=await pool.connect();try{
       await db.query('BEGIN');
-      const identity=await db.query('SELECT id FROM student_bookings WHERE booking_ref=$1 AND token_hash=$2',[req.params.ref,hash(String(req.body.token||''))]);
+      const identity=smartAuth ? await db.query('SELECT id FROM student_bookings WHERE id=$1 AND booking_ref=$2 AND appointment_revision IS NOT DISTINCT FROM $3',[smartAuth.booking.id,smartAuth.booking.booking_ref,smartAuth.booking.appointment_revision]) : await db.query('SELECT id FROM student_bookings WHERE booking_ref=$1 AND token_hash=$2',[req.params.ref,hash(String(req.body.token||''))]);
       if(!identity.rowCount){await db.query('ROLLBACK');return fail(res,404,'Booking not found');}
       await db.query(bookingDispatchLockSql(true),bookingDispatchLockArgs(identity.rows[0].id));
       const r=await db.query('SELECT * FROM student_bookings WHERE id=$1 FOR UPDATE',[identity.rows[0].id]);
       if(!r.rowCount){await db.query('ROLLBACK');return fail(res,404,'Booking not found');}
-      const b=r.rows[0];if(!active.includes(b.status)){await db.query('ROLLBACK');return fail(res,409,'Booking is no longer active');}
+      const b=r.rows[0];if(smartAuth && (String(b.appointment_revision??'')!==String(smartAuth.booking.appointment_revision??'') || smartAuth.action!==req.body.action)){await db.query('ROLLBACK');return fail(res,409,'Reminder link is no longer valid');}if(!active.includes(b.status)){await db.query('ROLLBACK');return fail(res,409,'Booking is no longer active');}
       if(req.body.action==='confirm'){await db.query('ROLLBACK');return fail(res,409,'Student confirmation is not required');}
       if(req.body.action==='reschedule'){
         const slotError=validateLifecycleSlot(req.body.starts_at,b.starts_at);
@@ -718,15 +720,38 @@ export function installBookingRoutes(app,pool,hooks={}) {
       if(['reschedule','cancel'].includes(req.body.action) && typeof hooks.onInternalAppointmentEvent==='function')
         Promise.resolve().then(()=>hooks.onInternalAppointmentEvent({bookingId:b.id,event:req.body.action==='cancel'?'cancelled':'rescheduled'})).catch(e=>console.error('Internal booking alert:',e?.message||e));
       if(req.body.action==='cancel' && typeof hooks.onBookingCancelled==='function'){
-        Promise.resolve().then(()=>hooks.onBookingCancelled({booking_ref:req.params.ref,manage_token:String(req.body.token||'')}))
+        Promise.resolve().then(()=>hooks.onBookingCancelled({booking_ref:smartAuth?.booking.booking_ref||req.params.ref,manage_token:String(smartAuth?.manageToken||req.body.token||'')}))
           .catch(e=>console.error('Rebooking invitation check failed',e?.message||e));
       }
-      if(req.body.action==='reschedule' && req.body.notify_whatsapp===true && typeof hooks.onBookingRescheduled==='function'){
+      if(req.body.action==='reschedule' && (req.body.notify_whatsapp===true || smartAuth) && typeof hooks.onBookingRescheduled==='function'){
         Promise.resolve()
-          .then(()=>hooks.onBookingRescheduled({booking_ref:req.params.ref,manage_token:String(req.body.token||''),rescheduled:true}))
+          .then(()=>hooks.onBookingRescheduled({booking_ref:smartAuth?.booking.booking_ref||req.params.ref,manage_token:String(smartAuth?.manageToken||req.body.token||''),rescheduled:true}))
           .catch(e=>console.error('Booking reschedule WhatsApp confirmation failed:',e?.message||e));
       }
     }catch(e){await db.query('ROLLBACK');fail(res,500,'Unable to update booking');}finally{db.release();}
+  };
+  app.post('/api/public/booking/manage/:ref/action',(req,res)=>executeBookingLifecycleAction(req,res));
+  // Smart Reminder uses the same locked lifecycle logic; no token_hash changes.
+  app.post('/api/public/booking/smart-reminder/open-action/submit',express.urlencoded({extended:false,limit:'4kb'}),async(req,res)=>{
+    res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'});
+    try{
+      if(typeof hooks.verifySmartReminderAction!=='function')return fail(res,503,'Reminder actions unavailable');
+      const verified=await hooks.verifySmartReminderAction({body:req.body});
+      if(!verified||!['reschedule','cancel'].includes(verified.action))return fail(res,403,'Invalid or expired reminder link');
+      const b=verified.booking;
+      // The existing reschedule notification needs a valid original management token.
+      // Recover it only if already available and still matches the existing hash; never rotate it.
+      let manageToken='';
+      if(verified.action==='reschedule'){
+        const candidates=await pool.query(`SELECT payload->>'manage_token' AS token FROM booking_whatsapp_states WHERE booking_ref=$1 AND payload ? 'manage_token'`,[b.booking_ref]);
+        const record=await pool.query('SELECT token_hash FROM student_bookings WHERE id=$1',[b.id]);
+        manageToken=candidates.rows.map(x=>String(x.token||'')).find(x=>/^[a-f0-9]{64}$/i.test(x)&&hash(x)===record.rows[0]?.token_hash)||'';
+        if(!manageToken)return fail(res,409,'Original booking management link unavailable. Please use your original booking link to reschedule.');
+      }
+      const actionReq={...req,params:{ref:b.booking_ref},body:{...req.body,action:verified.action,token:manageToken,notify_whatsapp:true,
+        cancelled_by:verified.recipient==='parent'?'Parent / Guardian':'Student',rescheduled_by:verified.recipient==='parent'?'Parent':'Student'}};
+      return executeBookingLifecycleAction(actionReq,res,{...verified,manageToken});
+    }catch(e){console.error('Smart reminder lifecycle:',e?.message||e);return fail(res,503,'Unable to process reminder action');}
   });
   // Database-wide aggregate; unlike the 300-row notification list this is not a sample.
   app.get('/api/admin/booking/monitoring-summary',admin,async(req,res)=>{

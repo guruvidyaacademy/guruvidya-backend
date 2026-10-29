@@ -5915,27 +5915,50 @@ function smartOpenActionUrl(booking,recipientType,action){
   return `${base}/api/public/booking/smart-reminder/open-action?t=${encodeURIComponent(data)}&s=${encodeURIComponent(sig)}`;
 }
 async function smartOpenActionVerify(req){
-  const secret=smartOpenAttendSecret(),t=String(req.query.t||''),sig=String(req.query.s||'');
+  const secret=smartOpenAttendSecret(),t=String(req.query?.t||req.body?.t||''),sig=String(req.query?.s||req.body?.s||'');
   if(secret.length<32||t.length>600||!/^[A-Za-z0-9_-]+$/.test(t)||!/^[A-Za-z0-9_-]+$/.test(sig))return null;
   const expected=createHmac('sha256',secret).update(t).digest(),actual=Buffer.from(sig,'base64url');
   if(actual.length!==expected.length||!timingSafeEqual(expected,actual))return null;
   const payload=JSON.parse(Buffer.from(t,'base64url').toString('utf8'));
   if(!/^[1-9][0-9]*$/.test(String(payload.b))||!['student','parent'].includes(payload.r)||!['attend','reschedule','cancel'].includes(payload.a)||!Number.isSafeInteger(payload.exp)||payload.exp<Date.now()||payload.exp>Date.now()+48*3600000)return null;
-  const result=await pool.query('SELECT id,booking_ref,status,appointment_revision,starts_at FROM student_bookings WHERE id=$1 LIMIT 1',[payload.b]);
+  const result=await pool.query('SELECT id,booking_ref,status,appointment_revision,starts_at,mode,counsellor_id FROM student_bookings WHERE id=$1 LIMIT 1',[payload.b]);
   const booking=result.rows[0];
   if(!booking||!['approved','confirmed','rescheduled'].includes(String(booking.status).toLowerCase())||String(booking.appointment_revision??'')!==payload.v||new Date(booking.starts_at).getTime()<=Date.now())return null;
-  return {booking,action:payload.a};
+  return {booking,action:payload.a,recipient:payload.r,t,sig};
 }
 app.get('/api/public/booking/smart-reminder/open-action',async(req,res)=>{
   res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'});
   try{
     const valid=await smartOpenActionVerify(req);
     if(!valid)return res.status(403).type('text/plain').send('This reminder link is invalid or expired.');
-    if(valid.action==='attend')return res.redirect(303,smartOpenAttendUrl(valid.booking,'student'));
-    // Deliberately do not mutate a booking or bypass the original booking-management token.
-    return res.type('html').send('<!doctype html><html><meta name="viewport" content="width=device-width,initial-scale=1"><body style="font:16px Arial,sans-serif;max-width:480px;margin:40px auto;padding:20px"><h2>Guruvidya Academy</h2><p>This secure '+(valid.action==='reschedule'?'reschedule':'cancellation')+' request link has been verified.</p><p>Online changes are not yet enabled through Smart Reminders. Please use your original booking management link or contact Guruvidya Academy.</p><p>No booking changes have been made.</p></body></html>');
+    if(valid.action==='attend')return res.redirect(303,smartOpenAttendUrl(valid.booking,valid.recipient));
+    const esc=x=>String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    const formAction='/api/public/booking/smart-reminder/open-action/submit';
+    const hidden=`<input type="hidden" name="t" value="${esc(valid.t)}"><input type="hidden" name="s" value="${esc(valid.sig)}">`;
+    const intro=`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Guruvidya Booking</title></head><body style="font:16px Arial,sans-serif;max-width:520px;margin:32px auto;padding:20px"><h2>Guruvidya Academy</h2><p>Booking: <strong>${esc(valid.booking.booking_ref)}</strong></p>`;
+    if(valid.action==='cancel'){
+      const reasons=['Schedule Conflict','Personal Reasons','Date Not Suitable','Need Different Time','Prefer Online','Prefer Offline','Admission Plan Changed','Not Interested','Booked by Mistake','Duplicate Booking','Parent/Guardian Unavailable for Visit','Joined Another Institute','Financial Constraints','Other Reason'];
+      return res.type('html').send(intro+`<h3>Cancel booking</h3><p>This will cancel your booking only after you press the final button.</p><form method="POST" action="${formAction}">${hidden}<label>Cancellation reason (required)</label><p><select required name="cancellation_reason" style="padding:10px;width:100%"><option value="">Select a reason</option>${reasons.map(r=>`<option value="${esc(r)}">${esc(r)}</option>`).join('')}</select></p><label>Other reason details (only if Other Reason)</label><p><textarea name="cancellation_note" maxlength="500" style="width:100%;height:70px"></textarea></p><button type="submit" style="background:#b42318;color:white;border:0;padding:14px;border-radius:6px">Confirm cancellation</button></form></body></html>`);
+    }
+    return res.type('html').send(intro+`<h3>Reschedule booking</h3><p>Choose a date and available time for the same counsellor.</p><form method="POST" action="${formAction}">${hidden}<p><label>New date</label><input id="date" type="date" required style="display:block;padding:10px;width:95%"></p><p><label>Available time</label><select name="starts_at" id="slot" required style="display:block;padding:10px;width:100%"><option value="">Select a date first</option></select></p><button type="submit" style="background:#1457a8;color:white;border:0;padding:14px;border-radius:6px">Confirm reschedule</button></form><script>const d=document.getElementById('date'),sel=document.getElementById('slot');d.min=new Date(Date.now()+86400000).toISOString().slice(0,10);d.addEventListener('change',async()=>{sel.innerHTML='<option value="">Loading...</option>';try{const q=new URLSearchParams({date:d.value,t:${JSON.stringify(valid.t)},s:${JSON.stringify(valid.sig)}});const r=await fetch('/api/public/booking/smart-reminder/open-action/slots?'+q,{referrerPolicy:'no-referrer'});const j=await r.json();sel.innerHTML='<option value="">Select available time</option>';if(!j.success)throw Error(j.message||'Unavailable');for(const v of j.data){const o=document.createElement('option');o.value=v.starts_at;o.textContent=new Date(v.starts_at).toLocaleTimeString('en-IN',{timeZone:'Asia/Kolkata',hour:'numeric',minute:'2-digit'});sel.appendChild(o)}}catch(e){sel.innerHTML='<option value="">'+e.message+'</option>'}})</script></body></html>`);
   }catch(e){console.error('Smart reminder action view:',e.message);return res.status(400).send('Invalid reminder link');}
 });
+// Slot listing is recipient-scoped and never discloses other bookings.
+app.get('/api/public/booking/smart-reminder/open-action/slots',async(req,res)=>{
+  res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer'});
+  try{
+    const valid=await smartOpenActionVerify(req);
+    if(!valid||valid.action!=='reschedule')return res.status(403).json({success:false,message:'Invalid reminder link'});
+    const date=String(req.query.date||'');
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return res.status(400).json({success:false,message:'Invalid date'});
+    // Reuse public slot service, but only the original counsellor's free slots.
+    // The booking module supplies the same slot validator used by existing bookings.
+    if(typeof smartReminderBookingSlots!=='function')return res.status(503).json({success:false,message:'Slot service unavailable'});
+    const data=await smartReminderBookingSlots(date,valid.booking.mode,valid.booking.counsellor_id,valid.booking.id);
+    return res.json({success:true,data});
+  }catch(e){console.error('Smart reminder slots:',e?.message||e);return res.status(503).json({success:false,message:'Unable to load slots'});}
+});
+let smartReminderBookingSlots=null;
 async function smartOpenAttendVerify(req){
   const secret=smartOpenAttendSecret(),t=String(req.query.t||req.body?.t||''),sig=String(req.query.s||req.body?.s||'');
   if(secret.length<32||t.length>600||!(/^[A-Za-z0-9_-]+$/.test(t))||!(/^[A-Za-z0-9_-]+$/.test(sig)))return null;
@@ -5973,7 +5996,7 @@ app.post('/api/public/booking/smart-reminder/open-attend',express.urlencoded({ex
 
 installSmartReminderTestMediaRoute(app, pool);
 
-installBookingRoutes(app, pool, { onBookingCreated: onBookingCreatedWhatsApp, onBookingRescheduled: onBookingRescheduledWhatsApp, onBookingCancelled: onBookingCancelledRebook, onRebookLinkRequested: ({booking_ref,mobile})=>sendGuruVidyaRebookingCard({mobile},booking_ref), onInternalAppointmentEvent: sendInternalAppointmentAlert,
+installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminderBookingSlots=fn;}, verifySmartReminderAction:smartOpenActionVerify, onBookingCreated: onBookingCreatedWhatsApp, onBookingRescheduled: onBookingRescheduledWhatsApp, onBookingCancelled: onBookingCancelledRebook, onRebookLinkRequested: ({booking_ref,mobile})=>sendGuruVidyaRebookingCard({mobile},booking_ref), onInternalAppointmentEvent: sendInternalAppointmentAlert,
   sendSmartReminderManualTest: async ({booking,recipient_type,channel,stage,destination}) => {
     const name=recipient_type==='student'?booking.student_name:(booking.parent_name||booking.student_name);
     const when=new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',dateStyle:'medium',timeStyle:'short'}).format(new Date(booking.starts_at));
@@ -6004,7 +6027,7 @@ installBookingRoutes(app, pool, { onBookingCreated: onBookingCreatedWhatsApp, on
       // Send the link separately through the existing session-message endpoint;
       // do not depend on the unidentifiable Quick Reply webhook.
       if(sent?.success!==true)return {success:false,status:sent?.status,message:sent?.message||'Graphic send failed',message_id:bookingProviderMessageId(sent)};
-      const linkMessage=`Guruvidya Academy | Secure Reminder Links\nBooking: ${booking.booking_ref}\n\n1. Yes, I'll Attend (working confirmation):\n${attend}\n\n2. Reschedule (verified link; online change not enabled yet):\n${rescheduleLink}\n\n3. Cancel Appointment (verified link; online cancellation not enabled yet):\n${cancelLink}\n\nFor Reschedule/Cancel, please use your original booking management link until these actions are enabled.`;
+      const linkMessage=`Guruvidya Academy | Secure Reminder Links\nBooking: ${booking.booking_ref}\n\n1. Yes, I'll Attend (working confirmation):\n${attend}\n\n2. Reschedule (choose a new available slot):\n${rescheduleLink}\n\n3. Cancel Appointment (select a reason and confirm):\n${cancelLink}`;
       const linkPayload={apiToken:config.botsailorToken,phone_number_id:config.botsailorInstanceId,phone_number:botSailorPhone(destination),message:linkMessage};
       const linkSent=await botSailorPost(config.botsailorApiUrl||'https://botsailor.com/api/v1/whatsapp/send',linkPayload);
       // Never write the signed attendance URL to integration logs.
