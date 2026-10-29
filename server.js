@@ -3456,13 +3456,43 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     // A click must carry the exact original provider message context and the
     // matching booking recipient phone; title-only messages are not sufficient.
     const smartManualContext=ctaContextMessageId(payload);
+    // Smart Reminder only: accept an explicitly named button selection in BotSailor
+    // custom_fields, if present. Never infer a selection from attachment markers,
+    // message context, or the order in which test clicks arrive.
+    const smartCustomFields = payload.custom_fields;
+    const smartButtonFieldNames = new Set([
+      'button_reply_title', 'button_title', 'button_reply_id', 'button_id',
+      'quick_reply_title', 'quick_reply_payload', 'selected_button'
+    ]);
+    const smartNamedFields = [];
+    if (smartCustomFields && typeof smartCustomFields === 'object') {
+      if (Array.isArray(smartCustomFields)) {
+        for (const field of smartCustomFields) {
+          if (!field || typeof field !== 'object') continue;
+          const name = String(field.name || field.key || field.field_name || '').trim().toLowerCase();
+          if (smartButtonFieldNames.has(name)) smartNamedFields.push(field.value);
+        }
+      } else {
+        for (const [name, value] of Object.entries(smartCustomFields)) {
+          if (smartButtonFieldNames.has(name.toLowerCase())) smartNamedFields.push(value);
+        }
+      }
+    }
+    const smartExplicitCandidates = [
+      extractButtonReplyTitle(payload), extractButtonReplyId(payload),
+      payload.user_message, payload.userMessage, ...smartNamedFields
+    ].filter(value => typeof value === 'string').map(value =>
+      value.replace(/^#button[ _-]*reply#/i, '').trim().toLowerCase()
+    );
+    const smartRecognized = [...new Set(smartExplicitCandidates.map(value => ({
+      "yes, i'll attend": 'yes_attend', 'reschedule': 'reschedule',
+      'cancel appointment': 'cancel'
+    })[value]).filter(Boolean))];
+    // Conflicting explicit values are not safe to act on.
+    const smartSelectedButton = smartRecognized.length === 1 ? smartRecognized[0] : null;
     const smartManualRaw=String(extractButtonReplyTitle(payload)||payload.user_message||payload.userMessage||'')
       .replace(/^#button[ _-]*reply#/i,'').trim().toLowerCase();
-    const smartManualButton=({
-      "yes, i'll attend":"yes_attend",
-      "reschedule":"reschedule",
-      "cancel appointment":"cancel"
-    })[smartManualRaw];
+    const smartManualButton=smartSelectedButton;
     if(mobile && smartManualContext && smartManualButton){
       const smartManualEventId=String(
         payload.wa_message_id||payload.message_id||payload.message?.id||
@@ -3507,7 +3537,8 @@ app.post("/api/webhook/botsailor", async (req, res) => {
           ORDER BY t.id DESC LIMIT 2`,
           [smartManualContext, lastTen, canonicalMobile]);
         console.info('SMART REMINDER MANUAL BUTTON UNRESOLVED', {
-          reason: 'botsailor_button_value_missing',
+          reason: smartRecognized.length > 1 ? 'conflicting_button_values' : 'botsailor_button_value_missing',
+          hasNamedCustomButtonField: smartNamedFields.some(value => typeof value === 'string' && value.trim().length > 0),
           hasContextMessageId: true,
           matchedManualTests: diagnostic.rowCount,
           uniqueMatch: diagnostic.rowCount === 1,
