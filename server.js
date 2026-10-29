@@ -20,6 +20,7 @@ import pg from "pg";
 import { randomUUID, randomBytes, createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import sharp from "sharp";
+import { installSmartReminderTestMediaRoute, createSmartReminderTestMedia } from './booking/smart-reminder-media.js';
 import nodemailer from "nodemailer";
 
 const { Pool } = pg;
@@ -5793,6 +5794,8 @@ async function sendInternalAppointmentAlert({bookingId,event}) {
   }
 }
 
+installSmartReminderTestMediaRoute(app, pool);
+
 installBookingRoutes(app, pool, { onBookingCreated: onBookingCreatedWhatsApp, onBookingRescheduled: onBookingRescheduledWhatsApp, onBookingCancelled: onBookingCancelledRebook, onRebookLinkRequested: ({booking_ref,mobile})=>sendGuruVidyaRebookingCard({mobile},booking_ref), onInternalAppointmentEvent: sendInternalAppointmentAlert,
   sendSmartReminderManualTest: async ({booking,recipient_type,channel,stage,destination}) => {
     const name=recipient_type==='student'?booking.student_name:(booking.parent_name||booking.student_name);
@@ -5825,8 +5828,18 @@ installBookingRoutes(app, pool, { onBookingCreated: onBookingCreatedWhatsApp, on
     let mapping=t.variable_map||{};if(typeof mapping==='string'){try{mapping=JSON.parse(mapping)}catch{mapping={}}}
     const keys=[...new Set((JSON.stringify(mapping).match(/templateVariable-[A-Za-z0-9_-]+-\d+/g)||[]))];
     if(keys.length)return {success:false,status:'variable_mapping_review',message:'Template variable mapping requires verification before live test'};
-    const result=await sendBotSailorTemplate({mobile:destination,name,course:booking.course},t,{});
-    return {success:result?.success===true,status:result?.status,message:result?.message||'BotSailor response',message_id:result?.wa_message_id||result?.message_id||result?.response?.message_id||null};
+    // Approved reminder Utility templates have an IMAGE header. Build a booking-specific
+    // JPEG from the approved graphic and give BotSailor a durable public HTTPS URL.
+    // Never send the sample/demo details embedded in the source graphic.
+    const publicBase=String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').trim().replace(/\/$/,'');
+    let mediaUrl;
+    try { mediaUrl=await createSmartReminderTestMedia(pool,booking,publicBase); }
+    catch(err) { return {success:false,status:'reminder_image_preparation_failed',message:`Reminder IMAGE header preparation failed: ${err?.message||err}`}; }
+    const result=await sendBotSailorTemplate({mobile:destination,name,course:booking.course},t,{
+      template_header_media_url:mediaUrl,
+      'templateVariable-StundentName-1':String(booking.student_name||name||'').trim()
+    });
+    return {success:result?.success===true,status:result?.status,message:result?.message||'BotSailor response',message_id:result?.wa_message_id||result?.message_id||result?.response?.wa_message_id||result?.response?.message_id||null};
   } });
 
 async function bootstrap() {
