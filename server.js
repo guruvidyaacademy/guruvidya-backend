@@ -6123,19 +6123,15 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
       try{media=await createSmartReminderTestMedia(pool,booking,String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,''));}
       catch(e){return {success:false,status:'open_attend_setup_error',message:e.message};}
       const caption=`Guruvidya Academy | TEST ${stage} Reminder\nDear ${name},\nBooking: ${booking.booking_ref}\nCourse: ${booking.course}\nTime: ${when} IST`;
-      // Send the approved graphic without non-working Quick Reply buttons.
-      // The existing CLOSED Utility Template path below remains unchanged.
-      const graphicPayload={apiToken:config.botsailorToken,phone_number_id:config.botsailorInstanceId,phone_number:botSailorPhone(destination),media_url:media,media_type:'image',media_caption_text:caption};
-      const sent=await botSailorPost('https://botsailor.com/api/v1/whatsapp/send/file',graphicPayload);
-      await addIntegrationLog('whatsapp','smart_reminder_open_secure_links_graphic',sent.success?'success':'failed',{phone_number:graphicPayload.phone_number,media_type:'image',booking_ref:booking.booking_ref},sent.success?{status:sent.status}:{error:sent.message});
-      // Send exactly one native reply button. The returned ID MUST be the
-      // interactive-button message ID, not the preceding graphic message ID.
-      if(sent?.success!==true)return {success:false,status:sent?.status,message:sent?.message||'Graphic send failed',message_id:bookingProviderMessageId(sent)};
+      // One image-header interactive message: approved graphic + existing caption
+      // + native reply button. Keep its provider ID for the existing click routing.
+      // This endpoint already supports mediaUrl/mediaType for other booking flows.
       const buttonSent=await sendBotSailorReplyButtons(
         {mobile:destination},
-        `Please confirm your attendance.`,
+        caption,
         [{id:'gv_smart_4h_yes_attend',title:"Yes, I'll Attend"}],
-        'smart_reminder_manual_4h_native_attend'
+        'smart_reminder_manual_4h_native_attend',
+        {mediaUrl:media,mediaType:'image'}
       );
       const buttonMessageId=bookingProviderMessageId(buttonSent);
       // Never claim a trackable send when the provider has not returned an
@@ -6145,10 +6141,10 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
           manualTestId:manual_test_id,buttonAccepted:buttonSent?.success===true,
           hasProviderMessageId:!!buttonMessageId
         });
-        return {success:false,status:'native_button_untrackable',message:'Graphic may have been sent; native button was not accepted with a trackable provider message ID. Check provider logs before retrying.'};
+        return {success:false,status:'native_button_untrackable',message:'Image-header native reminder was not accepted with a trackable provider message ID. Check provider logs before retrying.'};
       }
       console.info('SMART REMINDER NATIVE 4H BUTTON ACCEPTED',{manualTestId:manual_test_id,hasProviderMessageId:true});
-      return {success:true,status:'accepted',message:'Graphic and native one-button reminder accepted',message_id:buttonMessageId};
+      return {success:true,status:'accepted',message:'Image-header native one-button reminder accepted',message_id:buttonMessageId};
     }
     // Only the explicitly mapped approved template can be used. Never fall back to an unrelated template.
     const envKey=`SMART_REMINDER_TEST_TEMPLATE_${String(booking.mode).toUpperCase()}_ID`;
