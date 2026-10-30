@@ -1100,7 +1100,9 @@ export function installBookingRoutes(app,pool,hooks={}) {
   app.get('/api/admin/booking/smart-reminders/manual-tests',admin,async(req,res)=>{
     try {const r=await pool.query(`SELECT t.id,t.booking_id,t.booking_ref,t.recipient_type,t.channel,t.stage,t.status,t.provider_message_id,t.detail,t.created_at,t.completed_at,
       (SELECT json_build_object('prompt_status',f.prompt_status,'prompt_sent_at',f.prompt_sent_at,
-        'choice',f.choice,'choice_clicked_at',f.choice_clicked_at)
+        'choice',f.choice,'choice_clicked_at',f.choice_clicked_at,
+        'history',COALESCE((SELECT json_agg(json_build_object('event_type',e.event_type,'previous_choice',e.previous_choice,'requested_choice',e.requested_choice,'occurred_at',e.occurred_at) ORDER BY e.occurred_at,e.id) FROM booking_smart_4h_preference_events e WHERE e.manual_test_id=f.manual_test_id),'[]'::json),
+        'pending_change', (SELECT json_build_object('requested_choice',p.requested_choice,'created_at',p.created_at,'status',p.status) FROM booking_smart_4h_preference_confirmations p WHERE p.manual_test_id=f.manual_test_id AND p.status IN ('sending','sent') ORDER BY p.id DESC LIMIT 1))
        FROM booking_smart_4h_followup_choices f WHERE f.manual_test_id=t.id) AS followup_choice,
       COALESCE((SELECT json_agg(json_build_object('button_key',c.button_key,'clicked_at',c.clicked_at,'last_clicked_at',COALESCE(c.last_clicked_at,c.clicked_at),'click_count',c.click_count,'click_history',CASE WHEN jsonb_array_length(c.click_history)>0 THEN c.click_history ELSE jsonb_build_array(c.clicked_at) END) ORDER BY c.clicked_at,c.id)
       FROM booking_smart_reminder_manual_clicks c WHERE c.manual_test_id=t.id),'[]'::json) AS manual_clicks

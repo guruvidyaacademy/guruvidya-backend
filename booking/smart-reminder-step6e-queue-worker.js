@@ -63,11 +63,13 @@ export function startSmartReminderStep6EQueueWorker(pool, {intervalMs=60000}={})
             AND b.starts_at=$8::timestamptz AND b.status IN ('requested','approved','confirmed','rescheduled')
             AND b.trashed_at IS NULL AND b.cancelled_at IS NULL AND b.starts_at>NOW()
             AND $7::timestamptz>NOW()
-            AND NOT ( $3='student' AND EXISTS (
-              SELECT 1 FROM booking_smart_4h_followup_choices f
+            AND NOT ( $4='whatsapp' AND $5 IN ('2h','1h') AND (
+              SELECT f.choice FROM booking_smart_4h_followup_choices f
+              JOIN booking_smart_reminder_manual_tests mt ON mt.id=f.manual_test_id
               WHERE f.booking_id=b.id AND f.appointment_revision=b.appointment_revision::text
-                AND f.choice='no'
-            ))
+                AND mt.recipient_type=$3 AND f.choice IS NOT NULL
+              ORDER BY f.choice_clicked_at DESC,f.manual_test_id DESC LIMIT 1
+            )='no')
             ON CONFLICT (booking_id,appointment_revision,recipient,channel,stage) DO NOTHING
             RETURNING id`,[item.bookingId,item.appointmentRevision,item.recipient,item.channel,item.stage,item.mode,item.dueAt,item.startsAt]);
           inserted+=result.rowCount||0;

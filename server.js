@@ -1,3 +1,4 @@
+import * as smartPreferenceChange from './booking/smart-reminder-preference-change.js';
 import { startSmartReminderStep6JReadinessMonitor } from './booking/smart-reminder-step6j-worker-readiness.js';
 import { startSmartReminderStep6EQueueWorker } from './booking/smart-reminder-step6e-queue-worker.js';
 import { auditSmartReminderQueueReadiness } from './booking/smart-reminder-step6c-queue-audit.js';
@@ -3493,39 +3494,18 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     const smartManualRaw=String(extractButtonReplyTitle(payload)||payload.user_message||payload.userMessage||'')
       .replace(/^#button[ _-]*reply#/i,'').trim().toLowerCase();
     const smartManualButton=smartSelectedButton;
-    // Isolated 4h follow-up Yes/No: exact prompt message context + student phone.
-    // A replayed webhook cannot change the first recorded preference or timestamp.
-    const followupRaw=String(extractButtonReplyTitle(payload)||payload.user_message||payload.userMessage||'')
-      .replace(/^#button[ _-]*reply#/i,'').trim().toLowerCase();
-    const followupChoice=followupRaw==='yes'?'yes':followupRaw==='no'?'no':null;
+    // Preference choices and opposite-choice confirmation are handled only with
+    // exact BotSailor prompt context, event ID, booking revision and recipient phone.
     const followupEventId=String(payload.wa_message_id||payload.message_id||payload.message?.id||
       payload.messages?.[0]?.id||payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.id||'').trim();
-    if(mobile && smartManualContext && followupChoice && followupEventId && followupEventId!==smartManualContext){
+    if(mobile && smartManualContext && followupEventId){
       try {
-        const mobileTen=botSailorPhone(mobile).replace(/^91(?=\d{10}$)/,'');
-        const choiceSaved=await pool.query(`UPDATE booking_smart_4h_followup_choices f
-          SET choice=$3,choice_provider_event_id=$4,choice_clicked_at=NOW()
-          FROM booking_smart_reminder_manual_tests t JOIN student_bookings b ON b.id=t.booking_id
-          WHERE f.manual_test_id=t.id AND f.prompt_provider_message_id=$1
-            AND f.prompt_status='sent' AND f.choice IS NULL AND t.recipient_type='student'
-            AND t.stage='4h' AND t.channel='whatsapp' AND t.status='accepted'
-            AND b.id=f.booking_id AND b.appointment_revision::text=f.appointment_revision
-            AND b.starts_at>NOW() AND b.status IN ('approved','confirmed','rescheduled')
-            AND regexp_replace(COALESCE(b.student_mobile,''),'[^0-9]','','g') IN ($2,'91'||$2)
-          RETURNING f.manual_test_id,f.booking_id,f.appointment_revision,f.choice,f.choice_clicked_at`,
-          [smartManualContext,mobileTen,followupChoice,followupEventId]);
-        if(choiceSaved.rowCount){
-          const c=choiceSaved.rows[0];
-          if(c.choice==='no'){
-            // Queue housekeeping only; never cancel the booking or Parent reminders.
-            await pool.query(`UPDATE booking_smart_reminder_jobs SET status='cancelled',updated_at=NOW()
-              WHERE booking_id=$1 AND appointment_revision::text=$2 AND recipient='student'
-                AND status='pending'`,[c.booking_id,c.appointment_revision]);
-          }
-          console.info('SMART 4H FOLLOWUP CHOICE RECORDED',{
-            manualTestId:c.manual_test_id,choice:c.choice,hasExactPromptContext:true});
-        }
-      }catch(e){console.error('SMART 4H FOLLOWUP CHOICE ERROR',e.message);}
+        const handled=await smartPreferenceChange.handlePreference({pool,mobile,
+          contextId:smartManualContext,eventId:followupEventId,
+          raw:extractButtonReplyTitle(payload)||payload.user_message||payload.userMessage||'',
+          sendButtons:sendBotSailorReplyButtons,providerId:bookingProviderMessageId});
+        if(handled)console.info('SMART 4H PREFERENCE EVENT HANDLED',{hasExactPromptContext:true});
+      }catch(e){console.error('SMART 4H PREFERENCE ERROR',e.message);}
     }
     if(mobile && smartManualContext && smartManualButton){
       const smartManualEventId=String(
@@ -3546,21 +3526,22 @@ app.post("/api/webhook/botsailor", async (req, res) => {
             [smartManualContext,smartManualMobile,smartManualEventId,smartManualButton]);
           if(saved.rowCount){
             console.info('Smart manual reminder click recorded',{button:smartManualButton});
-            // Only the exact Student 4h native-button click can generate this prompt.
+            // Only the exact recipient 4h native-button click can generate this prompt.
             if(smartManualButton==='yes_attend'){
               const claimed=await pool.query(`INSERT INTO booking_smart_4h_followup_choices
                 (manual_test_id,booking_id,appointment_revision)
                 SELECT t.id,b.id,b.appointment_revision::text
                 FROM booking_smart_reminder_manual_tests t JOIN student_bookings b ON b.id=t.booking_id
-                WHERE t.provider_message_id=$1 AND t.recipient_type='student' AND t.stage='4h'
+                WHERE t.provider_message_id=$1 AND t.recipient_type IN ('student','parent') AND t.stage='4h'
                   AND t.channel='whatsapp' AND t.status='accepted'
                   AND b.starts_at>NOW() AND b.status IN ('approved','confirmed','rescheduled')
                 ON CONFLICT(manual_test_id) DO NOTHING RETURNING manual_test_id,booking_id`,
                 [smartManualContext]);
               if(claimed.rowCount){
                 const f=claimed.rows[0];
-                const details=await pool.query(`SELECT b.starts_at,b.student_mobile,b.booking_ref
+                const details=await pool.query(`SELECT b.starts_at,b.student_mobile,b.parent_mobile,t.recipient_type,b.booking_ref
                   FROM student_bookings b JOIN booking_smart_4h_followup_choices f ON f.booking_id=b.id
+                  JOIN booking_smart_reminder_manual_tests t ON t.id=f.manual_test_id
                   WHERE f.manual_test_id=$1 AND b.appointment_revision::text=f.appointment_revision
                     AND b.starts_at>NOW() LIMIT 1`,[f.manual_test_id]);
                 if(details.rowCount){
@@ -3568,7 +3549,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
                   const time=new Date(b.starts_at).toLocaleTimeString('en-IN',{
                     timeZone:'Asia/Kolkata',hour:'numeric',minute:'2-digit',hour12:true});
                   const prompt=`Thank you for confirming your attendance!\n\nWould you like to receive a reminder 2 hours before your booked appointment time at ${time}?`;
-                  const response=await sendBotSailorReplyButtons({mobile:b.student_mobile},prompt,
+                  const response=await sendBotSailorReplyButtons({mobile:b.recipient_type==='parent'?b.parent_mobile:b.student_mobile},prompt,
                     [{id:'gv_smart_2h_optin_yes',title:'Yes'},{id:'gv_smart_2h_optin_no',title:'No'}],
                     'smart_4h_followup_yes_no');
                   const promptId=bookingProviderMessageId(response);
@@ -6220,6 +6201,7 @@ async function bootstrap() {
       choice_provider_event_id TEXT UNIQUE, choice_clicked_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`);
+    await smartPreferenceChange.ensureSchema(pool);
     if (process.env.GV_SMART_REMINDER_STEP6D_SEED === '1') {
       try {
         const report = await ensureSmartReminderSettings(pool);
