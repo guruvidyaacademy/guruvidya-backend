@@ -86,7 +86,7 @@ async function handlePreference({pool,mobile,contextId,eventId,raw,sendButtons,s
         if(action==='confirmed')await client.query(`UPDATE booking_smart_4h_followup_choices SET choice=$2,choice_clicked_at=NOW(),choice_provider_event_id=$3 WHERE manual_test_id=$1 AND choice=$4`,[p.manual_test_id,p.requested_choice,eventId,p.previous_choice]);
         if(action==='confirmed'&&p.requested_choice==='no')await client.query(`UPDATE booking_smart_reminder_jobs SET status='cancelled',updated_at=NOW()
           WHERE booking_id=$1 AND appointment_revision::text=$2 AND recipient=$3
-            AND channel='whatsapp' AND stage IN ('2h','1h') AND status='pending'`,
+            AND channel IN ('whatsapp','email') AND stage IN ('2h','1h') AND status='pending'`,
           [p.booking_id,p.appointment_revision,p.recipient_type]);
         if(action!=='expired')await client.query(`INSERT INTO booking_smart_4h_preference_events
           (manual_test_id,booking_id,appointment_revision,recipient_type,event_type,previous_choice,requested_choice,provider_event_id)
@@ -135,7 +135,7 @@ async function handlePreference({pool,mobile,contextId,eventId,raw,sendButtons,s
       WHERE manual_test_id=$1 AND choice IS NULL RETURNING manual_test_id`,[f.manual_test_id,choice,eventId]);
     if(saved.rowCount&&choice==='no')await pool.query(`UPDATE booking_smart_reminder_jobs SET status='cancelled',updated_at=NOW()
       WHERE booking_id=$1 AND appointment_revision::text=$2 AND recipient=$3
-        AND channel='whatsapp' AND stage IN ('2h','1h') AND status='pending'`,
+        AND channel IN ('whatsapp','email') AND stage IN ('2h','1h') AND status='pending'`,
       [f.booking_id,f.appointment_revision,f.recipient_type]);
     if(saved.rowCount){await pool.query(`INSERT INTO booking_smart_4h_preference_events
       (manual_test_id,booking_id,appointment_revision,recipient_type,event_type,previous_choice,requested_choice,provider_event_id)

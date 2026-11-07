@@ -29,6 +29,22 @@ export function startSmartReminderStep6EQueueWorker(pool, {intervalMs=60000}={})
             OR b.trashed_at IS NOT NULL OR b.cancelled_at IS NOT NULL
             OR j.appointment_revision<>b.appointment_revision
             OR j.starts_at<>b.starts_at)`);
+      // A 4h NO preference suppresses both WhatsApp AND email routine 2h/1h
+      // reminders for this booking revision and recipient. Keep online 5min.
+      // Cancel already-queued pending jobs as well as preventing new ones.
+      const preferenceInvalidated = await pool.query(`UPDATE booking_smart_reminder_jobs j
+        SET status='cancelled', updated_at=NOW()
+        FROM student_bookings b
+        WHERE j.booking_id=b.id AND j.status='pending'
+          AND j.appointment_revision=b.appointment_revision
+          AND j.stage IN ('2h','1h')
+          AND (SELECT f.choice FROM booking_smart_4h_followup_choices f
+            JOIN booking_smart_reminder_manual_tests mt ON mt.id=f.manual_test_id
+            WHERE f.booking_id=b.id AND f.appointment_revision=b.appointment_revision::text
+              AND mt.recipient_type=j.recipient AND f.choice IS NOT NULL
+            ORDER BY f.choice_clicked_at DESC,f.manual_test_id DESC LIMIT 1)='no'`);
+      console.info('[Smart Reminders Step 6F] PREFERENCE INVALIDATION',
+        JSON.stringify({cancelledPending:preferenceInvalidated.rowCount||0,dispatchEnabled:false}));
       console.info('[Smart Reminders Step 6F] QUEUE INVALIDATION',
         JSON.stringify({cancelledPending:invalidated.rowCount||0,dispatchEnabled:false}));
       // Housekeeping must run even while the master is OFF. It never sends messages.
@@ -63,7 +79,7 @@ export function startSmartReminderStep6EQueueWorker(pool, {intervalMs=60000}={})
             AND b.starts_at=$8::timestamptz AND b.status IN ('requested','approved','confirmed','rescheduled')
             AND b.trashed_at IS NULL AND b.cancelled_at IS NULL AND b.starts_at>NOW()
             AND $7::timestamptz>NOW()
-            AND NOT ( $4='whatsapp' AND $5 IN ('2h','1h') AND (
+            AND NOT ( $5 IN ('2h','1h') AND (
               SELECT f.choice FROM booking_smart_4h_followup_choices f
               JOIN booking_smart_reminder_manual_tests mt ON mt.id=f.manual_test_id
               WHERE f.booking_id=b.id AND f.appointment_revision=b.appointment_revision::text

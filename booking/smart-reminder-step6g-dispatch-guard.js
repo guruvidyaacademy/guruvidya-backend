@@ -6,7 +6,7 @@ const STAGES = new Set(['4h','2h','1h','5min']);
 const STATUSES = new Set(['requested','approved','confirmed','rescheduled']);
 const isTrue = value => value === true;
 
-export function checkSmartReminderDispatchEligibility({job,booking,settings,now=new Date(),consentVerified=false,providerReady=false}={}) {
+export function checkSmartReminderDispatchEligibility({job,booking,settings,now=new Date(),consentVerified=false,providerReady=false,preferenceChoice=null}={}) {
   const fail = reason => ({eligible:false,reason});
   if (!job || !booking || !settings) return fail('missing_context');
   if (!isTrue(settings.master_enabled)) return fail('master_off');
@@ -16,6 +16,9 @@ export function checkSmartReminderDispatchEligibility({job,booking,settings,now=
   if (Date.parse(job.starts_at)!==Date.parse(booking.starts_at)) return fail('appointment_changed');
   if (String(job.mode)!==String(booking.mode)) return fail('mode_changed');
   if (job.stage==='5min' && job.mode!=='online') return fail('invalid_stage_mode');
+  // The live sender must read the latest recipient preference from the DB at dispatch.
+  // A NO suppresses routine reminders on BOTH channels; online 5min is exempt.
+  if (['2h','1h'].includes(job.stage) && String(preferenceChoice||'').toLowerCase()==='no') return fail('recipient_opted_out');
   if (!isTrue(settings[job.mode]?.[job.stage]?.[job.channel])) return fail('channel_disabled');
   if (job.channel==='whatsapp' && !consentVerified) return fail('consent_unverified');
   if (!providerReady) return fail('provider_not_verified');

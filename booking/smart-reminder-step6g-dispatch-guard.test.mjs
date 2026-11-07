@@ -13,3 +13,8 @@ test('holds unverified whatsapp consent',()=>assert.equal(check({...args,job:{..
 test('holds when provider unverified',()=>assert.equal(check({...args,providerReady:false}).reason,'provider_not_verified'));
 test('holds after appointment',()=>assert.equal(check({...args,now:'2026-11-01T12:01:00Z'}).reason,'outside_delivery_window'));
 test('allows eligible email but does not send',()=>assert.deepEqual(check(args),{eligible:true,reason:'guard_passed_not_sent'}));
+
+test('NO suppresses 1h email',()=>assert.equal(check({...args,preferenceChoice:'no'}).reason,'recipient_opted_out'));
+test('YES permits 1h email',()=>assert.equal(check({...args,preferenceChoice:'yes'}).eligible,true));
+test('NO suppresses 2h WhatsApp before provider check',()=>assert.equal(check({...args,job:{...job,stage:'2h',channel:'whatsapp'},preferenceChoice:'no'}).reason,'recipient_opted_out'));
+test('NO does not suppress online 5min',()=>assert.equal(check({...args,job:{...job,stage:'5min'},settings:{...settings,online:{'5min':{email:true}}},preferenceChoice:'no'}).eligible,true));
