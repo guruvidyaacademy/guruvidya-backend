@@ -3503,7 +3503,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
         const handled=await smartPreferenceChange.handlePreference({pool,mobile,
           contextId:smartManualContext,eventId:followupEventId,
           raw:extractButtonReplyTitle(payload)||payload.user_message||payload.userMessage||'',
-          sendButtons:sendBotSailorReplyButtons,providerId:bookingProviderMessageId});
+          sendButtons:sendBotSailorReplyButtons,sendText:sendBotSailorText,providerId:bookingProviderMessageId});
         if(handled)console.info('SMART 4H PREFERENCE EVENT HANDLED',{hasExactPromptContext:true});
       }catch(e){console.error('SMART 4H PREFERENCE ERROR',e.message);}
     }

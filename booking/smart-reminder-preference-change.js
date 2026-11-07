@@ -30,12 +30,26 @@ async function ensureSchema(pool){
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), decided_at TIMESTAMPTZ,
     decision_provider_event_id TEXT UNIQUE
   )`);
+  // Record repeat clicks without changing the already-final decision.
+  await pool.query(`CREATE TABLE IF NOT EXISTS booking_smart_4h_preference_ignored_clicks (
+    id BIGSERIAL PRIMARY KEY,
+    confirmation_id BIGINT NOT NULL REFERENCES booking_smart_4h_preference_confirmations(id) ON DELETE CASCADE,
+    manual_test_id BIGINT NOT NULL,
+    provider_event_id TEXT NOT NULL UNIQUE,
+    button_choice TEXT NOT NULL CHECK(button_choice IN ('confirm','keep')),
+    ignored_reason TEXT NOT NULL DEFAULT 'already_confirmed',
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`);
+  await pool.query(`ALTER TABLE booking_smart_4h_preference_confirmations
+    ADD COLUMN IF NOT EXISTS acknowledgement_status TEXT NOT NULL DEFAULT 'pending'`);
+  await pool.query(`ALTER TABLE booking_smart_4h_preference_confirmations
+    ADD COLUMN IF NOT EXISTS acknowledgement_at TIMESTAMPTZ`);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS gv_4h_one_open_confirmation
     ON booking_smart_4h_preference_confirmations(manual_test_id)
     WHERE status IN ('sending','sent')`);
 }
 function formatTime(value){return new Date(value).toLocaleTimeString('en-IN',{timeZone:'Asia/Kolkata',hour:'numeric',minute:'2-digit',hour12:true});}
-async function handlePreference({pool,mobile,contextId,eventId,raw,sendButtons,providerId}){
+async function handlePreference({pool,mobile,contextId,eventId,raw,sendButtons,sendText,providerId}){
   if(!mobile||!contextId||!eventId||eventId===contextId)return false;
   const choice=normalizeChoice(raw),decision=decisionFromReply(raw);
   if(!choice&&!decision)return false;
@@ -49,11 +63,19 @@ async function handlePreference({pool,mobile,contextId,eventId,raw,sendButtons,p
         FROM booking_smart_4h_preference_confirmations p
         JOIN booking_smart_4h_followup_choices f ON f.manual_test_id=p.manual_test_id
         JOIN student_bookings b ON b.id=p.booking_id
-        WHERE p.prompt_provider_message_id=$1 AND p.status='sent'
+        WHERE p.prompt_provider_message_id=$1 AND p.status IN ('sent','confirmed','kept','expired')
           AND regexp_replace(COALESCE(CASE WHEN p.recipient_type='parent' THEN b.parent_mobile ELSE b.student_mobile END,''),'[^0-9]','','g') IN ($2,'91'||$2)
         FOR UPDATE OF p`,[contextId,lastTen]);
       if(!r.rowCount){await client.query('ROLLBACK');return false;}
       const p=r.rows[0];
+      if(p.status!=='sent'){
+        await client.query(`INSERT INTO booking_smart_4h_preference_ignored_clicks
+          (confirmation_id,manual_test_id,provider_event_id,button_choice,ignored_reason)
+          VALUES($1,$2,$3,$4,$5) ON CONFLICT(provider_event_id) DO NOTHING`,
+          [p.id,p.manual_test_id,eventId,decision,p.status==='expired'?'expired_confirmation':'already_confirmed']);
+        await client.query('COMMIT');
+        return true;
+      }
       const valid=String(p.appointment_revision)===String((await client.query('SELECT appointment_revision FROM student_bookings WHERE id=$1',[p.booking_id])).rows[0]?.appointment_revision)
         && new Date(p.starts_at)>new Date()&&['approved','confirmed','rescheduled'].includes(p.booking_status)
         && p.current_choice===p.previous_choice;
@@ -71,7 +93,28 @@ async function handlePreference({pool,mobile,contextId,eventId,raw,sendButtons,p
           VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(provider_event_id) DO NOTHING`,
           [p.manual_test_id,p.booking_id,p.appointment_revision,p.recipient_type,action,p.previous_choice,p.requested_choice,eventId]);
       }
-      await client.query('COMMIT');return true;
+      // Claim acknowledgement before sending: duplicate webhooks must not send it twice.
+      const shouldAcknowledge=updated.rowCount>0&&action!=='expired'&&typeof sendText==='function';
+      if(shouldAcknowledge)await client.query(`UPDATE booking_smart_4h_preference_confirmations
+        SET acknowledgement_status='sending' WHERE id=$1 AND acknowledgement_status='pending'`,[p.id]);
+      await client.query('COMMIT');
+      if(shouldAcknowledge){
+        const isOff=action==='confirmed'?p.requested_choice==='no':p.previous_choice==='no';
+        const message=isOff
+          ?`Reminder Preference Confirmed\n\nYour remaining 2-hour and 1-hour reminders are OFF for your booking at ${formatTime(p.starts_at)}.\n\nThis confirmation is complete. Further clicks on the previous confirmation buttons will not change your preference.\n\nGuruvidya Academy Pvt. Ltd.`
+          :`Reminder Preference Confirmed\n\nYour remaining 2-hour and 1-hour reminders will stay ON for your booking at ${formatTime(p.starts_at)}.\n\nThis confirmation is complete. Further clicks on the previous confirmation buttons will not change your preference.\n\nGuruvidya Academy Pvt. Ltd.`;
+        try{
+          const result=await sendText({mobile},message,'smart_4h_preference_acknowledgement');
+          await pool.query(`UPDATE booking_smart_4h_preference_confirmations
+            SET acknowledgement_status=$2,acknowledgement_at=NOW() WHERE id=$1`,
+            [p.id,result?.success===true?'sent':'failed']);
+        }catch(e){
+          await pool.query(`UPDATE booking_smart_4h_preference_confirmations
+            SET acknowledgement_status='failed',acknowledgement_at=NOW() WHERE id=$1`,[p.id]).catch(()=>{});
+          console.error('SMART 4H PREFERENCE ACKNOWLEDGEMENT ERROR',e.message);
+        }
+      }
+      return true;
     }catch(e){await client.query('ROLLBACK').catch(()=>{});throw e;}finally{client.release();}
   }
   const r=await pool.query(`SELECT f.manual_test_id,f.booking_id,f.appointment_revision,f.choice,t.recipient_type,b.starts_at,
