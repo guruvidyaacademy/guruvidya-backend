@@ -6101,6 +6101,23 @@ app.post('/api/public/booking/smart-reminder/open-attend',express.urlencoded({ex
   }catch(e){console.error('Smart OPEN attend confirm:',e.message);return res.status(503).send('Unable to record confirmation. Please retry later.');}
 });
 
+// Smart Reminders: serve the exact supplied brand artwork (no recreated logo).
+app.get('/api/public/booking/smart-reminder/original-logo.png', async (_req,res)=>{
+  try { const bytes=await readFile(new URL('./booking/smart-reminder-original-logo.png',import.meta.url));
+    res.set({'Content-Type':'image/png','Cache-Control':'public, max-age=604800','X-Content-Type-Options':'nosniff'}).send(bytes);
+  } catch { res.status(404).end(); }
+});
+
+// Email-only reminder visual: reuse the exact shared footer/social URLs from booking emails.
+function smartReminderFourHourEmailHtml(b, recipient, name, when, links={}) {
+  const esc=bookingEmailEsc;
+  const base=String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'');
+  const logo=`${base}/api/public/booking/smart-reminder/original-logo.png`;
+  const mode=String(b.mode||'').toLowerCase()==='online'?'Online':`Offline – ${b.offline_location_name||'Tagore Garden'}`;
+  const btn=(label,url,color)=>url?`<a href="${esc(url)}" style="display:inline-block;margin:5px 4px;padding:13px 19px;background:${color};color:#fff;text-decoration:none;border-radius:9px;font-size:14px;font-weight:700">${esc(label)}</a>`:'';
+  return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><meta charset="utf-8"></head><body style="margin:0;background:#edf3fa;font-family:Arial,Helvetica,sans-serif;color:#092354"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#edf3fa"><tr><td align="center" style="padding:22px 10px"><table role="presentation" width="620" cellspacing="0" cellpadding="0" style="max-width:620px;width:100%;background:#fff;border-radius:14px;overflow:hidden"><tr><td style="background:#fff;padding:24px 26px;border-top:5px solid #d82d36"><img src="${esc(logo)}" alt="Guruvidya – Real Education • Real Results" width="310" style="width:100%;max-width:310px;height:auto;border:0;display:block"></td></tr><tr><td style="padding:25px 28px;background:#06285e;color:#fff;border-top:5px solid #d82d36"><div style="font-size:13px;letter-spacing:2px;color:#c6e1ff">GURUVIDYA ACADEMY</div><div style="font-size:33px;line-height:1.12;font-weight:800;margin-top:9px">Appointment<br>Reminder</div><div style="font-size:13px;margin-top:9px;color:#d8e9ff">4-HOUR REMINDER</div></td></tr><tr><td style="padding:28px 30px 12px"><div style="font-size:21px;font-weight:700">Dear ${esc(name||'Student')},</div><p style="font-size:15px;line-height:1.6;margin:13px 0 20px">This is a reminder for your upcoming appointment at Guruvidya Academy Pvt. Ltd.</p><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #bddcf9;border-radius:12px;background:#f1f7ff"><tr><td colspan="2" style="background:#dceeff;padding:13px 17px;font-weight:800;font-size:17px">Appointment Details</td></tr><tr><td style="padding:14px 17px;font-size:13px;color:#496385">Course<br><strong style="font-size:16px;color:#092354">${esc(b.course||'—')}</strong></td><td style="padding:14px 17px;font-size:13px;color:#496385">Date &amp; Time<br><strong style="font-size:15px;color:#092354">${esc(when)} IST</strong></td></tr><tr><td colspan="2" style="padding:0 17px 16px;font-size:13px;color:#496385">Mode<br><strong style="font-size:15px;color:#092354">${esc(mode)}</strong></td></tr></table><div style="text-align:center;font-size:18px;font-weight:800;margin:25px 0 9px">Will you be able to attend as scheduled?</div><div style="text-align:center">${btn("Yes, I'll Attend",links.attend,'#129528')}${btn('Reschedule',links.reschedule,'#f18100')}${btn('Cancel',links.cancel,'#d7132c')}</div><div style="margin:20px 0;background:#e8f4ff;border-radius:10px;text-align:center;padding:13px;font-size:13px"><strong>Need Help?</strong> &nbsp; <a style="color:#0752a2" href="tel:+919821627725">+91 9821627725</a> &nbsp; | &nbsp; <a style="color:#0752a2" href="https://wa.me/919821627725">Chat on WhatsApp</a></div><p style="font-size:14px;line-height:1.5">Warm Regards,<br><strong>Team – Guruvidya Academy Pvt. Ltd.</strong></p></td></tr>${bookingSharedInternalStyleFooter(base)}</table></td></tr></table></body></html>`;
+}
+
 installSmartReminderTestMediaRoute(app, pool);
 
 installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminderBookingSlots=fn;}, verifySmartReminderAction:smartOpenActionVerify, onBookingCreated: onBookingCreatedWhatsApp, onBookingRescheduled: onBookingRescheduledWhatsApp, onBookingCancelled: onBookingCancelledRebook, onRebookLinkRequested: ({booking_ref,mobile})=>sendGuruVidyaRebookingCard({mobile},booking_ref), onInternalAppointmentEvent: sendInternalAppointmentAlert,
@@ -6110,7 +6127,7 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
     if(channel==='email'){
       const subject=`Guruvidya | TEST ${stage} Appointment Reminder | ${booking.booking_ref}`;
       const text=`Dear ${name},\n\nThis is a manually requested TEST appointment reminder from Guruvidya Academy Pvt. Ltd.\nBooking Ref: ${booking.booking_ref}\nCourse: ${booking.course}\nAppointment: ${when} IST\n\nThis is a test message. No action is required.`;
-      const result=await sendEmailWithFailover({to:destination,subject,text,html:`<div style="font-family:Arial,sans-serif"><h2>Guruvidya Academy Pvt. Ltd.</h2><p>TEST Appointment Reminder</p><p>${text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>')}</p></div>`});
+      const result=await sendEmailWithFailover({to:destination,subject,text,html:stage==='4h'?smartReminderFourHourEmailHtml(booking,recipient_type,name,when):`<div style="font-family:Arial,sans-serif"><h2>Guruvidya Academy Pvt. Ltd.</h2><p>TEST Appointment Reminder</p><p>${text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>')}</p></div>`});
       return {success:true,message:'Email provider accepted test',message_id:result?.id||result?.messageId||null};
     }
     if(process.env.SMART_REMINDER_MANUAL_OPEN_WINDOW_TEST==='true' && stage==='4h'){
