@@ -5989,7 +5989,7 @@ app.get('/api/public/booking/smart-reminder/open-action',async(req,res)=>{
     // are tracked; older issued links continue opening normally.
     if(valid.manualTestId && ['reschedule','cancel'].includes(valid.action)){
       const test=await pool.query(`SELECT id FROM booking_smart_reminder_manual_tests
-        WHERE id=$1 AND booking_id=$2 AND recipient_type=$3 AND channel='whatsapp'
+        WHERE id=$1 AND booking_id=$2 AND recipient_type=$3 AND channel IN ('whatsapp','email')
           AND status='accepted' AND created_at>=NOW()-INTERVAL '48 hours' LIMIT 1`,
         [valid.manualTestId,valid.booking.id,valid.recipient]);
       if(test.rowCount){
