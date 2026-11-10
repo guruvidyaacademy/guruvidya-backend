@@ -174,6 +174,11 @@ export async function initBooking(pool) {
   await pool.query(`CREATE INDEX IF NOT EXISTS booking_internal_alert_button_message_idx ON booking_internal_alert_deliveries(button_message_id) WHERE button_message_id IS NOT NULL`);
   await pool.query(`CREATE INDEX IF NOT EXISTS booking_internal_alert_provider_message_idx ON booking_internal_alert_deliveries(provider_message_id) WHERE provider_message_id IS NOT NULL`);
   await pool.query(`CREATE TABLE IF NOT EXISTS booking_smart_reminder_manual_tests (id BIGSERIAL PRIMARY KEY,booking_id BIGINT NOT NULL,booking_ref TEXT NOT NULL,recipient_type TEXT NOT NULL,channel TEXT NOT NULL,stage TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'sending',provider_message_id TEXT,detail TEXT,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),completed_at TIMESTAMPTZ)`);
+  // Additive provider-confirmed manual-test receipt timestamps; no scheduled-delivery changes.
+  await pool.query(`ALTER TABLE booking_smart_reminder_manual_tests ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE booking_smart_reminder_manual_tests ADD COLUMN IF NOT EXISTS read_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE booking_smart_reminder_manual_tests ADD COLUMN IF NOT EXISTS opened_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE booking_smart_reminder_manual_tests ADD COLUMN IF NOT EXISTS provider_clicked_at TIMESTAMPTZ`);
   await pool.query(`CREATE TABLE IF NOT EXISTS booking_smart_reminder_manual_clicks (
     id BIGSERIAL PRIMARY KEY,
     manual_test_id BIGINT NOT NULL REFERENCES booking_smart_reminder_manual_tests(id) ON DELETE CASCADE,
@@ -1117,6 +1122,8 @@ export function installBookingRoutes(app,pool,hooks={}) {
   // Separate audit table: test messages must not masquerade as scheduled reminders.
   app.get('/api/admin/booking/smart-reminders/manual-tests',admin,async(req,res)=>{
     try {const r=await pool.query(`SELECT t.id,t.booking_id,t.booking_ref,t.recipient_type,t.channel,t.stage,t.status,t.provider_message_id,t.detail,t.created_at,t.completed_at,
+      COALESCE(t.delivered_at,CASE WHEN t.channel='whatsapp' AND r.status IN ('delivered','read') THEN r.received_at END) AS delivered_at,
+      COALESCE(t.read_at,CASE WHEN t.channel='whatsapp' AND r.status='read' THEN r.received_at END) AS read_at,t.opened_at,t.provider_clicked_at,
       (SELECT json_build_object('prompt_status',f.prompt_status,'prompt_sent_at',f.prompt_sent_at,
         'choice',f.choice,'choice_clicked_at',f.choice_clicked_at,
         'history',COALESCE((SELECT json_agg(json_build_object('event_type',e.event_type,'previous_choice',e.previous_choice,'requested_choice',e.requested_choice,'occurred_at',e.occurred_at) ORDER BY e.occurred_at,e.id) FROM booking_smart_4h_preference_events e WHERE e.manual_test_id=f.manual_test_id),'[]'::json),
@@ -1124,7 +1131,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
        FROM booking_smart_4h_followup_choices f WHERE f.manual_test_id=t.id) AS followup_choice,
       COALESCE((SELECT json_agg(json_build_object('button_key',c.button_key,'clicked_at',c.clicked_at,'last_clicked_at',COALESCE(c.last_clicked_at,c.clicked_at),'click_count',c.click_count,'click_history',CASE WHEN jsonb_array_length(c.click_history)>0 THEN c.click_history ELSE jsonb_build_array(c.clicked_at) END) ORDER BY c.clicked_at,c.id)
       FROM booking_smart_reminder_manual_clicks c WHERE c.manual_test_id=t.id),'[]'::json) AS manual_clicks
-      FROM booking_smart_reminder_manual_tests t WHERE t.created_at >= NOW()-INTERVAL '15 days' ORDER BY t.id DESC LIMIT 500`);res.json({success:true,data:r.rows});}
+      FROM booking_smart_reminder_manual_tests t LEFT JOIN booking_whatsapp_status_receipts r ON t.channel='whatsapp' AND r.provider_message_id=t.provider_message_id WHERE t.created_at >= NOW()-INTERVAL '15 days' ORDER BY t.id DESC LIMIT 500`);res.json({success:true,data:r.rows});}
     catch(e){console.error('Smart manual tests list:',e.message);fail(res,503,'Manual test history unavailable');}
   });
   app.post('/api/admin/booking/smart-reminders/manual-test',admin,async(req,res)=>{

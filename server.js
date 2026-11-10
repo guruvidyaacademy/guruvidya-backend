@@ -96,6 +96,13 @@ app.post('/api/webhook/resend', async (req, res) => {
       WHERE channel='email' AND provider='resend' AND provider_message_id=$1
         AND event IN ('booking_confirmation','booking_reschedule_confirmation','booking_cancellation')
       RETURNING id`,[messageId,state,rank[state]??0]);
+    // Manual tests are independent of scheduled deliveries; match only the exact provider email ID.
+    const manualEmail = await pool.query(`UPDATE booking_smart_reminder_manual_tests SET
+      delivered_at=CASE WHEN $2 IN ('delivered','opened','clicked') THEN COALESCE(delivered_at,NOW()) ELSE delivered_at END,
+      opened_at=CASE WHEN $2='opened' THEN COALESCE(opened_at,NOW()) ELSE opened_at END,
+      provider_clicked_at=CASE WHEN $2='clicked' THEN COALESCE(provider_clicked_at,NOW()) ELSE provider_clicked_at END
+      WHERE channel='email' AND provider_message_id=$1 AND status='accepted' RETURNING id`,[messageId,state]);
+    if(manualEmail.rowCount)console.info('SMART MANUAL EMAIL RECEIPT',{event:eventType,matched:manualEmail.rowCount});
     console.info('RESEND BOOKING EMAIL STATUS', {event:eventType,matched:bookingEvent.rowCount,messageIdPresent:true});
     return res.json({success:true});
   } catch (err) { console.error('Resend webhook processing error:', err.message); return res.status(500).json({success:false}); }
@@ -3437,6 +3444,12 @@ app.post("/api/webhook/botsailor", async (req, res) => {
             AND (CASE status WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)
               < (CASE $2 WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END)
           RETURNING id`,[statusMessageId,nextStatus]);
+        // Keep manual tests separate; exact outbound provider ID prevents cross-recipient attribution.
+        const manualWa=await pool.query(`UPDATE booking_smart_reminder_manual_tests SET
+          delivered_at=CASE WHEN $2 IN ('delivered','read') THEN COALESCE(delivered_at,NOW()) ELSE delivered_at END,
+          read_at=CASE WHEN $2='read' THEN COALESCE(read_at,NOW()) ELSE read_at END
+          WHERE channel='whatsapp' AND provider_message_id=$1 AND status='accepted' RETURNING id`,[statusMessageId,nextStatus]);
+        if(manualWa.rowCount)console.info('SMART MANUAL WHATSAPP RECEIPT',{status:nextStatus,matched:manualWa.rowCount});
         console.log('BOTSAILOR REMINDER STATUS', {status:nextStatus,hasMessageId:true,matched:updated.rowCount,bookingMessages:bookingUpdated.rowCount,internalAlerts:internalAlertUpdated.rowCount});
       } else {
         console.log('BOTSAILOR REMINDER STATUS UNMATCHED', {status:statusValue || '(empty)',hasMessageId:Boolean(statusMessageId)});
