@@ -183,6 +183,24 @@ export async function initBooking(pool) {
     UNIQUE(manual_test_id,provider_event_id)
   )`);
 
+  // Smart Reminder Email Yes landing click uses a distinct key from the actual
+  // attendance confirmation. Expand only this table's existing CHECK constraint;
+  // preserve all existing rows and the other supported button keys.
+  await pool.query(`DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'booking_smart_reminder_manual_clicks'::regclass
+          AND conname = 'booking_smart_reminder_manual_clicks_button_key_check'
+      ) THEN
+        ALTER TABLE booking_smart_reminder_manual_clicks
+          DROP CONSTRAINT booking_smart_reminder_manual_clicks_button_key_check;
+      END IF;
+      ALTER TABLE booking_smart_reminder_manual_clicks
+        ADD CONSTRAINT booking_smart_reminder_manual_clicks_button_key_check
+        CHECK (button_key IN ('yes_attend','yes_attend_open','reschedule','cancel'));
+    END $$`);
+
   // Additive manual secure-link click history; preserve original first-click timestamp.
   await pool.query(`ALTER TABLE booking_smart_reminder_manual_clicks ADD COLUMN IF NOT EXISTS last_clicked_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE booking_smart_reminder_manual_clicks ADD COLUMN IF NOT EXISTS click_count INTEGER NOT NULL DEFAULT 1`);
