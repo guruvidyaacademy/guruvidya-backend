@@ -6099,6 +6099,24 @@ async function smartOpenAttendVerify(req){
   if(!b||!['approved','confirmed','rescheduled'].includes(String(b.status).toLowerCase())||String(b.appointment_revision??'')!==payload.v||new Date(b.starts_at).getTime()<=Date.now())return null;
   return {booking:b,recipient:payload.r,manualTestId:payload.mt||null,t,sig};
 }
+// Isolated attendance success page: exact header, banner and footer from the existing booking page.
+async function smartAttendanceSuccessHtml(valid, confirmedAt){
+  const esc=x=>String(x??'—').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  const details=await pool.query('SELECT course,mode,offline_location_name,starts_at FROM student_bookings WHERE id=$1 LIMIT 1',[valid.booking.id]);
+  const b=details.rows[0]||{};
+  const date=b.starts_at?new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',day:'2-digit',month:'short',year:'numeric',hour:'numeric',minute:'2-digit',hour12:true}).format(new Date(b.starts_at))+' IST':'—';
+  const when=confirmedAt?new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',day:'2-digit',month:'short',year:'numeric',hour:'numeric',minute:'2-digit',hour12:true}).format(new Date(confirmedAt))+' IST':'—';
+  const mode=String(b.mode||'').toLowerCase()==='online'?'Online':'Offline'+(b.offline_location_name?' – '+b.offline_location_name:'');
+  const template=await readFile(new URL('./booking/smart-reminder-attendance-success.html',import.meta.url),'utf8');
+  return template.replaceAll('{{BOOKING_REF}}',esc(valid.booking.booking_ref)).replaceAll('{{COURSE}}',esc(b.course)).replaceAll('{{WHEN}}',esc(date)).replaceAll('{{MODE}}',esc(mode)).replaceAll('{{CONFIRMED_AT}}',esc(when));
+}
+async function smartAttendanceExisting(valid){
+  const q=await pool.query(`SELECT c.clicked_at FROM booking_smart_reminder_manual_clicks c
+    JOIN booking_smart_reminder_manual_tests t ON t.id=c.manual_test_id
+    WHERE t.booking_id=$1 AND t.recipient_type=$2 AND c.provider_event_id=$3 AND c.button_key='yes_attend'
+    ORDER BY c.clicked_at ASC LIMIT 1`,[valid.booking.id,valid.recipient,'open-attend:'+valid.sig]);
+  return q.rows[0]?.clicked_at||null;
+}
 app.get('/api/public/booking/smart-reminder/open-attend',async(req,res)=>{
   try{
     const valid=await smartOpenAttendVerify(req);
@@ -6122,7 +6140,10 @@ app.get('/api/public/booking/smart-reminder/open-attend',async(req,res)=>{
             ELSE booking_smart_reminder_manual_clicks.click_history END)||jsonb_build_array(NOW())`,
         [emailTest.rows[0].id,'email-attend-open:'+valid.sig]);
     }
-    return res.type('html').send(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Guruvidya Attendance</title></head><body style="font:16px Arial,sans-serif;max-width:480px;margin:40px auto;padding:20px"><h2>Guruvidya Academy</h2><p>Confirm attendance for booking <strong>${esc(valid.booking.booking_ref)}</strong>?</p><form method="POST" action="/api/public/booking/smart-reminder/open-attend"><input type="hidden" name="t" value="${esc(valid.t)}"><input type="hidden" name="s" value="${esc(valid.sig)}"><button style="padding:14px;background:#1457a8;color:white;border:0;border-radius:6px" type="submit">Yes, I'll Attend</button></form><p>This will not reschedule or cancel your booking.</p></body></html>`);
+    const existing=await smartAttendanceExisting(valid);
+    if(existing)return res.type('html').send(await smartAttendanceSuccessHtml(valid,existing));
+    // Browser-initiated POST avoids treating email security-link GET prefetch as attendance.
+    return res.type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Confirming Attendance | Guruvidya</title></head><body style="font:16px Arial,sans-serif;text-align:center;margin:80px 16px;color:#123c78"><h2>Guruvidya Academy</h2><p>Recording your attendance confirmation securely…</p><form id="attendance" method="POST" action="/api/public/booking/smart-reminder/open-attend"><input type="hidden" name="t" value="${esc(valid.t)}"><input type="hidden" name="s" value="${esc(valid.sig)}"><noscript><button type="submit">Complete Attendance Confirmation</button></noscript></form><script>document.getElementById('attendance').submit();</script></body></html>`);
   }catch(e){console.error('Smart OPEN attend view:',e.message);return res.status(400).send('Invalid link');}
 });
 app.post('/api/public/booking/smart-reminder/open-attend',express.urlencoded({extended:false,limit:'2kb'}),async(req,res)=>{
@@ -6141,13 +6162,9 @@ app.post('/api/public/booking/smart-reminder/open-attend',express.urlencoded({ex
     if(!test.rowCount)return res.status(409).send('No matching recent manual reminder test.');
     await pool.query(`INSERT INTO booking_smart_reminder_manual_clicks(manual_test_id,provider_event_id,button_key,last_clicked_at,click_count,click_history)
       VALUES($1,$2,'yes_attend',NOW(),1,jsonb_build_array(NOW()))
-      ON CONFLICT(manual_test_id,provider_event_id) DO UPDATE SET
-        last_clicked_at=NOW(),
-        click_count=booking_smart_reminder_manual_clicks.click_count+1,
-        click_history=(CASE WHEN jsonb_array_length(booking_smart_reminder_manual_clicks.click_history)=0
-          THEN jsonb_build_array(booking_smart_reminder_manual_clicks.clicked_at)
-          ELSE booking_smart_reminder_manual_clicks.click_history END)||jsonb_build_array(NOW())`,[test.rows[0].id,'open-attend:'+valid.sig]);
-    return res.type('html').send('<!doctype html><html><meta name="viewport" content="width=device-width,initial-scale=1"><body style="font:16px Arial,sans-serif;max-width:480px;margin:50px auto;padding:20px"><h2>Attendance confirmed</h2><p>Thank you. Your response has been recorded for this reminder.</p></body></html>');
+      ON CONFLICT(manual_test_id,provider_event_id) DO NOTHING`,[test.rows[0].id,'open-attend:'+valid.sig]);
+    const confirmedAt=await smartAttendanceExisting(valid);
+    return res.type('html').send(await smartAttendanceSuccessHtml(valid,confirmedAt));
   }catch(e){console.error('Smart OPEN attend confirm:',e.message);return res.status(503).send('Unable to record confirmation. Please retry later.');}
 });
 
