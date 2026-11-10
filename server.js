@@ -6072,6 +6072,23 @@ app.get('/api/public/booking/smart-reminder/open-attend',async(req,res)=>{
     res.set('Cache-Control','no-store');
     if(!valid)return res.status(403).type('text/plain').send('This attendance link is invalid or expired.');
     const esc=x=>String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    // Email-only: record the initial signed button opening separately from
+    // the explicit attendance confirmation (POST). Never alter WhatsApp tracking.
+    if(valid.manualTestId){
+      const emailTest=await pool.query(`SELECT id FROM booking_smart_reminder_manual_tests
+        WHERE id=$1 AND booking_id=$2 AND recipient_type=$3 AND channel='email'
+          AND status='accepted' AND created_at>=NOW()-INTERVAL '48 hours' LIMIT 1`,
+        [valid.manualTestId,valid.booking.id,valid.recipient]);
+      if(emailTest.rowCount)await pool.query(`INSERT INTO booking_smart_reminder_manual_clicks
+        (manual_test_id,provider_event_id,button_key,last_clicked_at,click_count,click_history)
+        VALUES($1,$2,'yes_attend_open',NOW(),1,jsonb_build_array(NOW()))
+        ON CONFLICT(manual_test_id,provider_event_id) DO UPDATE SET
+          last_clicked_at=NOW(),click_count=booking_smart_reminder_manual_clicks.click_count+1,
+          click_history=(CASE WHEN jsonb_array_length(booking_smart_reminder_manual_clicks.click_history)=0
+            THEN jsonb_build_array(booking_smart_reminder_manual_clicks.clicked_at)
+            ELSE booking_smart_reminder_manual_clicks.click_history END)||jsonb_build_array(NOW())`,
+        [emailTest.rows[0].id,'email-attend-open:'+valid.sig]);
+    }
     return res.type('html').send(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Guruvidya Attendance</title></head><body style="font:16px Arial,sans-serif;max-width:480px;margin:40px auto;padding:20px"><h2>Guruvidya Academy</h2><p>Confirm attendance for booking <strong>${esc(valid.booking.booking_ref)}</strong>?</p><form method="POST" action="/api/public/booking/smart-reminder/open-attend"><input type="hidden" name="t" value="${esc(valid.t)}"><input type="hidden" name="s" value="${esc(valid.sig)}"><button style="padding:14px;background:#1457a8;color:white;border:0;border-radius:6px" type="submit">Yes, I'll Attend</button></form><p>This will not reschedule or cancel your booking.</p></body></html>`);
   }catch(e){console.error('Smart OPEN attend view:',e.message);return res.status(400).send('Invalid link');}
 });
