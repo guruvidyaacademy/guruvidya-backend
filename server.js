@@ -5983,7 +5983,27 @@ app.get('/api/public/booking/smart-reminder/open-action',async(req,res)=>{
   try{
     const valid=await smartOpenActionVerify(req);
     if(!valid)return res.status(403).type('text/plain').send('This reminder link is invalid or expired.');
-    if(valid.action==='attend')return res.redirect(303,smartOpenAttendUrl(valid.booking,valid.recipient,valid.manualTestId));
+    if(valid.action==='attend'){
+      // Email 4h Yes link: record the signed entry click at the first landing route.
+      // A later explicit POST is a separate confirmation event.
+      if(valid.manualTestId){
+        const emailTest=await pool.query(`SELECT id FROM booking_smart_reminder_manual_tests
+          WHERE id=$1 AND booking_id=$2 AND recipient_type=$3 AND channel='email'
+            AND status='accepted' AND created_at>=NOW()-INTERVAL '48 hours' LIMIT 1`,
+          [valid.manualTestId,valid.booking.id,valid.recipient]);
+        if(emailTest.rowCount)await pool.query(`INSERT INTO booking_smart_reminder_manual_clicks
+          (manual_test_id,provider_event_id,button_key,last_clicked_at,click_count,click_history)
+          VALUES($1,$2,'yes_attend_open',NOW(),1,jsonb_build_array(NOW()))
+          ON CONFLICT(manual_test_id,provider_event_id) DO UPDATE SET
+            last_clicked_at=NOW(),click_count=booking_smart_reminder_manual_clicks.click_count+1,
+            click_history=(CASE WHEN jsonb_array_length(booking_smart_reminder_manual_clicks.click_history)=0
+              THEN jsonb_build_array(booking_smart_reminder_manual_clicks.clicked_at)
+              ELSE booking_smart_reminder_manual_clicks.click_history END)||jsonb_build_array(NOW())`,
+          [emailTest.rows[0].id,'email-attend-open:'+valid.sig]);
+      }
+      // The destination page must not count the same redirect as another click.
+      return res.redirect(303,smartOpenAttendUrl(valid.booking,valid.recipient,valid.manualTestId)+'&entry_recorded=1');
+    }
     // Record opening the signed manual Reschedule/Cancel link, NOT completion of
     // the booking lifecycle action. Only manual links carrying a signed test ID
     // are tracked; older issued links continue opening normally.
@@ -6074,7 +6094,7 @@ app.get('/api/public/booking/smart-reminder/open-attend',async(req,res)=>{
     const esc=x=>String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     // Email-only: record the initial signed button opening separately from
     // the explicit attendance confirmation (POST). Never alter WhatsApp tracking.
-    if(valid.manualTestId){
+    if(valid.manualTestId && req.query.entry_recorded!=='1'){
       const emailTest=await pool.query(`SELECT id FROM booking_smart_reminder_manual_tests
         WHERE id=$1 AND booking_id=$2 AND recipient_type=$3 AND channel='email'
           AND status='accepted' AND created_at>=NOW()-INTERVAL '48 hours' LIMIT 1`,
