@@ -6102,7 +6102,7 @@ async function smartOpenAttendVerify(req){
 // Isolated attendance success page: exact header, banner and footer from the existing booking page.
 async function smartAttendanceSuccessHtml(valid, confirmedAt){
   const esc=x=>String(x??'—').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-  const details=await pool.query('SELECT course,mode,offline_location_name,starts_at FROM student_bookings WHERE id=$1 LIMIT 1',[valid.booking.id]);
+  const details=await pool.query('SELECT b.course,b.mode,loc.name AS offline_location_name,b.starts_at FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id LEFT JOIN booking_locations loc ON loc.id=c.location_id WHERE b.id=$1 LIMIT 1',[valid.booking.id]);
   const b=details.rows[0]||{};
   const date=b.starts_at?new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',day:'2-digit',month:'short',year:'numeric',hour:'numeric',minute:'2-digit',hour12:true}).format(new Date(b.starts_at))+' IST':'—';
   const when=confirmedAt?new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',day:'2-digit',month:'short',year:'numeric',hour:'numeric',minute:'2-digit',hour12:true}).format(new Date(confirmedAt))+' IST':'—';
