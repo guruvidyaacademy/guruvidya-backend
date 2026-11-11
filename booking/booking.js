@@ -708,7 +708,22 @@ export function installBookingRoutes(app,pool,hooks={}) {
     res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer','Pragma':'no-cache'});
     if(!smartAuth && !/^[a-f0-9]{64}$/i.test(String(req.body?.token||'')))return fail(res,404,'Booking not found');
     if(!validateLifecycleAction(req.body.action,['confirm','cancel','reschedule']))return fail(res,400,'Invalid action');
-    let lifecyclePhase='connect';
+    // A signed reminder context is required to attribute an action to an email click.
+    // Ordinary booking links and admin actions never inherit reminder attribution.
+    if(!smartAuth && ['reschedule','cancel'].includes(req.body.action) && req.body.smart_reminder_t && req.body.smart_reminder_s){
+      try {
+        const candidate=await hooks.verifySmartReminderAction?.({body:{t:req.body.smart_reminder_t,s:req.body.smart_reminder_s}});
+        if(candidate?.action===req.body.action && candidate.booking?.booking_ref===req.params.ref && candidate.manualTestId){
+          const eligible=await pool.query(`SELECT 1 FROM booking_smart_reminder_manual_tests t
+            JOIN booking_smart_reminder_manual_clicks c ON c.manual_test_id=t.id AND c.button_key=$2
+            WHERE t.id=$1 AND t.booking_id=$3 AND t.recipient_type=$4 AND t.channel='email'
+              AND t.status='accepted' AND t.created_at>=NOW()-INTERVAL '48 hours' LIMIT 1`,
+            [candidate.manualTestId,candidate.action,candidate.booking.id,candidate.recipient]);
+          if(eligible.rowCount)smartAuth={...candidate,manageToken:String(req.body.token||'')};
+        }
+      } catch(_invalidReminderContext) { /* Original management link stays usable. */ }
+    }
+    let lifecyclePhase='connect',lifecycleCommitted=false;
     const db=await pool.connect();try{
       lifecyclePhase='begin';
       await db.query('BEGIN');
@@ -722,6 +737,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
       if(!r.rowCount){await db.query('ROLLBACK');return fail(res,404,'Booking not found');}
       const b=r.rows[0];if(smartAuth && (String(b.appointment_revision??'')!==String(smartAuth.booking.appointment_revision??'') || smartAuth.action!==req.body.action)){await db.query('ROLLBACK');return fail(res,409,'Reminder link is no longer valid');}if(!active.includes(b.status)){await db.query('ROLLBACK');return fail(res,409,'Booking is no longer active');}
       if(req.body.action==='confirm'){await db.query('ROLLBACK');return fail(res,409,'Student confirmation is not required');}
+      let rescheduleAwaitingApproval=false;
       if(req.body.action==='reschedule'){
         const slotError=validateLifecycleSlot(req.body.starts_at,b.starts_at);
         if(slotError){await db.query('ROLLBACK');return fail(res,400,slotError);}
@@ -735,6 +751,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
         if(!slot){await db.query('ROLLBACK');return fail(res,409,'New slot unavailable');}
         lifecyclePhase='settings';
         const cfg=await settings();
+        rescheduleAwaitingApproval=!!cfg.approval_required;
         lifecyclePhase='reschedule_update';
         await db.query(`UPDATE student_bookings SET starts_at=$2,ends_at=$3,status=$4,customer_response=$5,response_at=NOW(),admin_alert_sent_at=NULL,admin_alert_ack_at=NULL,admin_alert_ack_note=NULL,updated_at=NOW()${revisionSetClause(b,'reschedule')} WHERE id=$1`,[b.id,slot.starts_at,slot.ends_at,cfg.approval_required?'requested':'confirmed',cfg.approval_required?'awaiting':'confirmed']);
       }else if(req.body.action==='cancel'){
@@ -749,11 +766,13 @@ export function installBookingRoutes(app,pool,hooks={}) {
       else await db.query(`UPDATE student_bookings SET customer_response='confirmed',response_at=NOW(),status='confirmed',updated_at=NOW() WHERE id=$1`,[b.id]);
       const customerActor=req.body.action==='reschedule'&&['Student','Parent'].includes(req.body.rescheduled_by)?req.body.rescheduled_by:null;
       lifecyclePhase='event_log';
-      await log(db,b.id,'customer',req.body.action,{old_starts_at:b.starts_at,new_starts_at:req.body.starts_at||null,...(customerActor?{rescheduled_by:customerActor}:{})});
+      await log(db,b.id,'customer',req.body.action,{old_starts_at:b.starts_at,new_starts_at:req.body.starts_at||null,...(customerActor?{rescheduled_by:customerActor}:{}),
+        ...(smartAuth?.manualTestId?{smart_reminder_manual_test_id:String(smartAuth.manualTestId),smart_reminder_recipient:smartAuth.recipient,smart_reminder_source:'email_action',smart_reminder_approval_pending:rescheduleAwaitingApproval}:{})});
       lifecyclePhase='notification_queue';
       if(req.body.action!=='cancel') await enqueueLifecycleBlockedIntents(db,{bookingId:Number(b.id),event:req.body.action==='confirm'?'confirmed':'rescheduled',eventKey:req.body.action+':'+randomUUID()});
       lifecyclePhase='commit';
       await db.query('COMMIT');
+      lifecycleCommitted=true;
       // The reschedule is already committed. Confirm it to the browser immediately.
       // WhatsApp delivery continues after the HTTP response so its media/action-card
       // delays cannot trigger a false browser timeout or a second-slot retry.
@@ -783,6 +802,14 @@ export function installBookingRoutes(app,pool,hooks={}) {
         });
       }
       try{await db.query('ROLLBACK');}catch(_rollbackError){}
+      if(!lifecycleCommitted&&smartAuth?.manualTestId){
+        // Only a verified signed email-link action gets a failed submission audit.
+        // Never mark a successfully committed booking as failed.
+        try{await pool.query(`INSERT INTO booking_events(booking_id,actor,action,details)
+          VALUES($1,'customer','smart_reminder_action_failed',$2::jsonb)`,
+          [smartAuth.booking.id,JSON.stringify({smart_reminder_source:'email_action',smart_reminder_manual_test_id:String(smartAuth.manualTestId),requested_action:smartAuth.action,reason:'server_error'})]);}
+        catch(_auditError){/* Do not affect the existing error response. */}
+      }
       return fail(res,500,'Unable to update booking');
     }finally{db.release();}
   };
@@ -1130,7 +1157,13 @@ export function installBookingRoutes(app,pool,hooks={}) {
         'pending_change', (SELECT json_build_object('requested_choice',p.requested_choice,'created_at',p.created_at,'status',p.status) FROM booking_smart_4h_preference_confirmations p WHERE p.manual_test_id=f.manual_test_id AND p.status IN ('sending','sent') ORDER BY p.id DESC LIMIT 1))
        FROM booking_smart_4h_followup_choices f WHERE f.manual_test_id=t.id) AS followup_choice,
       COALESCE((SELECT json_agg(json_build_object('button_key',c.button_key,'clicked_at',c.clicked_at,'last_clicked_at',COALESCE(c.last_clicked_at,c.clicked_at),'click_count',c.click_count,'click_history',CASE WHEN jsonb_array_length(c.click_history)>0 THEN c.click_history ELSE jsonb_build_array(c.clicked_at) END) ORDER BY c.clicked_at,c.id)
-      FROM booking_smart_reminder_manual_clicks c WHERE c.manual_test_id=t.id),'[]'::json) AS manual_clicks
+      FROM booking_smart_reminder_manual_clicks c WHERE c.manual_test_id=t.id),'[]'::json) AS manual_clicks,
+      COALESCE((SELECT json_agg(json_build_object('action',CASE WHEN e.action='smart_reminder_action_failed' THEN e.details->>'requested_action' ELSE e.action END,'failed',e.action='smart_reminder_action_failed','completed_at',e.created_at,
+        'previous_starts_at',e.details->>'old_starts_at','new_starts_at',e.details->>'new_starts_at',
+        'approval_pending',e.details->>'smart_reminder_approval_pending') ORDER BY e.created_at,e.id)
+        FROM booking_events e WHERE e.booking_id=t.booking_id AND e.action IN ('reschedule','cancel','smart_reminder_action_failed')
+          AND e.details->>'smart_reminder_source'='email_action'
+          AND e.details->>'smart_reminder_manual_test_id'=t.id::text),'[]'::json) AS action_outcomes
       FROM booking_smart_reminder_manual_tests t LEFT JOIN booking_whatsapp_status_receipts r ON t.channel='whatsapp' AND r.provider_message_id=t.provider_message_id WHERE t.created_at >= NOW()-INTERVAL '15 days' ORDER BY t.id DESC LIMIT 500`);res.json({success:true,data:r.rows});}
     catch(e){console.error('Smart manual tests list:',e.message);fail(res,503,'Manual test history unavailable');}
   });

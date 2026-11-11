@@ -6055,6 +6055,7 @@ app.get('/api/public/booking/smart-reminder/open-action',async(req,res)=>{
     if(originalToken){
       const destination='/booking?ref='+encodeURIComponent(valid.booking.booking_ref)
         +'&token='+encodeURIComponent(originalToken)+'&action='+encodeURIComponent(valid.action)
+        +(valid.manualTestId?'&sr_t='+encodeURIComponent(valid.t)+'&sr_s='+encodeURIComponent(valid.sig):'')
         +(valid.action==='cancel'&&String(valid.booking.status).toLowerCase()==='cancelled'?'&smart_reminder_already_cancelled=1':'');
       return res.redirect(303,destination);
     }
