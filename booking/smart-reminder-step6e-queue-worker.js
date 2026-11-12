@@ -29,15 +29,15 @@ export function startSmartReminderStep6EQueueWorker(pool, {intervalMs=60000}={})
             OR b.trashed_at IS NOT NULL OR b.cancelled_at IS NOT NULL
             OR j.appointment_revision<>b.appointment_revision
             OR j.starts_at<>b.starts_at)`);
-      // A 4h NO preference suppresses both WhatsApp AND email routine 2h/1h
-      // reminders for this booking revision and recipient. Keep online 5min.
+      // A 4h NO preference suppresses only the 2h reminder on both channels.
+      // The 1h reminder remains independently scheduled; keep online 5min.
       // Cancel already-queued pending jobs as well as preventing new ones.
       const preferenceInvalidated = await pool.query(`UPDATE booking_smart_reminder_jobs j
         SET status='cancelled', updated_at=NOW()
         FROM student_bookings b
         WHERE j.booking_id=b.id AND j.status='pending'
           AND j.appointment_revision=b.appointment_revision
-          AND j.stage IN ('2h','1h')
+          AND j.stage='2h'
           AND (SELECT f.choice FROM booking_smart_4h_followup_choices f
             JOIN booking_smart_reminder_manual_tests mt ON mt.id=f.manual_test_id
             WHERE f.booking_id=b.id AND f.appointment_revision=b.appointment_revision::text
@@ -79,7 +79,7 @@ export function startSmartReminderStep6EQueueWorker(pool, {intervalMs=60000}={})
             AND b.starts_at=$8::timestamptz AND b.status IN ('requested','approved','confirmed','rescheduled')
             AND b.trashed_at IS NULL AND b.cancelled_at IS NULL AND b.starts_at>NOW()
             AND $7::timestamptz>NOW()
-            AND NOT ( $5 IN ('2h','1h') AND (
+            AND NOT ( $5 = '2h' AND (
               SELECT f.choice FROM booking_smart_4h_followup_choices f
               JOIN booking_smart_reminder_manual_tests mt ON mt.id=f.manual_test_id
               WHERE f.booking_id=b.id AND f.appointment_revision=b.appointment_revision::text
