@@ -6058,7 +6058,7 @@ app.get('/api/public/booking/smart-reminder/open-action',async(req,res)=>{
     if(!valid)return res.status(403).type('text/plain').send('This reminder link is invalid or expired.');
     if(valid.action==='join'){
       // Track the signed 5min email Join button before redirecting.
-      const meeting=await pool.query('SELECT meeting_link,mode FROM student_bookings WHERE id=$1 LIMIT 1',[valid.booking.id]);
+      const meeting=await pool.query('SELECT c.meeting_link,b.mode FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id WHERE b.id=$1 LIMIT 1',[valid.booking.id]);
       const meetingUrl=String(meeting.rows[0]?.meeting_link||'').trim();
       if(String(meeting.rows[0]?.mode||'').toLowerCase()!=='online' ||
           !/^https:\/\/[^\s]+$/i.test(meetingUrl))
