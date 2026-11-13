@@ -1174,7 +1174,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
     if(typeof hooks.sendSmartReminderManualTest!=='function')return fail(res,503,'Manual test provider not configured');
     let record;
     try {
-      const r=await pool.query(`SELECT id,booking_ref,student_name,parent_name,student_mobile,parent_mobile,student_email,parent_email,course,mode,meeting_link,starts_at,status,appointment_revision FROM student_bookings WHERE id=$1`,[booking_id]);
+      const r=await pool.query(`SELECT b.id,b.booking_ref,b.student_name,b.parent_name,b.student_mobile,b.parent_mobile,b.student_email,b.parent_email,b.course,b.mode,c.meeting_link,b.starts_at,b.status,b.appointment_revision FROM student_bookings b LEFT JOIN booking_counsellors c ON c.id=b.counsellor_id WHERE b.id=$1`,[booking_id]);
       record=r.rows[0];
       if(!record)return fail(res,404,'Booking not found');
       if(!['approved','confirmed','rescheduled'].includes(String(record.status).toLowerCase()))return fail(res,409,'Only active confirmed appointments may be tested');
