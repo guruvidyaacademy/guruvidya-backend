@@ -3500,7 +3500,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     );
     const smartRecognized = [...new Set(smartExplicitCandidates.map(value => ({
       "yes, i'll attend": 'yes_attend', "yes, i'll be there": 'yes_attend', 'reschedule': 'reschedule',
-      'cancel appointment': 'cancel'
+      'cancel appointment': 'cancel', 'on my way': 'on_my_way', "i'm ready": 'im_ready', 'gv_smart_1h_on_my_way': 'on_my_way', 'gv_smart_1h_im_ready': 'im_ready'
     })[value]).filter(Boolean))];
     // Conflicting explicit values are not safe to act on.
     const smartSelectedButton = smartRecognized.length === 1 ? smartRecognized[0] : null;
@@ -6197,7 +6197,7 @@ function smartReminderFourHourEmailHtml(b, recipient, name, when, links={}, stag
   const mode=String(b.mode||'').toLowerCase()==='online'?'Online':`Offline – ${b.offline_location_name||'Tagore Garden'}`;
   // Render only signed, recipient-scoped action links supplied by the caller.
   const button=(label,url,color,iconKey)=>url?`<td align="center" style="padding:5px"><a href="${esc(url)}" style="display:block;background:${color};color:#fff;text-decoration:none;border-radius:9px;padding:13px 13px;font-size:14px;font-weight:bold;white-space:nowrap">${iconKey?`<img src="${esc(base)}/api/public/booking/email-icon/${iconKey}-white.png" width="16" height="16" alt="" style="display:inline-block;width:16px;height:16px;border:0;vertical-align:middle;margin-right:5px">`:''}${esc(label)}</a></td>`:'';
-  const actions=[button(stage==='2h'?"✓ Yes, I'll Be There":"✓ Yes, I'll Attend",links.attend,'#139b25'),button('Reschedule',links.reschedule,'#ff8200','calendar'),button('Cancel',links.cancel,'#e20022','close')].filter(Boolean).join('');
+  const actions=[button(stage==='1h'?(String(b.mode||'').toLowerCase()==='online'?"✓ I'm Ready":'✓ On My Way'):(stage==='2h'?"✓ Yes, I'll Be There":"✓ Yes, I'll Attend"),links.attend,'#139b25'),button('Reschedule',links.reschedule,'#ff8200','calendar'),button('Cancel',links.cancel,'#e20022','close')].filter(Boolean).join('');
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;background:#edf3fa;font-family:Arial,Helvetica,sans-serif;color:#092354"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#edf3fa"><tr><td align="center" style="padding:20px 8px"><table role="presentation" width="620" cellspacing="0" cellpadding="0" style="max-width:620px;width:100%;background:#fff;border-radius:14px;overflow:hidden"><tr><td style="background:#fff;padding:0"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td width="53%" style="padding:16px 0 14px 24px"><img src="${esc(logo)}" width="285" alt="Guruvidya – Real Education • Real Results" style="display:block;width:100%;max-width:285px;height:auto;border:0"></td><td width="47%" valign="top" style="padding:0"><img src="${esc(wave)}" width="290" alt="" style="display:block;width:100%;height:auto;border:0"></td></tr></table></td></tr><tr><td><img src="${esc(banner)}" alt="Appointment Reminder" width="620" style="display:block;width:100%;height:auto;border:0"></td></tr><tr><td style="padding:23px 26px 15px"><div style="font-size:21px;font-weight:bold;color:#082456">Dear ${esc(name||'Student')},</div><p style="font-size:15px;line-height:1.55;margin:10px 0 21px">This is a reminder for your upcoming appointment at Guruvidya Academy Pvt. Ltd.</p><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f0f7ff;border:1px solid #b8d9ff;border-radius:12px"><tr><td colspan="3" style="background:#dcecff;padding:10px 15px"><table role="presentation"><tr><td>${icon('calendar','blue',27)}</td><td style="padding-left:10px;color:#073c91;font-weight:bold;font-size:17px">Appointment Details</td></tr></table></td></tr><tr><td width="30%" valign="top" style="padding:17px 8px 18px 12px"><table role="presentation"><tr><td valign="top">${icon('course','red',28)}</td><td style="padding-left:7px;font-size:12px">Course<br><strong style="font-size:15px">${esc(b.course||'—')}</strong></td></tr></table></td><td width="36%" valign="top" style="border-left:1px solid #9dc8f2;padding:17px 7px 18px 10px"><table role="presentation"><tr><td valign="top">${icon('calendar','red',27)}</td><td style="padding-left:7px;font-size:12px">Date &amp; Time<br><strong style="font-size:13px">${esc(when)} IST</strong></td></tr></table></td><td width="34%" valign="top" style="border-left:1px solid #9dc8f2;padding:17px 8px 18px 10px"><table role="presentation"><tr><td valign="top">${icon('pin','red',27)}</td><td style="padding-left:7px;font-size:12px">Mode<br><strong style="font-size:13px">${esc(mode)}</strong></td></tr></table></td></tr></table><div style="text-align:center;font-size:18px;font-weight:bold;margin:22px 0 9px">Will you be able to attend as scheduled?</div>${actions?`<table role="presentation" align="center" cellpadding="0" cellspacing="0"><tr>${actions}</tr></table>`:`<p style="font-size:12px;color:#60718a;text-align:center;margin:7px 0 0">This is a manual test email. No action is required.</p>`}<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#e6f2ff;border-radius:9px;margin-top:20px"><tr><td align="center" style="padding:12px 8px"><table role="presentation" cellpadding="0" cellspacing="0"><tr><td>${icon('phone','blue',22)}</td><td style="padding-left:5px;font-size:12px;font-weight:bold">Need Help?</td><td style="padding:0 8px;color:#8a9ab0">|</td><td style="font-size:12px"><a style="color:#0752a2;text-decoration:none" href="tel:+919821627725">+91 9821627725</a></td><td style="padding:0 8px;color:#8a9ab0">|</td><td><img src="${esc(base)}/api/public/booking/email-icon/whatsapp-reminder-green.png?v=1" width="22" height="22" alt="WhatsApp" style="display:block;width:22px;height:22px;border:0"></td><td style="padding-left:5px;font-size:12px"><a href="https://wa.me/919821627725" style="color:#0752a2;text-decoration:none">Chat on WhatsApp</a></td></tr></table></td></tr></table><p style="font-size:14px;line-height:1.5;margin:20px 0 8px">Warm Regards,<br><strong>Team – Guruvidya Academy Pvt. Ltd.</strong></p></td></tr>${bookingSharedInternalStyleFooter(base)}</table></td></tr></table></body></html>`;
 }
 
@@ -6212,15 +6212,15 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
       const text=`Dear ${name},\n\nThis is a manually requested TEST appointment reminder from Guruvidya Academy Pvt. Ltd.\nBooking Ref: ${booking.booking_ref}\nCourse: ${booking.course}\nAppointment: ${when} IST\n\nThis is a test message. No action is required.`;
       // Signed links are scoped to this exact manual test, booking revision and recipient.
       // Only 4h email uses these actions; the approved artwork/footer remain unchanged.
-      const emailLinks=['4h','2h'].includes(stage)?{
+      const emailLinks=['4h','2h','1h'].includes(stage)?{
         attend:smartOpenActionUrl(booking,recipient_type,'attend',manual_test_id),
         reschedule:smartOpenActionUrl(booking,recipient_type,'reschedule',manual_test_id),
         cancel:smartOpenActionUrl(booking,recipient_type,'cancel',manual_test_id)
       }:{};
-      const result=await sendEmailWithFailover({to:destination,subject,text,html:['4h','2h'].includes(stage)?smartReminderFourHourEmailHtml(booking,recipient_type,name,when,emailLinks,stage):`<div style="font-family:Arial,sans-serif"><h2>Guruvidya Academy Pvt. Ltd.</h2><p>TEST Appointment Reminder</p><p>${text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>')}</p></div>`});
+      const result=await sendEmailWithFailover({to:destination,subject,text,html:['4h','2h','1h'].includes(stage)?smartReminderFourHourEmailHtml(booking,recipient_type,name,when,emailLinks,stage):`<div style="font-family:Arial,sans-serif"><h2>Guruvidya Academy Pvt. Ltd.</h2><p>TEST Appointment Reminder</p><p>${text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>')}</p></div>`});
       return {success:true,message:'Email provider accepted test',message_id:result?.id||result?.messageId||null};
     }
-    if(process.env.SMART_REMINDER_MANUAL_OPEN_WINDOW_TEST==='true' && ['4h','2h'].includes(stage)){
+    if(process.env.SMART_REMINDER_MANUAL_OPEN_WINDOW_TEST==='true' && ['4h','2h','1h'].includes(stage)){
       // Check the actual 24-hour customer service window; do not use admin test overrides.
       const phone=botSailorPhone(destination),ten=phone.replace(/^91(?=\d{10}$)/,'');
       const win=await pool.query(`SELECT MAX(received_at) AS last_incoming FROM whatsapp_window_events WHERE mobile IN ($1,$2)`,[phone,ten]);
@@ -6236,7 +6236,7 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
       const buttonSent=await sendBotSailorReplyButtons(
         {mobile:destination},
         caption,
-        [{id:stage==='2h'?'gv_smart_2h_yes_be_there':'gv_smart_4h_yes_attend',title:stage==='2h'?"Yes, I'll Be There":"Yes, I'll Attend"}],
+        [{id:stage==='1h'?(String(booking.mode||'').toLowerCase()==='online'?'gv_smart_1h_im_ready':'gv_smart_1h_on_my_way'):(stage==='2h'?'gv_smart_2h_yes_be_there':'gv_smart_4h_yes_attend'),title:stage==='1h'?(String(booking.mode||'').toLowerCase()==='online'?"I'm Ready":'On My Way'):(stage==='2h'?"Yes, I'll Be There":"Yes, I'll Attend") }],
         `smart_reminder_manual_${stage}_native_attend`,
         {mediaUrl:media,mediaType:'image'}
       );
@@ -6250,7 +6250,7 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
         });
         return {success:false,status:'native_button_untrackable',message:'Image-header native reminder was not accepted with a trackable provider message ID. Check provider logs before retrying.'};
       }
-      console.info('SMART REMINDER NATIVE 4H BUTTON ACCEPTED',{manualTestId:manual_test_id,hasProviderMessageId:true});
+      console.info('SMART REMINDER NATIVE BUTTON ACCEPTED',{manualTestId:manual_test_id,hasProviderMessageId:true});
       return {success:true,status:'accepted',message:'Image-header native one-button reminder accepted',message_id:buttonMessageId};
     }
     // Only the explicitly mapped approved template can be used. Never fall back to an unrelated template.
