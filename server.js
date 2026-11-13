@@ -3500,7 +3500,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     );
     const smartRecognized = [...new Set(smartExplicitCandidates.map(value => ({
       "yes, i'll attend": 'yes_attend', "yes, i'll be there": 'yes_attend', 'reschedule': 'reschedule',
-      'cancel appointment': 'cancel', 'on my way': 'on_my_way', "yes, i'm on my way": 'on_my_way', "i'm ready": 'im_ready', "yes, i'm ready": 'im_ready', 'gv_smart_1h_on_my_way': 'on_my_way', 'gv_smart_1h_im_ready': 'im_ready', 'join online meeting': 'join', 'booking_maps': 'join'
+      'cancel appointment': 'cancel', 'on my way': 'on_my_way', "yes, i'm on my way": 'on_my_way', "i'm ready": 'im_ready', "yes, i'm ready": 'im_ready', 'gv_smart_1h_on_my_way': 'on_my_way', 'gv_smart_1h_im_ready': 'im_ready', 'join online meeting': 'join', 'booking_maps': 'join', 'booking_reschedule': 'reschedule', 'booking_cancel': 'cancel'
     })[value]).filter(Boolean))];
     // Conflicting explicit values are not safe to act on.
     const smartSelectedButton = smartRecognized.length === 1 ? smartRecognized[0] : null;
@@ -3536,7 +3536,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
               AND regexp_replace(COALESCE(CASE WHEN t.recipient_type='parent' THEN b.parent_mobile ELSE b.student_mobile END,''),'[^0-9]','','g')
                   IN ($2,'91'||$2)
             ON CONFLICT(manual_test_id,provider_event_id) DO NOTHING RETURNING id`,
-            [smartManualContext,smartManualMobile,smartManualEventId,smartManualButton]);
+            [smartManualContext,smartManualMobile,smartManualEventId,smartManualButton==='join'?'join_meeting':smartManualButton]);
           if(saved.rowCount){
             console.info('Smart manual reminder click recorded',{button:smartManualButton});
             // Only the exact recipient 4h native-button click can generate this prompt.
@@ -3576,6 +3576,32 @@ app.post("/api/webhook/botsailor", async (req, res) => {
             }
           }
         }catch(err){console.error('Smart manual reminder click audit:',err.message);}
+      }
+    }
+
+    // 5min context-free BotSailor replies: require one unambiguous recent
+    // matching test, exact recipient phone and explicit button selection.
+    if(mobile && !smartManualContext && ['join','reschedule','cancel'].includes(smartManualButton)){
+      const eventId=String(payload.wa_message_id||payload.message_id||payload.message?.id||
+        payload.messages?.[0]?.id||payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.id||'').trim();
+      if(eventId){
+        try{
+          const mobile10=botSailorPhone(mobile).replace(/^91(?=\d{10}$)/,'');
+          const matches=await pool.query(`SELECT t.id FROM booking_smart_reminder_manual_tests t
+            JOIN student_bookings b ON b.id=t.booking_id
+            WHERE t.stage='5min' AND t.channel='whatsapp' AND t.status='accepted'
+              AND t.provider_message_id IS NOT NULL AND t.created_at>=NOW()-INTERVAL '30 minutes'
+              AND regexp_replace(COALESCE(CASE WHEN t.recipient_type='parent'
+                THEN b.parent_mobile ELSE b.student_mobile END,''),'[^0-9]','','g')
+                IN ($1,'91'||$1)
+            ORDER BY t.id DESC LIMIT 2`,[mobile10]);
+          if(matches.rowCount===1){
+            await pool.query(`INSERT INTO booking_smart_reminder_manual_clicks
+              (manual_test_id,provider_event_id,button_key)
+              VALUES($1,$2,$3) ON CONFLICT(manual_test_id,provider_event_id) DO NOTHING`,
+              [matches.rows[0].id,eventId,smartManualButton==='join'?'join_meeting':smartManualButton]);
+          }
+        }catch(err){console.error('Smart 5min manual click audit:',err.message);}
       }
     }
 
@@ -6004,7 +6030,7 @@ function smartOpenAttendUrl(booking,recipientType,manualTestId=null){
   return `${base}/api/public/booking/smart-reminder/open-attend?t=${encodeURIComponent(data)}&s=${encodeURIComponent(sig)}`;
 }
 function smartOpenActionUrl(booking,recipientType,action,manualTestId=null){
-  if(!['attend','reschedule','cancel'].includes(action))throw new Error('Invalid reminder action');
+  if(!['attend','reschedule','cancel','join'].includes(action))throw new Error('Invalid reminder action');
   const secret=smartOpenAttendSecret();
   if(secret.length<32)throw new Error('SMART_REMINDER_ACTION_SECRET must be at least 32 characters');
   const data=Buffer.from(JSON.stringify({b:String(booking.id),r:recipientType,v:String(booking.appointment_revision??''),a:action,...(manualTestId==null?{}:{mt:String(manualTestId)}),exp:Date.now()+48*3600000})).toString('base64url');
@@ -6018,7 +6044,7 @@ async function smartOpenActionVerify(req){
   const expected=createHmac('sha256',secret).update(t).digest(),actual=Buffer.from(sig,'base64url');
   if(actual.length!==expected.length||!timingSafeEqual(expected,actual))return null;
   const payload=JSON.parse(Buffer.from(t,'base64url').toString('utf8'));
-  if(!/^[1-9][0-9]*$/.test(String(payload.b))||!['student','parent'].includes(payload.r)||!['attend','reschedule','cancel'].includes(payload.a)||!Number.isSafeInteger(payload.exp)||payload.exp<Date.now()||payload.exp>Date.now()+48*3600000)return null;
+  if(!/^[1-9][0-9]*$/.test(String(payload.b))||!['student','parent'].includes(payload.r)||!['attend','reschedule','cancel','join'].includes(payload.a)||!Number.isSafeInteger(payload.exp)||payload.exp<Date.now()||payload.exp>Date.now()+48*3600000)return null;
   const result=await pool.query('SELECT id,booking_ref,status,appointment_revision,starts_at,mode,counsellor_id FROM student_bookings WHERE id=$1 LIMIT 1',[payload.b]);
   const booking=result.rows[0];
   const alreadyCancelled=payload.a==='cancel'&&String(booking?.status||'').toLowerCase()==='cancelled';
@@ -6030,6 +6056,32 @@ app.get('/api/public/booking/smart-reminder/open-action',async(req,res)=>{
   try{
     const valid=await smartOpenActionVerify(req);
     if(!valid)return res.status(403).type('text/plain').send('This reminder link is invalid or expired.');
+    if(valid.action==='join'){
+      // Track the signed 5min email Join button before redirecting.
+      const meeting=await pool.query('SELECT meeting_link,mode FROM student_bookings WHERE id=$1 LIMIT 1',[valid.booking.id]);
+      const meetingUrl=String(meeting.rows[0]?.meeting_link||'').trim();
+      if(String(meeting.rows[0]?.mode||'').toLowerCase()!=='online' ||
+          !/^https:\/\/[^\s]+$/i.test(meetingUrl))
+        return res.status(404).type('text/plain').send('Online meeting link is unavailable.');
+      if(valid.manualTestId){
+        const test=await pool.query(`SELECT id FROM booking_smart_reminder_manual_tests
+          WHERE id=$1 AND booking_id=$2 AND recipient_type=$3 AND channel='email'
+            AND stage='5min' AND status='accepted'
+            AND created_at>=NOW()-INTERVAL '48 hours' LIMIT 1`,
+          [valid.manualTestId,valid.booking.id,valid.recipient]);
+        if(test.rowCount)await pool.query(`INSERT INTO booking_smart_reminder_manual_clicks
+          (manual_test_id,provider_event_id,button_key,last_clicked_at,click_count,click_history)
+          VALUES($1,$2,'join_meeting',NOW(),1,jsonb_build_array(NOW()))
+          ON CONFLICT(manual_test_id,provider_event_id) DO UPDATE SET
+            last_clicked_at=NOW(),
+            click_count=booking_smart_reminder_manual_clicks.click_count+1,
+            click_history=(CASE WHEN jsonb_array_length(booking_smart_reminder_manual_clicks.click_history)=0
+              THEN jsonb_build_array(booking_smart_reminder_manual_clicks.clicked_at)
+              ELSE booking_smart_reminder_manual_clicks.click_history END)||jsonb_build_array(NOW())`,
+          [test.rows[0].id,'email-join:'+valid.sig]);
+      }
+      return res.redirect(303,meetingUrl);
+    }
     if(valid.action==='attend'){
       // Email 4h Yes link: record the signed entry click at the first landing route.
       // A later explicit POST is a separate confirmation event.
@@ -6248,7 +6300,7 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
       // Only 4h email uses these actions; the approved artwork/footer remain unchanged.
       const emailLinks=['4h','2h','1h','5min'].includes(stage)?{
         attend:stage==='5min'?null:smartOpenActionUrl(booking,recipient_type,'attend',manual_test_id),
-        join:stage==='5min'&&/^https:\/\/[^\s]+$/i.test(String(booking.meeting_link||''))?booking.meeting_link:null,
+        join:stage==='5min'&&/^https:\/\/[^\s]+$/i.test(String(booking.meeting_link||''))?smartOpenActionUrl(booking,recipient_type,'join',manual_test_id):null,
         reschedule:smartOpenActionUrl(booking,recipient_type,'reschedule',manual_test_id),
         cancel:smartOpenActionUrl(booking,recipient_type,'cancel',manual_test_id)
       }:{};
