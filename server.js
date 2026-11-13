@@ -4051,7 +4051,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       : bookingAction.includes('booking_maps') || bookingAction.includes('view on google maps') ? 'maps'
       : bookingAction.includes('booking_help') || bookingAction.includes('call / whatsapp us') || bookingAction.includes('call whatsapp us') ? 'help'
       : bookingAction.includes('booking_cancel_yes') || bookingAction.includes('yes, cancel') ? 'cancel_yes'
-      : bookingAction.includes('booking_cancel') || bookingAction.includes('cancel') ? 'cancel'
+      : bookingAction.includes('booking_cancel') || bookingAction.includes('cancel') || bookingAction.includes('cancel appointment') ? 'cancel'
       : bookingAction.includes('booking_reschedule') || bookingAction.includes('reschedule') ? 'reschedule'
       : '';
     // Record verified incoming WhatsApp reply-button actions only. Do not infer
@@ -6266,7 +6266,7 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
       try{media=await createSmartReminderTestMedia(pool,booking,String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,''));}
       catch(e){return {success:false,status:'open_attend_setup_error',message:e.message};}
       const caption=stage==='5min'
-        ? `Guruvidya Academy | TEST 5m Online Reminder\nDear ${name},\nYour online admission counselling session starts in 5 minutes.\nPlease select Join Online Meeting below to receive your meeting link.\nBooking: ${booking.booking_ref}\nCourse: ${booking.course}\nTime: ${when} IST`
+        ? `Dear ${name},\n\nYour online admission counselling session starts in *5 minutes*.\nPlease select *Join Online Meeting* below to receive your meeting link.`
         : `Guruvidya Academy | TEST ${stage} Reminder\nDear ${name},\nBooking: ${booking.booking_ref}\nCourse: ${booking.course}\nTime: ${when} IST`;
       // One image-header interactive message: approved graphic + existing caption
       // + native reply button. Keep its provider ID for the existing click routing.
