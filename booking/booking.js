@@ -203,7 +203,7 @@ export async function initBooking(pool) {
       END IF;
       ALTER TABLE booking_smart_reminder_manual_clicks
         ADD CONSTRAINT booking_smart_reminder_manual_clicks_button_key_check
-        CHECK (button_key IN ('yes_attend','yes_attend_open','reschedule','cancel'));
+        CHECK (button_key IN ('yes_attend','yes_attend_open','reschedule','cancel','on_my_way','im_ready'));
     END $$`);
 
   // Additive manual secure-link click history; preserve original first-click timestamp.
