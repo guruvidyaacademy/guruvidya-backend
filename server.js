@@ -3500,7 +3500,7 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     );
     const smartRecognized = [...new Set(smartExplicitCandidates.map(value => ({
       "yes, i'll attend": 'yes_attend', "yes, i'll be there": 'yes_attend', 'reschedule': 'reschedule',
-      'cancel appointment': 'cancel', 'on my way': 'on_my_way', "yes, i'm on my way": 'on_my_way', "i'm ready": 'im_ready', "yes, i'm ready": 'im_ready', 'gv_smart_1h_on_my_way': 'on_my_way', 'gv_smart_1h_im_ready': 'im_ready'
+      'cancel appointment': 'cancel', 'on my way': 'on_my_way', "yes, i'm on my way": 'on_my_way', "i'm ready": 'im_ready', "yes, i'm ready": 'im_ready', 'gv_smart_1h_on_my_way': 'on_my_way', 'gv_smart_1h_im_ready': 'im_ready', 'join online meeting': 'join', 'booking_maps': 'join'
     })[value]).filter(Boolean))];
     // Conflicting explicit values are not safe to act on.
     const smartSelectedButton = smartRecognized.length === 1 ? smartRecognized[0] : null;
@@ -6256,7 +6256,7 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
       const result=await sendEmailWithFailover({to:destination,subject,text,html:['4h','2h','1h','5min'].includes(stage)?smartReminderFourHourEmailHtml(booking,recipient_type,name,when,emailLinks,stage):`<div style="font-family:Arial,sans-serif"><h2>Guruvidya Academy Pvt. Ltd.</h2><p>TEST Appointment Reminder</p><p>${text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>')}</p></div>`});
       return {success:true,message:'Email provider accepted test',message_id:result?.id||result?.messageId||null};
     }
-    if(process.env.SMART_REMINDER_MANUAL_OPEN_WINDOW_TEST==='true' && ['4h','2h','1h'].includes(stage)){
+    if((stage==='5min' && String(booking.mode||'').toLowerCase()==='online') || (process.env.SMART_REMINDER_MANUAL_OPEN_WINDOW_TEST==='true' && ['4h','2h','1h'].includes(stage))){
       // Check the actual 24-hour customer service window; do not use admin test overrides.
       const phone=botSailorPhone(destination),ten=phone.replace(/^91(?=\d{10}$)/,'');
       const win=await pool.query(`SELECT MAX(received_at) AS last_incoming FROM whatsapp_window_events WHERE mobile IN ($1,$2)`,[phone,ten]);
@@ -6265,15 +6265,21 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
       let media;
       try{media=await createSmartReminderTestMedia(pool,booking,String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,''));}
       catch(e){return {success:false,status:'open_attend_setup_error',message:e.message};}
-      const caption=`Guruvidya Academy | TEST ${stage} Reminder\nDear ${name},\nBooking: ${booking.booking_ref}\nCourse: ${booking.course}\nTime: ${when} IST`;
+      const caption=stage==='5min'
+        ? `Guruvidya Academy | TEST 5m Online Reminder\nDear ${name},\nYour online admission counselling session starts in 5 minutes.\nPlease select Join Online Meeting below to receive your meeting link.\nBooking: ${booking.booking_ref}\nCourse: ${booking.course}\nTime: ${when} IST`
+        : `Guruvidya Academy | TEST ${stage} Reminder\nDear ${name},\nBooking: ${booking.booking_ref}\nCourse: ${booking.course}\nTime: ${when} IST`;
       // One image-header interactive message: approved graphic + existing caption
       // + native reply button. Keep its provider ID for the existing click routing.
       // This endpoint already supports mediaUrl/mediaType for other booking flows.
       const buttonSent=await sendBotSailorReplyButtons(
         {mobile:destination},
         caption,
-        [{id:stage==='1h'?(String(booking.mode||'').toLowerCase()==='online'?'gv_smart_1h_im_ready':'gv_smart_1h_on_my_way'):(stage==='2h'?'gv_smart_2h_yes_be_there':'gv_smart_4h_yes_attend'),title:stage==='1h'?(String(booking.mode||'').toLowerCase()==='online'?"Yes, I'm Ready":"Yes, I'm On My Way"):(stage==='2h'?"Yes, I'll Be There":"Yes, I'll Attend") }],
-        `smart_reminder_manual_${stage}_native_attend`,
+        stage==='5min'
+          ? [{id:'booking_maps',title:'Join Online Meeting'},
+             {id:'booking_reschedule',title:'Reschedule'},
+             {id:'booking_cancel',title:'Cancel Appointment'}]
+          : [{id:stage==='1h'?(String(booking.mode||'').toLowerCase()==='online'?'gv_smart_1h_im_ready':'gv_smart_1h_on_my_way'):(stage==='2h'?'gv_smart_2h_yes_be_there':'gv_smart_4h_yes_attend'),title:stage==='1h'?(String(booking.mode||'').toLowerCase()==='online'?"Yes, I'm Ready":"Yes, I'm On My Way"):(stage==='2h'?"Yes, I'll Be There":"Yes, I'll Attend") }],
+        `smart_reminder_manual_${stage}_native_buttons`,
         {mediaUrl:media,mediaType:'image'}
       );
       const buttonMessageId=bookingProviderMessageId(buttonSent);
@@ -6287,7 +6293,7 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
         return {success:false,status:'native_button_untrackable',message:'Image-header native reminder was not accepted with a trackable provider message ID. Check provider logs before retrying.'};
       }
       console.info('SMART REMINDER NATIVE BUTTON ACCEPTED',{manualTestId:manual_test_id,hasProviderMessageId:true});
-      return {success:true,status:'accepted',message:'Image-header native one-button reminder accepted',message_id:buttonMessageId};
+      return {success:true,status:'accepted',message:stage==='5min'?'Image-header 5-minute meeting buttons accepted':'Image-header native one-button reminder accepted',message_id:buttonMessageId};
     }
     // Only the explicitly mapped approved template can be used. Never fall back to an unrelated template.
     const envKey=`SMART_REMINDER_TEST_TEMPLATE_${String(booking.mode).toUpperCase()}_ID`;
