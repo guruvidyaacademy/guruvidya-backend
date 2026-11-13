@@ -3579,6 +3579,40 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       }
     }
 
+    // 1h manual-test fallback: some BotSailor quick replies omit the outbound
+    // context ID. Accept ONLY an explicit 1h button value and an unambiguous
+    // recent manual test for the same phone. Never change the booking or 4h/2h.
+    if (mobile && !smartManualContext &&
+        (smartManualButton === 'on_my_way' || smartManualButton === 'im_ready')) {
+      const eventId = String(payload.wa_message_id || payload.message_id ||
+        payload.message?.id || payload.messages?.[0]?.id ||
+        payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.id || '').trim();
+      if (eventId) {
+        try {
+          const mobile10 = botSailorPhone(mobile).replace(/^91(?=\d{10}$)/, '');
+          const matches = await pool.query(`SELECT t.id FROM booking_smart_reminder_manual_tests t
+            JOIN student_bookings b ON b.id=t.booking_id
+            WHERE t.stage='1h' AND t.channel='whatsapp' AND t.status='accepted'
+              AND t.provider_message_id IS NOT NULL
+              AND t.created_at >= NOW()-INTERVAL '30 minutes'
+              AND regexp_replace(COALESCE(CASE WHEN t.recipient_type='parent'
+                THEN b.parent_mobile ELSE b.student_mobile END,''),'[^0-9]','','g')
+                IN ($1,'91'||$1)
+            ORDER BY t.id DESC LIMIT 2`, [mobile10]);
+          if (matches.rowCount === 1) {
+            const saved = await pool.query(`INSERT INTO booking_smart_reminder_manual_clicks
+              (manual_test_id,provider_event_id,button_key)
+              VALUES($1,$2,$3)
+              ON CONFLICT(manual_test_id,provider_event_id) DO NOTHING RETURNING id`,
+              [matches.rows[0].id,eventId,smartManualButton]);
+            if (saved.rowCount) console.info('SMART 1H MANUAL BUTTON CLICK RECORDED',
+              {manualTestId:matches.rows[0].id,button:smartManualButton});
+          } else console.info('SMART 1H MANUAL BUTTON NOT ATTRIBUTED',
+            {reason:matches.rowCount?'ambiguous_recent_tests':'no_recent_test'});
+        } catch (err) { console.error('SMART 1H MANUAL BUTTON AUDIT ERROR',err.message); }
+      }
+    }
+
     // Smart Reminder diagnostic only: BotSailor can emit an attachment placeholder
     // instead of a selected quick-reply value. Correlate by exact provider context
     // and recipient; never infer a button, update a booking, or send a link.
@@ -6400,4 +6434,3 @@ async function seedBuiltinFlowExports() {
 }
 
 ;
- 
