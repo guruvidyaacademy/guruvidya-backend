@@ -723,6 +723,28 @@ export function installBookingRoutes(app,pool,hooks={}) {
         }
       } catch(_invalidReminderContext) { /* Original management link stays usable. */ }
     }
+    // A WhatsApp source is audit-only and must be verified against the same
+    // booking, an actual recorded click and a recent outgoing reminder.
+    let whatsappOrigin=null;
+    if(!smartAuth && ['reschedule','cancel'].includes(req.body.action)){
+      const testId=String(req.body.smart_reminder_wa_test||'');
+      const deliveryId=String(req.body.smart_reminder_wa_delivery||'');
+      if((/^[1-9]\d{0,17}$/.test(testId)) !== (/^[1-9]\d{0,17}$/.test(deliveryId))){
+        const isManual=Boolean(testId);
+        const origin=await pool.query(isManual
+          ? `SELECT t.id,t.booking_id,t.stage,t.recipient_type FROM booking_smart_reminder_manual_tests t
+             JOIN booking_smart_reminder_manual_clicks c ON c.manual_test_id=t.id AND c.button_key=$2
+             JOIN student_bookings b ON b.id=t.booking_id
+             WHERE t.id=$1 AND b.booking_ref=$3 AND t.channel='whatsapp' AND t.status='accepted'
+               AND t.created_at>=NOW()-INTERVAL '48 hours' LIMIT 1`
+          : `SELECT d.id,d.booking_id,d.stage,d.recipient_type FROM booking_smart_reminder_deliveries d
+             JOIN student_bookings b ON b.id=d.booking_id
+             WHERE d.id=$1 AND b.booking_ref=$2 AND d.channel='whatsapp'
+               AND d.clicked_at IS NOT NULL AND d.created_at>=NOW()-INTERVAL '48 hours' LIMIT 1`,
+          isManual?[testId,req.body.action,req.params.ref]:[deliveryId,req.params.ref]);
+        if(origin.rowCount===1)whatsappOrigin={...origin.rows[0],source_kind:isManual?'manual':'scheduled'};
+      }
+    }
     let lifecyclePhase='connect',lifecycleCommitted=false;
     const db=await pool.connect();try{
       lifecyclePhase='begin';
@@ -767,7 +789,10 @@ export function installBookingRoutes(app,pool,hooks={}) {
       const customerActor=req.body.action==='reschedule'&&['Student','Parent'].includes(req.body.rescheduled_by)?req.body.rescheduled_by:null;
       lifecyclePhase='event_log';
       await log(db,b.id,'customer',req.body.action,{old_starts_at:b.starts_at,new_starts_at:req.body.starts_at||null,...(customerActor?{rescheduled_by:customerActor}:{}),
-        ...(smartAuth?.manualTestId?{smart_reminder_manual_test_id:String(smartAuth.manualTestId),smart_reminder_recipient:smartAuth.recipient,smart_reminder_source:'email_action',smart_reminder_approval_pending:rescheduleAwaitingApproval}:{})});
+        ...(smartAuth?.manualTestId?{smart_reminder_manual_test_id:String(smartAuth.manualTestId),smart_reminder_recipient:smartAuth.recipient,smart_reminder_source:'email_action',smart_reminder_approval_pending:rescheduleAwaitingApproval}:{}),
+        ...(whatsappOrigin?{smart_reminder_source:'whatsapp_action',smart_reminder_recipient:whatsappOrigin.recipient_type,
+          ...(whatsappOrigin.source_kind==='manual'?{smart_reminder_manual_test_id:String(whatsappOrigin.id)}:{smart_reminder_delivery_id:String(whatsappOrigin.id)}),
+          smart_reminder_approval_pending:rescheduleAwaitingApproval}:{})});
       lifecyclePhase='notification_queue';
       if(req.body.action!=='cancel') await enqueueLifecycleBlockedIntents(db,{bookingId:Number(b.id),event:req.body.action==='confirm'?'confirmed':'rescheduled',eventKey:req.body.action+':'+randomUUID()});
       lifecyclePhase='commit';

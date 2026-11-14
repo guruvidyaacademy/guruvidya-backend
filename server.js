@@ -4121,9 +4121,64 @@ app.post("/api/webhook/botsailor", async (req, res) => {
       // Cancel/Reschedule buttons must stay tied to the booking that created them.
       // Never fall through to another active booking on the same mobile number.
       let bookingRef='';
-      if(['cancel','cancel_yes','reschedule'].includes(bookingActionType)){
+      // A WhatsApp button is tied to its ORIGINAL outgoing message, not the
+      // last appointment saved for this phone. BotSailor supplies reply_message_id.
+      // Resolve both supervised manual tests and scheduled reminder deliveries.
+      let reminderReplySource=null;
+      const reminderContextId=ctaContextMessageId(payload);
+      if(['cancel','reschedule'].includes(bookingActionType) && reminderContextId){
+        const matches=await pool.query(`
+          SELECT booking_id,recipient_type,stage,'manual' AS source_kind,id AS source_id
+            FROM booking_smart_reminder_manual_tests
+            WHERE channel='whatsapp' AND provider_message_id=$1 AND status='accepted'
+          UNION ALL
+          SELECT booking_id,recipient_type,stage,'scheduled' AS source_kind,id AS source_id
+            FROM booking_smart_reminder_deliveries
+            WHERE channel='whatsapp' AND provider_message_id=$1
+          LIMIT 3`,[reminderContextId]);
+        if(matches.rowCount===1){
+          const matched=matches.rows[0];
+          const refRow=await pool.query(`SELECT booking_ref,student_mobile,parent_mobile FROM student_bookings WHERE id=$1`,[matched.booking_id]);
+          const candidate=refRow.rows[0];
+          const matchedPhone=matched.recipient_type==='parent'?candidate?.parent_mobile:candidate?.student_mobile;
+          if(candidate && botSailorPhone(matchedPhone)===canonical){
+            bookingRef=candidate.booking_ref;
+            reminderReplySource=matched;
+          }
+        }
+        // A contextual button reply must never silently target another booking.
+        if(!bookingRef){
+          console.warn('BOOKING ACTION CONTEXT UNRESOLVED',{action:bookingActionType,hasContext:true,matches:matches.rowCount});
+          await sendBotSailorText({mobile:canonical},'We could not safely identify the booking linked to this button. Please use the Manage Appointment link from your booking confirmation.','booking_action_context_unresolved');
+          return res.status(200).json({status:'ok',action:'booking_action_context_unresolved'});
+        }
+      }
+      if(!bookingRef && ['cancel','cancel_yes','reschedule'].includes(bookingActionType)){
         const stateQ=await pool.query(`SELECT booking_ref,payload FROM booking_whatsapp_states WHERE mobile=$1 LIMIT 1`,[canonical]);
         bookingRef=String(stateQ.rows[0]?.booking_ref||'').trim();
+      }
+      if(['cancel','reschedule'].includes(bookingActionType) && !reminderReplySource){
+        const activeBookings=await pool.query(`SELECT booking_ref FROM student_bookings
+          WHERE (regexp_replace(COALESCE(student_mobile,''),'[^0-9]','','g') IN ($1,$2)
+            OR regexp_replace(COALESCE(parent_mobile,''),'[^0-9]','','g') IN ($1,$2))
+            AND status IN ('requested','approved','confirmed','rescheduled') LIMIT 2`,[canonical,national]);
+        if(activeBookings.rowCount!==1){
+          await sendBotSailorText({mobile:canonical},'Multiple bookings are linked to this number. Please use the secure Manage Appointment link in the correct booking confirmation.','booking_action_select_booking');
+          return res.status(200).json({status:'ok',action:'booking_action_select_booking'});
+        }
+        bookingRef=activeBookings.rows[0].booking_ref;
+      }
+      if(!bookingRef && ['cancel','reschedule'].includes(bookingActionType)){
+        // A mobile can have multiple active bookings. Never select newest by default.
+        const possible=await pool.query(`SELECT b.booking_ref FROM student_bookings b
+          WHERE (regexp_replace(COALESCE(b.student_mobile,''),'[^0-9]','','g') IN ($1,$2)
+              OR regexp_replace(COALESCE(b.parent_mobile,''),'[^0-9]','','g') IN ($1,$2))
+            AND b.status IN ('requested','approved','confirmed','rescheduled') LIMIT 2`,[canonical,national]);
+        if(possible.rowCount!==1){
+          await sendBotSailorText({mobile:canonical},'Please open the secure Manage Appointment link in your booking confirmation to choose the correct booking.','booking_action_ambiguous');
+          return res.status(200).json({status:'ok',action:'booking_action_ambiguous'});
+        }
+        bookingRef=possible.rows[0].booking_ref;
       }
       if(!bookingRef){
         const br=await pool.query(`SELECT b.booking_ref FROM student_bookings b
@@ -4229,7 +4284,10 @@ app.post("/api/webhook/botsailor", async (req, res) => {
           await pool.query(`UPDATE student_bookings SET token_hash=$1,updated_at=NOW() WHERE id=$2`,[tokenHash,booking.id]);
           await pool.query(`UPDATE booking_whatsapp_states SET payload=jsonb_set(COALESCE(payload,'{}'::jsonb),'{manage_token}',to_jsonb($1::text),true),updated_at=NOW() WHERE mobile=$2 AND booking_ref=$3`,[token,canonical,booking.booking_ref]);
         }
-        const rescheduleUrl=bookingManageUrl(booking,token)+'&action=reschedule';
+        const sourceParam=reminderReplySource
+          ? `&sr_wa_${reminderReplySource.source_kind==='manual'?'test':'delivery'}=${encodeURIComponent(String(reminderReplySource.source_id))}`
+          : '';
+        const rescheduleUrl=bookingManageUrl(booking,token)+'&action=reschedule'+sourceParam;
         reply=`\n\nOpen the secure link below to choose a new date and available time slot:\n\n${rescheduleUrl}`;
       } else if(bookingActionType==='manage') {
         // Keep the same valid token so an open booking page remains refreshable.
