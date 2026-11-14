@@ -6330,7 +6330,9 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
           ? [{id:'booking_maps',title:'Join Online Meeting'},
              {id:'booking_reschedule',title:'Reschedule'},
              {id:'booking_cancel',title:'Cancel Appointment'}]
-          : [{id:stage==='1h'?(String(booking.mode||'').toLowerCase()==='online'?'gv_smart_1h_im_ready':'gv_smart_1h_on_my_way'):(stage==='2h'?'gv_smart_2h_yes_be_there':'gv_smart_4h_yes_attend'),title:stage==='1h'?(String(booking.mode||'').toLowerCase()==='online'?"Yes, I'm Ready":"Yes, I'm On My Way"):(stage==='2h'?"Yes, I'll Be There":"Yes, I'll Attend") }],
+          : [{id:stage==='1h'?(String(booking.mode||'').toLowerCase()==='online'?'gv_smart_1h_im_ready':'gv_smart_1h_on_my_way'):(stage==='2h'?'gv_smart_2h_yes_be_there':'gv_smart_4h_yes_attend'),title:stage==='1h'?(String(booking.mode||'').toLowerCase()==='online'?"Yes, I'm Ready":"Yes, I'm On My Way"):(stage==='2h'?"Yes, I'll Be There":"Yes, I'll Attend") },
+             {id:'booking_reschedule',title:'Reschedule'},
+             {id:'booking_cancel',title:'Cancel Appointment'}],
         `smart_reminder_manual_${stage}_native_buttons`,
         {mediaUrl:media,mediaType:'image'}
       );
@@ -6345,7 +6347,7 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
         return {success:false,status:'native_button_untrackable',message:'Image-header native reminder was not accepted with a trackable provider message ID. Check provider logs before retrying.'};
       }
       console.info('SMART REMINDER NATIVE BUTTON ACCEPTED',{manualTestId:manual_test_id,hasProviderMessageId:true});
-      return {success:true,status:'accepted',message:stage==='5min'?'Image-header 5-minute meeting buttons accepted':'Image-header native one-button reminder accepted',message_id:buttonMessageId};
+      return {success:true,status:'accepted',message:stage==='5min'?'Image-header 5-minute meeting buttons accepted':'Image-header native three-button reminder accepted',message_id:buttonMessageId};
     }
     // Only the explicitly mapped approved template can be used. Never fall back to an unrelated template.
     const envKey=`SMART_REMINDER_TEST_TEMPLATE_${String(booking.mode).toUpperCase()}_ID`;
