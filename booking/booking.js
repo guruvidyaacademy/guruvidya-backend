@@ -1020,6 +1020,18 @@ export function installBookingRoutes(app,pool,hooks={}) {
     catch {await db.query('ROLLBACK');fail(res,500,'Unable to restore bookings');}finally{db.release();}
   });
   // Admin operations use the existing server-side secret guard; do not expose it in a frontend bundle.
+  // Read-only lifecycle history for the Smart Reminders current/previous appointment view.
+  // Keep source attribution tied to the signed manual-test transaction when present.
+  app.get('/api/admin/booking/smart-reminders/lifecycle-history',admin,async(req,res)=>{
+    try{
+      const r=await pool.query(`SELECT e.booking_id,e.actor,e.action,e.details,e.created_at
+        FROM booking_events e JOIN student_bookings b ON b.id=e.booking_id
+        WHERE b.trashed_at IS NULL AND e.action IN ('reschedule','cancel')
+        AND e.booking_id IN (SELECT id FROM student_bookings WHERE trashed_at IS NULL ORDER BY starts_at DESC LIMIT 500)
+        ORDER BY e.created_at ASC LIMIT 1500`);
+      res.set('Cache-Control','no-store').json({success:true,data:r.rows});
+    }catch(e){console.error('Smart reminder lifecycle history:',e.message);fail(res,503,'Lifecycle history unavailable');}
+  });
   app.get('/api/admin/booking/:id/events',admin,async(req,res)=>{
     try {const r=await pool.query('SELECT actor,action,details,created_at FROM booking_events WHERE booking_id=$1 ORDER BY created_at DESC LIMIT 200',[req.params.id]);res.json({success:true,data:r.rows});}
     catch(e){fail(res,500,'Unable to load booking history');}
