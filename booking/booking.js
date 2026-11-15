@@ -1206,8 +1206,9 @@ export function installBookingRoutes(app,pool,hooks={}) {
   });
   app.post('/api/admin/booking/smart-reminders/manual-test',admin,async(req,res)=>{
     if(process.env.SMART_REMINDER_MANUAL_TEST_ENABLED!=='true')return fail(res,403,'Manual test is disabled on the server. Set SMART_REMINDER_MANUAL_TEST_ENABLED=true only for a supervised test.');
-    const {booking_id,recipient_type,channel,stage,confirm}=req.body||{};
+    const {booking_id,recipient_type,channel,stage,confirm,sending_mode='auto'}=req.body||{};
     if(confirm!=='SEND_REAL_TEST'||!['student','parent'].includes(recipient_type)||!['email','whatsapp'].includes(channel)||!['4h','2h','1h','5min'].includes(stage)||!Number.isSafeInteger(Number(booking_id))||Number(booking_id)<1)return fail(res,400,'Invalid manual test request');
+    if(!['auto','approved_template'].includes(sending_mode) || (sending_mode==='approved_template' && (channel!=='whatsapp'||stage!=='4h')))return fail(res,400,'Approved template mode is available only for the 4h WhatsApp manual test');
     if(typeof hooks.sendSmartReminderManualTest!=='function')return fail(res,503,'Manual test provider not configured');
     let record;
     try {
@@ -1236,7 +1237,7 @@ export function installBookingRoutes(app,pool,hooks={}) {
         const inserted=await db.query(`INSERT INTO booking_smart_reminder_manual_tests(booking_id,booking_ref,recipient_type,channel,stage) VALUES($1,$2,$3,$4,$5) RETURNING id`,[booking_id,record.booking_ref,recipient_type,channel,stage]);test=inserted.rows[0];await db.query('COMMIT');
       }catch(e){await db.query('ROLLBACK').catch(()=>{});throw e;}finally{db.release();}
       // Never retry an unknown provider outcome automatically.
-      try {const result=await hooks.sendSmartReminderManualTest({booking:record,recipient_type,channel,stage,destination,manual_test_id:test.id});
+      try {const result=await hooks.sendSmartReminderManualTest({booking:record,recipient_type,channel,stage,destination,manual_test_id:test.id,sending_mode});
         const success=result?.success===true;
         await pool.query(`UPDATE booking_smart_reminder_manual_tests SET status=$2,provider_message_id=$3,detail=$4,completed_at=NOW() WHERE id=$1`,[test.id,success?'accepted':'failed',result?.message_id||null,String(result?.message||result?.status||'Provider response').slice(0,400)]);
         return res.status(success?200:502).json({success,data:{id:test.id,status:success?'accepted':'failed',channel,recipient_type,stage},message:success?'Provider accepted manual test; delivery/read is not yet confirmed':'Provider did not accept manual test'});

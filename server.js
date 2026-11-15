@@ -6348,7 +6348,7 @@ function smartReminderFourHourEmailHtml(b, recipient, name, when, links={}, stag
 installSmartReminderTestMediaRoute(app, pool);
 
 installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminderBookingSlots=fn;}, verifySmartReminderAction:smartOpenActionVerify, onBookingCreated: onBookingCreatedWhatsApp, onBookingRescheduled: onBookingRescheduledWhatsApp, onBookingCancelled: onBookingCancelledRebook, onRebookLinkRequested: ({booking_ref,mobile})=>sendGuruVidyaRebookingCard({mobile},booking_ref), onInternalAppointmentEvent: sendInternalAppointmentAlert,
-  sendSmartReminderManualTest: async ({booking,recipient_type,channel,stage,destination,manual_test_id}) => {
+  sendSmartReminderManualTest: async ({booking,recipient_type,channel,stage,destination,manual_test_id,sending_mode="auto"}) => {
     const name=recipient_type==='student'?booking.student_name:(booking.parent_name||booking.student_name);
     const when=new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',dateStyle:'medium',timeStyle:'short'}).format(new Date(booking.starts_at));
     if(channel==='email'){
@@ -6366,19 +6366,11 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
       const result=await sendEmailWithFailover({to:destination,subject,text,html:['4h','2h','1h','5min'].includes(stage)?smartReminderFourHourEmailHtml(booking,recipient_type,name,when,emailLinks,stage):`<div style="font-family:Arial,sans-serif"><h2>Guruvidya Academy Pvt. Ltd.</h2><p>TEST Appointment Reminder</p><p>${text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>')}</p></div>`});
       return {success:true,message:'Email provider accepted test',message_id:result?.id||result?.messageId||null};
     }
-    // Manual 4h test: route by the REAL WhatsApp window, not by the OPEN-test
-    // feature flag or a simulated admin override. An OPEN recipient retains the
-    // existing native-button flow; a CLOSED recipient uses the approved template.
-    const isFourHourManual=stage==='4h';
-    let realFourHourOpen=false;
-    if(isFourHourManual){
-      const phone=botSailorPhone(destination),ten=phone.replace(/^91(?=\d{10}$)/,'');
-      const windowResult=await pool.query(`SELECT MAX(received_at) AS last_incoming FROM whatsapp_window_events WHERE mobile IN ($1,$2)`,[phone,ten]);
-      const lastIncoming=windowResult.rows[0]?.last_incoming;
-      realFourHourOpen=Boolean(lastIncoming&&Date.now()-new Date(lastIncoming).getTime()<24*3600000);
-      console.info('SMART REMINDER 4H MANUAL WINDOW ROUTE',{manualTestId:manual_test_id,realWindow:realFourHourOpen?'OPEN':'CLOSED',sendPath:realFourHourOpen?'native_buttons':'approved_template'});
-    }
-    if((isFourHourManual&&realFourHourOpen) || (stage==='5min' && String(booking.mode||'').toLowerCase()==='online') || (process.env.SMART_REMINDER_MANUAL_OPEN_WINDOW_TEST==='true' && ['2h','1h'].includes(stage))){
+    // Explicit, supervised 4h template test is independent of the real Meta window.
+    // It does not change the Meta window, verification, consent or scheduled dispatch.
+    const forceApprovedTemplate=channel==='whatsapp' && stage==='4h' && sending_mode==='approved_template';
+    if(forceApprovedTemplate) console.info('SMART REMINDER MANUAL TEMPLATE ROUTE',{manualTestId:manual_test_id,stage,mode:booking.mode,sendPath:'approved_template',windowOverride:false});
+    if(!forceApprovedTemplate && ((stage==='5min' && String(booking.mode||'').toLowerCase()==='online') || (process.env.SMART_REMINDER_MANUAL_OPEN_WINDOW_TEST==='true' && ['4h','2h','1h'].includes(stage)))){
       // Check the actual 24-hour customer service window; do not use admin test overrides.
       const phone=botSailorPhone(destination),ten=phone.replace(/^91(?=\d{10}$)/,'');
       const win=await pool.query(`SELECT MAX(received_at) AS last_incoming FROM whatsapp_window_events WHERE mobile IN ($1,$2)`,[phone,ten]);
@@ -6421,10 +6413,7 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
     }
     // Only the explicitly mapped approved template can be used. Never fall back to an unrelated template.
     const envKey=`SMART_REMINDER_TEST_TEMPLATE_${String(booking.mode).toUpperCase()}_ID`;
-    // BotSailor approved 4h templates supplied by the administrator. Keep
-    // environment overrides available; never substitute these for other stages.
-    const approvedFourHourIds={offline:'464625',online:'464624'};
-    const id=String(process.env[envKey]||(isFourHourManual?approvedFourHourIds[String(booking.mode||'').toLowerCase()]:'' )||'').trim();
+    const id=String(process.env[envKey]||'').trim();
     if(!id)return {success:false,status:'template_not_configured',message:`Configure ${envKey} with the approved reminder Utility Template ID`};
     // Smart Reminder manual test only: refresh a missing template once, without changing
     // the existing booking alerts, other template sends, or automation settings.
