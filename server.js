@@ -6174,6 +6174,59 @@ async function smartOpenActionVerify(req){
   if(!booking||(!alreadyCancelled&&(!['approved','confirmed','rescheduled'].includes(String(booking.status).toLowerCase())||String(booking.appointment_revision??'')!==payload.v||new Date(booking.starts_at).getTime()<=Date.now())))return null;
   return {booking,action:payload.a,recipient:payload.r,manualTestId:/^[1-9][0-9]*$/.test(String(payload.mt||''))?String(payload.mt):null,t,sig};
 }
+// 4h WhatsApp URL CTA landing pages. Dynamic Meta URL suffix: <signed t>.<HMAC s>.
+// These are GET-only previews: a link scanner cannot confirm attendance or cancel a booking.
+function smartReminderUrlCtaSuffix(booking,recipientType,kind,manualTestId){
+  if(!['attend','manage'].includes(kind))throw new Error('Unsupported URL CTA');
+  const secret=smartOpenAttendSecret();
+  if(secret.length<32)throw new Error('SMART_REMINDER_ACTION_SECRET must be at least 32 characters');
+  const data=Buffer.from(JSON.stringify({b:String(booking.id),r:recipientType,v:String(booking.appointment_revision??''),a:kind,mt:String(manualTestId),exp:Date.now()+48*3600000})).toString('base64url');
+  return data+'.'+createHmac('sha256',secret).update(data).digest('base64url');
+}
+async function smartReminderUrlCtaVerify(req,kind){
+  const suffix=String(req.params.suffix||'');
+  if(suffix.length>750||!/^([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/.test(suffix))return null;
+  const [t,sig]=suffix.split('.');
+  const secret=smartOpenAttendSecret();
+  if(secret.length<32)return null;
+  const expected=createHmac('sha256',secret).update(t).digest();
+  const actual=Buffer.from(sig,'base64url');
+  if(actual.length!==expected.length||!timingSafeEqual(actual,expected))return null;
+  let data;try{data=JSON.parse(Buffer.from(t,'base64url').toString('utf8'));}catch{return null;}
+  if(data.a!==kind||!['student','parent'].includes(data.r)||!/^[1-9][0-9]*$/.test(String(data.b))||!/^[1-9][0-9]*$/.test(String(data.mt))||!Number.isSafeInteger(data.exp)||data.exp<Date.now()||data.exp>Date.now()+48*3600000)return null;
+  const q=await pool.query(`SELECT b.id,b.booking_ref,b.status,b.appointment_revision,b.starts_at,b.mode,b.course
+    FROM student_bookings b JOIN booking_smart_reminder_manual_tests m ON m.booking_id=b.id
+    WHERE b.id=$1 AND m.id=$2 AND m.recipient_type=$3 AND m.channel='whatsapp'
+    AND m.stage='4h' AND m.status='accepted' AND m.created_at>=NOW()-INTERVAL '48 hours' LIMIT 1`,[data.b,data.mt,data.r]);
+  const b=q.rows[0];
+  if(!b||String(b.appointment_revision??'')!==String(data.v)||!['approved','confirmed','rescheduled'].includes(String(b.status).toLowerCase())||new Date(b.starts_at).getTime()<=Date.now())return null;
+  return {booking:b,recipient:data.r,manualTestId:data.mt,t,sig};
+}
+function smartReminderUrlCtaPage(title,booking,buttons){
+  const esc=v=>String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>${esc(title)} | Guruvidya</title></head><body style="margin:0;background:#eef3f9;font:16px Arial,sans-serif;color:#17365c"><main style="max-width:480px;margin:36px auto;background:#fff;padding:28px;border-radius:14px;box-shadow:0 4px 22px #102c4d18"><h2>Guruvidya Academy</h2><h3>${esc(title)}</h3><p>Booking: <strong>${esc(booking.booking_ref)}</strong></p><p>Course: ${esc(booking.course)}</p><p>Mode: ${esc(booking.mode)}</p><p>Please choose an action below. Opening this page does not change your booking.</p>${buttons.map(b=>`<a href="${esc(b.url)}" style="display:block;text-align:center;background:${b.color};color:#fff;padding:15px;margin:12px 0;border-radius:8px;text-decoration:none;font-weight:bold">${esc(b.label)}</a>`).join('')}<p style="font-size:13px;color:#667">For security, this link expires after 48 hours and becomes invalid when the booking changes.</p></main></body></html>`;
+}
+app.get('/api/public/booking/smart-reminder/url-attend/:suffix',async(req,res)=>{
+  res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'});
+  try{
+    const v=await smartReminderUrlCtaVerify(req,'attend');
+    if(!v)return res.status(403).send('This reminder link is invalid or expired.');
+    // The existing attendance route performs the final confirmation. No GET side effects here.
+    const url=smartOpenAttendUrl(v.booking,v.recipient,v.manualTestId);
+    return res.type('html').send(smartReminderUrlCtaPage('Yes, I’ll Attend',v.booking,[{label:'Continue to Attendance Confirmation',url,color:'#1767b2'}]));
+  }catch(e){console.error('Smart URL attend landing:',e.message);return res.status(503).send('Unable to open reminder.');}
+});
+app.get('/api/public/booking/smart-reminder/url-manage/:suffix',async(req,res)=>{
+  res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'});
+  try{
+    const v=await smartReminderUrlCtaVerify(req,'manage');
+    if(!v)return res.status(403).send('This reminder link is invalid or expired.');
+    return res.type('html').send(smartReminderUrlCtaPage('Manage Appointment',v.booking,[
+      {label:'Reschedule Booking',url:smartOpenActionUrl(v.booking,v.recipient,'reschedule',v.manualTestId),color:'#1767b2'},
+      {label:'Cancel Booking',url:smartOpenActionUrl(v.booking,v.recipient,'cancel',v.manualTestId),color:'#b52c38'}]));
+  }catch(e){console.error('Smart URL manage landing:',e.message);return res.status(503).send('Unable to open reminder.');}
+});
+
 app.get('/api/public/booking/smart-reminder/open-action',async(req,res)=>{
   res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'});
   try{
@@ -6477,7 +6530,8 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
       return {success:true,status:'accepted',message:stage==='5min'?'Image-header 5-minute meeting buttons accepted':'Image-header native three-button reminder accepted',message_id:buttonMessageId};
     }
     // Only the explicitly mapped approved template can be used. Never fall back to an unrelated template.
-    const envKey=`SMART_REMINDER_TEST_TEMPLATE_${String(booking.mode).toUpperCase()}_ID`;
+    const urlTemplateMode=forceApprovedTemplate && String(booking.mode).toLowerCase()==='offline' && String(process.env.SMART_REMINDER_TEST_URL_TEMPLATE_OFFLINE_ID||'').trim()!=='';
+    const envKey=urlTemplateMode?'SMART_REMINDER_TEST_URL_TEMPLATE_OFFLINE_ID':`SMART_REMINDER_TEST_TEMPLATE_${String(booking.mode).toUpperCase()}_ID`;
     const id=String(process.env[envKey]||'').trim();
     if(!id)return {success:false,status:'template_not_configured',message:`Configure ${envKey} with the approved reminder Utility Template ID`};
     // Smart Reminder manual test only: refresh a missing template once, without changing
@@ -6505,10 +6559,21 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
     let mediaUrl;
     try { mediaUrl=await createSmartReminderTestMedia(pool,booking,publicBase); }
     catch(err) { return {success:false,status:'reminder_image_preparation_failed',message:`Reminder IMAGE header preparation failed: ${err?.message||err}`}; }
-    const result=await sendBotSailorTemplate({mobile:destination,name,course:booking.course},t,{
+    const templateVariables={
       template_header_media_url:mediaUrl,
       'templateVariable-StundentName-1':String(booking.student_name||name||'').trim()
-    });
+    };
+    if(urlTemplateMode){
+      // BotSailor generates variable field names per approved template. Require
+      // the exact verified keys instead of guessing or sending unusable URLs.
+      const yesKey=String(process.env.SMART_REMINDER_URL_YES_VARIABLE_KEY||'').trim();
+      const manageKey=String(process.env.SMART_REMINDER_URL_MANAGE_VARIABLE_KEY||'').trim();
+      if(!/^templateVariable-[A-Za-z0-9_-]+-\d+$/.test(yesKey)||!/^templateVariable-[A-Za-z0-9_-]+-\d+$/.test(manageKey)||yesKey===manageKey)
+        return {success:false,status:'url_variable_mapping_required',message:'Configure the two exact BotSailor URL variable keys before sending the new template'};
+      templateVariables[yesKey]=smartReminderUrlCtaSuffix(booking,recipient_type,'attend',manual_test_id);
+      templateVariables[manageKey]=smartReminderUrlCtaSuffix(booking,recipient_type,'manage',manual_test_id);
+    }
+    const result=await sendBotSailorTemplate({mobile:destination,name,course:booking.course},t,templateVariables);
     return {success:result?.success===true,status:result?.status,message:result?.message||'BotSailor response',message_id:result?.wa_message_id||result?.message_id||result?.response?.wa_message_id||result?.response?.message_id||null};
   } });
 
