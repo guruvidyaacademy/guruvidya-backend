@@ -3397,7 +3397,50 @@ app.get("/api/admin/botsailor-flow-data/status", async (req, res) => {
   }
 });
 
-app.post("/api/webhook/botsailor", async (req, res) => {
+// Optional BotSailor Outbound Action/Postback bridge. This endpoint is separate
+// from the existing inbound/status webhook and requires a shared secret.
+// It never guesses a selected action from an attachment placeholder.
+app.post('/api/webhook/botsailor/smart-postback', async (req, res) => {
+  const secret = String(process.env.BOTSAILOR_SMART_POSTBACK_SECRET || '');
+  const provided = String(req.get('x-gv-postback-secret') || req.query.key || '');
+  if (!secret || !provided || provided.length !== secret.length ||
+      !require('crypto').timingSafeEqual(Buffer.from(provided), Buffer.from(secret))) {
+    return res.status(403).json({ success: false, message: 'Forbidden' });
+  }
+  const source = req.body && typeof req.body === 'object' ? req.body : {};
+  const fields = source.custom_fields && typeof source.custom_fields === 'object' ? source.custom_fields : {};
+  const read = (...names) => {
+    for (const name of names) {
+      const val = source[name] ?? (Array.isArray(fields)
+        ? fields.find(f => f && [f.name,f.key,f.field_name].includes(name))?.value
+        : fields[name]);
+      if (typeof val === 'string' && val.trim()) return val.trim();
+    }
+    return '';
+  };
+  const button = read('selected_button', 'selected_button_id', 'selected_button_title',
+    'button_reply_id', 'button_reply_title', 'button_id', 'button_title',
+    'quick_reply_payload', 'quick_reply_title', 'postback_id', 'postback_title');
+  const phone = read('mobile','phone','phone_number','wa_id','chat_id');
+  const context = read('reply_message_id','context_message_id','original_message_id',
+    'replied_to_message_id');
+  const event = read('wa_message_id','message_id','event_id');
+  if (!button || !phone || !context || !event || event === context) {
+    console.info('SMART POSTBACK BRIDGE UNRESOLVED', {
+      hasButton: !!button, hasPhone: !!phone, hasContext: !!context,
+      hasEvent: !!event, noActionTaken: true
+    });
+    return res.status(422).json({ success: false, message: 'Explicit button, phone, original message ID and unique event ID required' });
+  }
+  // Preserve exact recipient and outbound message correlation in the existing
+  // manual-click audit. No booking mutation occurs on a missing/unknown button.
+  req.body = { ...source, mobile: phone, button_reply_id: button,
+    reply_message_id: context, wa_message_id: event,
+    user_message: '#button_reply#' };
+  return handleBotSailorWebhook(req, res);
+});
+
+async function handleBotSailorWebhook(req, res) {
   try {
     const payload = req.body || {};
 
@@ -4888,7 +4931,8 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     console.error("❌ BotSailor webhook error:", err.message);
     res.status(500).json({ status: "error", message: err.message });
   }
-});
+}
+app.post("/api/webhook/botsailor", handleBotSailorWebhook);
 
 
 async function loadBookingWhatsAppContext(bookingRef) {
