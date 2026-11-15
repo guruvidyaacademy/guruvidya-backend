@@ -15,6 +15,7 @@ import { revisionSetClause } from './booking/smart-reminder-revision-gate.js';
 import { bookingDispatchLockSql, bookingDispatchLockArgs } from './booking/booking-dispatch-lock.js';
 import { initBooking, installBookingRoutes, hasBookingSuppression } from "./booking/booking.js";
 import express from "express";
+import { installMetaWhatsAppWebhook } from "./booking/meta-whatsapp-webhook.js";
 import cors from "cors";
 import axios from "axios";
 import pg from "pg";
@@ -45,7 +46,11 @@ if (process.env.GV_SMART_REMINDER_PREFLIGHT === '1') {
 const app = express();
 app.use(cors());
 // Bulk BotSailor Flow Data imports can contain many TXT/JSON exports at once.
-app.use(express.json({ limit: "25mb", verify: (req, res, buf) => { if (req.originalUrl?.split("?")[0] === "/api/webhook/resend") req.resendRawBody = Buffer.from(buf); } }));
+app.use(express.json({ limit: "25mb", verify: (req, res, buf) => { if (req.originalUrl?.split("?")[0] === "/api/webhook/resend") req.resendRawBody = Buffer.from(buf); if (req.originalUrl?.split("?")[0] === "/api/webhook/meta-whatsapp") req.metaWhatsAppRawBody = Buffer.from(buf); } }));
+
+// Isolated Meta webhook verification and authenticated diagnostic receiver.
+// Does not change existing BotSailor routing or take booking actions.
+installMetaWhatsAppWebhook(app);
 
 // Resend/Svix signed events: never trust unverified delivery receipts.
 app.post('/api/webhook/resend', async (req, res) => {
