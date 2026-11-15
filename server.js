@@ -3476,20 +3476,31 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     const smartCustomFields = payload.custom_fields;
     const smartButtonFieldNames = new Set([
       'button_reply_title', 'button_title', 'button_reply_id', 'button_id',
-      'quick_reply_title', 'quick_reply_payload', 'selected_button'
+      'quick_reply_title', 'quick_reply_payload', 'selected_button',
+      'button_text', 'button_payload', 'selected_button_id',
+      'selected_button_title', 'button_response', 'button_value'
     ]);
     const smartNamedFields = [];
+    // BotSailor may return named custom fields as either an array or an object.
+    // Only explicit, named button fields qualify: never interpret an attachment
+    // marker, an unrelated custom field, or the order of clicks as a selection.
+    const addSmartButtonField = (name, value) => {
+      if (!smartButtonFieldNames.has(String(name || '').trim().toLowerCase())) return;
+      if (typeof value === 'string') smartNamedFields.push(value);
+      else if (value && typeof value === 'object') {
+        for (const key of ['id', 'title', 'text', 'payload', 'value']) {
+          if (typeof value[key] === 'string') smartNamedFields.push(value[key]);
+        }
+      }
+    };
     if (smartCustomFields && typeof smartCustomFields === 'object') {
       if (Array.isArray(smartCustomFields)) {
         for (const field of smartCustomFields) {
           if (!field || typeof field !== 'object') continue;
-          const name = String(field.name || field.key || field.field_name || '').trim().toLowerCase();
-          if (smartButtonFieldNames.has(name)) smartNamedFields.push(field.value);
+          addSmartButtonField(field.name || field.key || field.field_name, field.value);
         }
       } else {
-        for (const [name, value] of Object.entries(smartCustomFields)) {
-          if (smartButtonFieldNames.has(name.toLowerCase())) smartNamedFields.push(value);
-        }
+        for (const [name, value] of Object.entries(smartCustomFields)) addSmartButtonField(name, value);
       }
     }
     const smartExplicitCandidates = [
@@ -3498,15 +3509,25 @@ app.post("/api/webhook/botsailor", async (req, res) => {
     ].filter(value => typeof value === 'string').map(value =>
       value.replace(/^#button[ _-]*reply#/i, '').trim().toLowerCase().replace(/[‘’`´]/g, "'")
     );
-    const smartRecognized = [...new Set(smartExplicitCandidates.map(value => ({
-      "yes, i'll attend": 'yes_attend', "yes, i'll be there": 'yes_attend', 'reschedule': 'reschedule',
-      'cancel appointment': 'cancel', 'on my way': 'on_my_way', "yes, i'm on my way": 'on_my_way', "i'm ready": 'im_ready', "yes, i'm ready": 'im_ready', 'gv_smart_1h_on_my_way': 'on_my_way', 'gv_smart_1h_im_ready': 'im_ready', 'join online meeting': 'join', 'booking_maps': 'join', 'booking_reschedule': 'reschedule', 'booking_cancel': 'cancel'
-    })[value]).filter(Boolean))];
-    // Conflicting explicit values are not safe to act on.
+    const smartButtonMap = {
+      "yes, i'll attend": 'yes_attend', "yes, i'll be there": 'yes_attend',
+      'gv_smart_4h_yes_attend': 'yes_attend',
+      's j l v 2 q c f c o j m k r k': 'yes_attend',
+      'sjlv2qcfcojmkrk': 'yes_attend',
+      'reschedule': 'reschedule', 'appointment-reschedule': 'reschedule',
+      'cancel appointment': 'cancel', 'appointment-cancel': 'cancel',
+      'on my way': 'on_my_way', "yes, i'm on my way": 'on_my_way',
+      "i'm ready": 'im_ready', "yes, i'm ready": 'im_ready',
+      'gv_smart_1h_on_my_way': 'on_my_way', 'gv_smart_1h_im_ready': 'im_ready',
+      'join online meeting': 'join', 'booking_maps': 'join',
+      'booking_reschedule': 'reschedule', 'booking_cancel': 'cancel'
+    };
+    const smartRecognized = [...new Set(smartExplicitCandidates.map(value => smartButtonMap[value]).filter(Boolean))];
     const smartSelectedButton = smartRecognized.length === 1 ? smartRecognized[0] : null;
     const smartManualRaw=String(extractButtonReplyTitle(payload)||payload.user_message||payload.userMessage||'')
       .replace(/^#button[ _-]*reply#/i,'').trim().toLowerCase();
     const smartManualButton=smartSelectedButton;
+    // Conflicting explicit values are not safe to act on; no action is taken.
     // Preference choices and opposite-choice confirmation are handled only with
     // exact BotSailor prompt context, event ID, booking revision and recipient phone.
     const followupEventId=String(payload.wa_message_id||payload.message_id||payload.message?.id||
