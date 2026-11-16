@@ -1256,6 +1256,68 @@ export function installBookingRoutes(app,pool,hooks={}) {
     try {const r=await pool.query(`UPDATE booking_settings SET settings=jsonb_set(COALESCE(settings,'{}'::jsonb),'{smart_reminders}',$1::jsonb,true) WHERE id=1 RETURNING settings->'smart_reminders' AS smart`,[JSON.stringify(req.body)]);if(!r.rowCount)return fail(res,503,'Booking settings unavailable');res.json({success:true,data:{...r.rows[0].smart,master_enabled:false}});}
     catch(e){console.error('Smart reminder settings save:',e.message);fail(res,503,'Unable to save smart reminder settings');}
   });
+  // Read-only WhatsApp window evidence for the tracking dashboard.
+  // Never sends messages, changes booking state, or changes the dispatcher HOLD.
+  app.get('/api/admin/booking/smart-reminders/window-status',admin,async(req,res)=>{
+    try {
+      const result=await pool.query(`
+        SELECT b.id AS booking_id, c.recipient_type,
+          w.last_inbound_at,
+          (w.last_inbound_at + INTERVAL '24 hours') AS expires_at,
+          COALESCE(a.attempts,0)::int AS attempts
+        FROM student_bookings b
+        CROSS JOIN LATERAL (VALUES
+          ('student'::text,regexp_replace(COALESCE(b.student_mobile,''),'[^0-9]','','g')),
+          ('parent'::text,regexp_replace(COALESCE(b.parent_mobile,''),'[^0-9]','','g'))
+        ) c(recipient_type,mobile)
+        LEFT JOIN LATERAL (
+          SELECT MAX(e.received_at) AS last_inbound_at
+          FROM whatsapp_window_events e
+          WHERE length(c.mobile)>=10
+            AND right(regexp_replace(COALESCE(e.mobile,''),'[^0-9]','','g'),10)=right(c.mobile,10)
+        ) w ON true
+        LEFT JOIN LATERAL (
+          SELECT COUNT(*) FILTER (WHERE ev.event_type='extension_requested') AS attempts
+          FROM booking_smart_reminder_window_events ev
+          WHERE ev.booking_id=b.id AND ev.recipient_type=c.recipient_type
+        ) a ON true
+        WHERE b.created_at >= NOW()-INTERVAL '45 days'
+        ORDER BY b.id DESC LIMIT 600
+      `);
+      res.set('Cache-Control','no-store').json({success:true,data:result.rows});
+    }catch(e){console.error('Smart window status read:',e.message);fail(res,503,'WhatsApp window status unavailable');}
+  });
+  // Read-only WhatsApp window evidence for the tracking dashboard.
+  // Never sends messages, changes booking state, or changes the dispatcher HOLD.
+  app.get('/api/admin/booking/smart-reminders/window-status',admin,async(req,res)=>{
+    try {
+      const result=await pool.query(`
+        SELECT b.id AS booking_id, c.recipient_type,
+          w.last_inbound_at,
+          (w.last_inbound_at + INTERVAL '24 hours') AS expires_at,
+          COALESCE(a.attempts,0)::int AS attempts
+        FROM student_bookings b
+        CROSS JOIN LATERAL (VALUES
+          ('student'::text,regexp_replace(COALESCE(b.student_mobile,''),'[^0-9]','','g')),
+          ('parent'::text,regexp_replace(COALESCE(b.parent_mobile,''),'[^0-9]','','g'))
+        ) c(recipient_type,mobile)
+        LEFT JOIN LATERAL (
+          SELECT MAX(e.received_at) AS last_inbound_at
+          FROM whatsapp_window_events e
+          WHERE length(c.mobile)>=10
+            AND right(regexp_replace(COALESCE(e.mobile,''),'[^0-9]','','g'),10)=right(c.mobile,10)
+        ) w ON true
+        LEFT JOIN LATERAL (
+          SELECT COUNT(*) FILTER (WHERE ev.event_type='extension_requested') AS attempts
+          FROM booking_smart_reminder_window_events ev
+          WHERE ev.booking_id=b.id AND ev.recipient_type=c.recipient_type
+        ) a ON true
+        WHERE b.created_at >= NOW()-INTERVAL '45 days'
+        ORDER BY b.id DESC LIMIT 600
+      `);
+      res.set('Cache-Control','no-store').json({success:true,data:result.rows});
+    }catch(e){console.error('Smart window status read:',e.message);fail(res,503,'WhatsApp window status unavailable');}
+  });
   app.get('/api/admin/booking/smart-reminders/tracking',admin,async(req,res)=>{
     // The dedicated delivery table is intentionally migration-gated; never fabricate tracking rows.
     try {const r=await pool.query(`SELECT to_regclass('public.booking_smart_reminder_deliveries') AS tbl`);
