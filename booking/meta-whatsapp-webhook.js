@@ -61,10 +61,10 @@ async function auditManualButton(pool, message) {
     ON CONFLICT(manual_test_id,provider_event_id) DO NOTHING RETURNING id`,
     [test.id,eventId,button]);
   // Audit only: no booking mutations, follow-up messages, or preference changes.
-  return { result: saved.rowCount ? 'recorded' : 'duplicate', stage: test.stage, manualTestId: test.id, button };
+  return { result: saved.rowCount ? 'recorded' : 'duplicate', stage: test.stage, manualTestId: test.id, button, recipientMobile: mobile };
 }
 
-export function installMetaWhatsAppWebhook(app, { pool } = {}) {
+export function installMetaWhatsAppWebhook(app, { pool, onManualAction } = {}) {
   const path = '/api/webhook/meta-whatsapp';
   app.get(path, (req, res) => {
     const token = String(process.env.GV_META_WEBHOOK_VERIFY_TOKEN || '');
@@ -109,7 +109,11 @@ export function installMetaWhatsAppWebhook(app, { pool } = {}) {
           if (!pool || !['button','interactive'].includes(message?.type)) continue;
           try {
             const result = await auditManualButton(pool, message);
-            console.info('GV META SMART MANUAL BUTTON', result);
+            console.info('GV META SMART MANUAL BUTTON', {result:result.result,stage:result.stage,manualTestId:result.manualTestId,button:result.button});
+            if (result.result === 'recorded' && ['reschedule','cancel'].includes(result.button) && typeof onManualAction === 'function') {
+              try { await onManualAction({manualTestId:result.manualTestId,button:result.button,mobile:result.recipientMobile}); }
+              catch (sendError) { console.error('GV META SMART ACTION LINK ERROR',{manualTestId:result.manualTestId,button:result.button,error:sendError?.message||'unknown'}); }
+            }
           } catch (error) {
             console.error('GV META SMART MANUAL BUTTON ERROR', { error: error?.message || 'unknown' });
             // Return 500 so Meta may retry transient database failures; the unique

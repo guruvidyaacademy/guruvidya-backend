@@ -50,7 +50,27 @@ app.use(express.json({ limit: "25mb", verify: (req, res, buf) => { if (req.origi
 
 // Isolated Meta webhook verification and authenticated diagnostic receiver.
 // Does not change existing BotSailor routing or take booking actions.
-installMetaWhatsAppWebhook(app, { pool });
+installMetaWhatsAppWebhook(app, { pool, onManualAction: async ({manualTestId,button,mobile}) => {
+  // Only route a link for the exact previously recorded, accepted WhatsApp test.
+  // This does not mutate a booking or change any stage preference.
+  const found=await pool.query(`SELECT b.id,b.booking_ref,b.status,b.starts_at,b.appointment_revision,
+      t.recipient_type,t.stage,t.booking_id
+    FROM booking_smart_reminder_manual_tests t
+    JOIN student_bookings b ON b.id=t.booking_id
+    JOIN booking_smart_reminder_manual_clicks c ON c.manual_test_id=t.id AND c.button_key=$2
+    WHERE t.id=$1 AND t.channel='whatsapp' AND t.status='accepted'
+      AND t.created_at>=NOW()-INTERVAL '48 hours' LIMIT 1`,[manualTestId,button]);
+  if(found.rowCount!==1)return;
+  const b=found.rows[0];
+  if(!['approved','confirmed','rescheduled'].includes(String(b.status).toLowerCase()) || new Date(b.starts_at).getTime()<=Date.now())return;
+  const mobileRow=await pool.query(`SELECT student_mobile,parent_mobile FROM student_bookings WHERE id=$1`,[b.id]);
+  const expected=String(b.recipient_type==='parent'?mobileRow.rows[0]?.parent_mobile:mobileRow.rows[0]?.student_mobile).replace(/\D/g,'').slice(-10);
+  if(!expected||expected!==String(mobile).replace(/\D/g,'').slice(-10))return;
+  const url=smartOpenActionUrl(b,b.recipient_type,button,manualTestId);
+  const title=button==='reschedule'?'Reschedule Appointment':'Cancel Appointment';
+  const response=await sendBotSailorText({mobile},`Guruvidya Academy | ${title}\n\nOpen your secure link to continue:\n${url}\n\nYour booking is not changed until you complete the action.`,`smart_reminder_meta_${button}_link`);
+  console.info('GV META SMART ACTION LINK',{manualTestId,button,accepted:response?.success===true});
+} });
 
 // Resend/Svix signed events: never trust unverified delivery receipts.
 app.post('/api/webhook/resend', async (req, res) => {
