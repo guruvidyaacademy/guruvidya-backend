@@ -30,7 +30,7 @@ export function metaButtonSelection(message) {
   return mapped.length === 1 ? mapped[0] : null;
 }
 
-async function auditManualButton(pool, message) {
+async function auditManualButton(pool, message, onManualAction) {
   const context = String(message?.context?.id || '').trim();
   const eventId = String(message?.id || '').trim();
   const mobile = String(message?.from || '').replace(/\D/g, '');
@@ -40,7 +40,7 @@ async function auditManualButton(pool, message) {
   }
   const mobile10 = mobile.slice(-10);
   // Exact outbound message + recipient match. Never attribute by time alone.
-  const matches = await pool.query(`SELECT t.id,t.stage,b.mode FROM booking_smart_reminder_manual_tests t
+  const matches = await pool.query(`SELECT t.id,t.stage,t.booking_id,t.recipient_type,b.mode FROM booking_smart_reminder_manual_tests t
     JOIN student_bookings b ON b.id=t.booking_id
     WHERE t.channel='whatsapp' AND t.status='accepted'
       AND t.provider_message_id=$1 AND t.created_at>=NOW()-INTERVAL '15 days'
@@ -60,8 +60,19 @@ async function auditManualButton(pool, message) {
     VALUES($1,$2,$3)
     ON CONFLICT(manual_test_id,provider_event_id) DO NOTHING RETURNING id`,
     [test.id,eventId,button]);
-  // Audit only: no booking mutations, follow-up messages, or preference changes.
-  return { result: saved.rowCount ? 'recorded' : 'duplicate', stage: test.stage, manualTestId: test.id, button, recipientMobile: mobile };
+  // Booking remains unchanged: a link is only a request to open the existing secure form.
+  // Do not send the same action link twice for repeated Meta deliveries.
+  let followup = 'not_applicable';
+  if (saved.rowCount && ['reschedule','cancel'].includes(button) && onManualAction) {
+    try {
+      const outcome = await onManualAction({ test, button, mobile });
+      followup = outcome?.success ? 'sent' : 'send_failed';
+    } catch (error) {
+      followup = 'send_failed';
+      console.error('GV META MANUAL ACTION LINK ERROR', { manualTestId: test.id, button, error: error?.message || 'unknown' });
+    }
+  }
+  return { result: saved.rowCount ? 'recorded' : 'duplicate', stage: test.stage, manualTestId: test.id, button, followup };
 }
 
 export function installMetaWhatsAppWebhook(app, { pool, onManualAction } = {}) {
@@ -108,12 +119,8 @@ export function installMetaWhatsAppWebhook(app, { pool, onManualAction } = {}) {
           });
           if (!pool || !['button','interactive'].includes(message?.type)) continue;
           try {
-            const result = await auditManualButton(pool, message);
-            console.info('GV META SMART MANUAL BUTTON', {result:result.result,stage:result.stage,manualTestId:result.manualTestId,button:result.button});
-            if (result.result === 'recorded' && ['reschedule','cancel'].includes(result.button) && typeof onManualAction === 'function') {
-              try { await onManualAction({manualTestId:result.manualTestId,button:result.button,mobile:result.recipientMobile}); }
-              catch (sendError) { console.error('GV META SMART ACTION LINK ERROR',{manualTestId:result.manualTestId,button:result.button,error:sendError?.message||'unknown'}); }
-            }
+            const result = await auditManualButton(pool, message, onManualAction);
+            console.info('GV META SMART MANUAL BUTTON', result);
           } catch (error) {
             console.error('GV META SMART MANUAL BUTTON ERROR', { error: error?.message || 'unknown' });
             // Return 500 so Meta may retry transient database failures; the unique

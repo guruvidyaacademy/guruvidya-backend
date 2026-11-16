@@ -50,27 +50,7 @@ app.use(express.json({ limit: "25mb", verify: (req, res, buf) => { if (req.origi
 
 // Isolated Meta webhook verification and authenticated diagnostic receiver.
 // Does not change existing BotSailor routing or take booking actions.
-installMetaWhatsAppWebhook(app, { pool, onManualAction: async ({manualTestId,button,mobile}) => {
-  // Only route a link for the exact previously recorded, accepted WhatsApp test.
-  // This does not mutate a booking or change any stage preference.
-  const found=await pool.query(`SELECT b.id,b.booking_ref,b.status,b.starts_at,b.appointment_revision,
-      t.recipient_type,t.stage,t.booking_id
-    FROM booking_smart_reminder_manual_tests t
-    JOIN student_bookings b ON b.id=t.booking_id
-    JOIN booking_smart_reminder_manual_clicks c ON c.manual_test_id=t.id AND c.button_key=$2
-    WHERE t.id=$1 AND t.channel='whatsapp' AND t.status='accepted'
-      AND t.created_at>=NOW()-INTERVAL '48 hours' LIMIT 1`,[manualTestId,button]);
-  if(found.rowCount!==1)return;
-  const b=found.rows[0];
-  if(!['approved','confirmed','rescheduled'].includes(String(b.status).toLowerCase()) || new Date(b.starts_at).getTime()<=Date.now())return;
-  const mobileRow=await pool.query(`SELECT student_mobile,parent_mobile FROM student_bookings WHERE id=$1`,[b.id]);
-  const expected=String(b.recipient_type==='parent'?mobileRow.rows[0]?.parent_mobile:mobileRow.rows[0]?.student_mobile).replace(/\D/g,'').slice(-10);
-  if(!expected||expected!==String(mobile).replace(/\D/g,'').slice(-10))return;
-  const url=smartOpenActionUrl(b,b.recipient_type,button,manualTestId);
-  const title=button==='reschedule'?'Reschedule Appointment':'Cancel Appointment';
-  const response=await sendBotSailorText({mobile},`Guruvidya Academy | ${title}\n\nOpen your secure link to continue:\n${url}\n\nYour booking is not changed until you complete the action.`,`smart_reminder_meta_${button}_link`);
-  console.info('GV META SMART ACTION LINK',{manualTestId,button,accepted:response?.success===true});
-} });
+installMetaWhatsAppWebhook(app, { pool, onManualAction: sendMetaManualBookingActionLink });
 
 // Resend/Svix signed events: never trust unverified delivery receipts.
 app.post('/api/webhook/resend', async (req, res) => {
@@ -4959,6 +4939,40 @@ async function handleBotSailorWebhook(req, res) {
 }
 app.post("/api/webhook/botsailor", handleBotSailorWebhook);
 
+
+// Meta Smart Reminder clicks reuse the existing Need to Change graphic and secure
+// booking-management form. No appointment is cancelled/rescheduled by a click.
+async function sendMetaManualBookingActionLink({ test, button, mobile }) {
+  if (!['reschedule','cancel'].includes(button)) return {success:false};
+  const r = await pool.query(`SELECT booking_ref,student_mobile,parent_mobile FROM student_bookings WHERE id=$1 LIMIT 1`,[test.booking_id]);
+  const row = r.rows[0];
+  if (!row) return {success:false};
+  const recipientMobile = test.recipient_type==='parent' ? row.parent_mobile : row.student_mobile;
+  if (botSailorPhone(recipientMobile) !== botSailorPhone(mobile)) return {success:false};
+  const booking = await loadBookingWhatsAppContext(row.booking_ref);
+  if (!booking || !['requested','approved','confirmed','rescheduled'].includes(String(booking.status||'').toLowerCase())) return {success:false};
+  const canonical = botSailorPhone(recipientMobile);
+  const existing = await pool.query(`SELECT payload->>'manage_token' AS manage_token FROM booking_whatsapp_states WHERE mobile=$1 AND booking_ref=$2 LIMIT 1`,[canonical,booking.booking_ref]);
+  let token = String(existing.rows[0]?.manage_token||'');
+  const valid = /^[a-f0-9]{64}$/i.test(token) && createHash('sha256').update(token).digest('hex')===String(booking.token_hash||'');
+  if (!valid) {
+    token = randomBytes(32).toString('hex');
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    await pool.query(`UPDATE student_bookings SET token_hash=$1,updated_at=NOW() WHERE id=$2`,[tokenHash,booking.id]);
+  }
+  // Persist the token for both actions so the same secure form remains refreshable.
+  await pool.query(`INSERT INTO booking_whatsapp_states(mobile,booking_id,booking_ref,state,payload,updated_at)
+    VALUES($1,$2,$3,$4,$5::jsonb,NOW())
+    ON CONFLICT(mobile) DO UPDATE SET booking_id=EXCLUDED.booking_id,booking_ref=EXCLUDED.booking_ref,
+      state=EXCLUDED.state,payload=EXCLUDED.payload,updated_at=NOW()`,
+    [canonical,booking.id,booking.booking_ref,button==='cancel'?'cancel_browser':'active',JSON.stringify({manage_token:token})]);
+  const url = bookingManageUrl(booking,token)+`&action=${button}`+(button==='reschedule'?`&sr_wa_test=${encodeURIComponent(String(test.id))}`:'');
+  const body = button==='cancel'
+    ? `\n\nBooking: *${booking.booking_ref}*\n\nOpen the secure link below to select your cancellation reason and confirm your choice:\n\n${url}`
+    : `\n\nOpen the secure link below to choose a new date and available time slot:\n\n${url}`;
+  const contact={mobile:recipientMobile,name:test.recipient_type==='parent'?(booking.parent_name||booking.student_name):booking.student_name,course:booking.course};
+  return sendBookingActionGraphicText(contact,button,body,`meta_smart_manual_${button}_link`);
+}
 
 async function loadBookingWhatsAppContext(bookingRef) {
   // Booking may not have lead_id populated even though the same student's WhatsApp
