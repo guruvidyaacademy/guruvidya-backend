@@ -9,8 +9,18 @@ export function installMetaWhatsAppWebhook(app) {
     const mode = String(req.query['hub.mode'] || '');
     const provided = String(req.query['hub.verify_token'] || '');
     const challenge = String(req.query['hub.challenge'] || '');
-    if (!token || mode !== 'subscribe' || !provided || !challenge ||
-        !safeEqual(Buffer.from(provided), Buffer.from(token))) {
+    const tokenConfigured = Boolean(token);
+    const modeValid = mode === 'subscribe';
+    const tokenProvided = Boolean(provided);
+    const challengeProvided = Boolean(challenge);
+    const tokenMatches = tokenConfigured && tokenProvided &&
+      safeEqual(Buffer.from(provided), Buffer.from(token));
+    // Log only booleans. Never log verification tokens, challenge, or query string.
+    console.info('GV META WEBHOOK VERIFY', {
+      tokenConfigured, modeValid, tokenProvided, challengeProvided, tokenMatches,
+      accepted: tokenConfigured && modeValid && challengeProvided && tokenMatches
+    });
+    if (!tokenConfigured || !modeValid || !challengeProvided || !tokenMatches) {
       return res.sendStatus(403);
     }
     return res.status(200).type('text/plain').send(challenge);
