@@ -4330,7 +4330,10 @@ async function handleBotSailorWebhook(req, res) {
         }
         await pool.query(`INSERT INTO booking_whatsapp_states(mobile,booking_id,booking_ref,state,payload,updated_at)
           VALUES($1,$2,$3,'cancel_browser',$4::jsonb,NOW())
-          ON CONFLICT(mobile) DO UPDATE SET booking_id=EXCLUDED.booking_id,booking_ref=EXCLUDED.booking_ref,state='cancel_browser',payload=EXCLUDED.payload,updated_at=NOW()`,
+          ON CONFLICT(mobile) DO UPDATE SET booking_id=EXCLUDED.booking_id,booking_ref=EXCLUDED.booking_ref,state='cancel_browser',
+            payload=CASE WHEN booking_whatsapp_states.booking_id=EXCLUDED.booking_id
+              THEN COALESCE(booking_whatsapp_states.payload,'{}'::jsonb)||EXCLUDED.payload
+              ELSE EXCLUDED.payload END,updated_at=NOW()`,
           [canonical,booking.id,booking.booking_ref,JSON.stringify({manage_token:token})]);
         const cancelUrl=bookingManageUrl(booking,token)+'&action=cancel';
         const result=await sendBookingActionGraphicText(actionContact,'cancel',
@@ -5041,7 +5044,10 @@ async function sendMetaManualBookingActionLink({ test, button, mobile }) {
   await pool.query(`INSERT INTO booking_whatsapp_states(mobile,booking_id,booking_ref,state,payload,updated_at)
     VALUES($1,$2,$3,$4,$5::jsonb,NOW())
     ON CONFLICT(mobile) DO UPDATE SET booking_id=EXCLUDED.booking_id,booking_ref=EXCLUDED.booking_ref,
-      state=EXCLUDED.state,payload=EXCLUDED.payload,updated_at=NOW()`,
+      state=EXCLUDED.state,
+      payload=CASE WHEN booking_whatsapp_states.booking_id=EXCLUDED.booking_id
+        THEN COALESCE(booking_whatsapp_states.payload,'{}'::jsonb)||EXCLUDED.payload
+        ELSE EXCLUDED.payload END,updated_at=NOW()`,
     [canonical,booking.id,booking.booking_ref,button==='cancel'?'cancel_browser':'active',JSON.stringify({manage_token:token})]);
   const url = bookingManageUrl(booking,token)+`&action=${button}`+(button==='reschedule'?`&sr_wa_test=${encodeURIComponent(String(test.id))}`:'');
   const body = button==='cancel'
