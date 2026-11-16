@@ -30,7 +30,7 @@ export function metaButtonSelection(message) {
   return mapped.length === 1 ? mapped[0] : null;
 }
 
-async function auditManualButton(pool, message, onManualAction) {
+async function auditManualButton(pool, message, onManualAction, onManualYes) {
   const context = String(message?.context?.id || '').trim();
   const eventId = String(message?.id || '').trim();
   const mobile = String(message?.from || '').replace(/\D/g, '');
@@ -63,6 +63,15 @@ async function auditManualButton(pool, message, onManualAction) {
   // Booking remains unchanged: a link is only a request to open the existing secure form.
   // Do not send the same action link twice for repeated Meta deliveries.
   let followup = 'not_applicable';
+  if (saved.rowCount && button === 'yes_attend' && test.stage === '4h' && onManualYes) {
+    try {
+      const outcome = await onManualYes({ test, mobile, eventId });
+      followup = outcome?.success ? 'sent' : (outcome?.status || 'send_failed');
+    } catch (error) {
+      followup = 'send_failed';
+      console.error('GV META 4H YES FOLLOWUP ERROR', { manualTestId: test.id, error: error?.message || 'unknown' });
+    }
+  }
   if (saved.rowCount && ['reschedule','cancel'].includes(button) && onManualAction) {
     try {
       const outcome = await onManualAction({ test, button, mobile });
@@ -75,7 +84,20 @@ async function auditManualButton(pool, message, onManualAction) {
   return { result: saved.rowCount ? 'recorded' : 'duplicate', stage: test.stage, manualTestId: test.id, button, followup };
 }
 
-export function installMetaWhatsAppWebhook(app, { pool, onManualAction } = {}) {
+function metaPreferenceReply(message) {
+  if (message?.type !== 'interactive' || message?.interactive?.type !== 'button_reply') return null;
+  const reply = message.interactive.button_reply;
+  const id = normalize(reply?.id);
+  const title = normalize(reply?.title);
+  const choices = new Map([
+    ['gv_smart_2h_optin_yes','Yes'], ['gv_smart_2h_optin_no','No'],
+    ['gv_pref_turn_on','Yes, Turn On'], ['gv_pref_turn_off','Yes, Turn Off'],
+    ['gv_pref_keep_off','Keep Off'], ['gv_pref_keep_on','Keep On']
+  ]);
+  const expected = choices.get(id);
+  return expected && normalize(expected) === title ? expected : null;
+}
+export function installMetaWhatsAppWebhook(app, { pool, onManualAction, onManualYes, onPreferenceReply } = {}) {
   const path = '/api/webhook/meta-whatsapp';
   app.get(path, (req, res) => {
     const token = String(process.env.GV_META_WEBHOOK_VERIFY_TOKEN || '');
@@ -119,7 +141,15 @@ export function installMetaWhatsAppWebhook(app, { pool, onManualAction } = {}) {
           });
           if (!pool || !['button','interactive'].includes(message?.type)) continue;
           try {
-            const result = await auditManualButton(pool, message, onManualAction);
+            const preference = metaPreferenceReply(message);
+            if (preference && onPreferenceReply) {
+              const handled = await onPreferenceReply({ message, choice: preference });
+              if (handled) {
+                console.info('GV META 4H PREFERENCE REPLY', { handled: true });
+                continue;
+              }
+            }
+            const result = await auditManualButton(pool, message, onManualAction, onManualYes);
             console.info('GV META SMART MANUAL BUTTON', result);
           } catch (error) {
             console.error('GV META SMART MANUAL BUTTON ERROR', { error: error?.message || 'unknown' });

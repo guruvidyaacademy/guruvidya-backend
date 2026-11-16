@@ -50,7 +50,7 @@ app.use(express.json({ limit: "25mb", verify: (req, res, buf) => { if (req.origi
 
 // Isolated Meta webhook verification and authenticated diagnostic receiver.
 // Does not change existing BotSailor routing or take booking actions.
-installMetaWhatsAppWebhook(app, { pool, onManualAction: sendMetaManualBookingActionLink });
+installMetaWhatsAppWebhook(app, { pool, onManualAction: sendMetaManualBookingActionLink, onManualYes: sendMetaManual4hYesPrompt, onPreferenceReply: handleMeta4hPreferenceReply });
 
 // Resend/Svix signed events: never trust unverified delivery receipts.
 app.post('/api/webhook/resend', async (req, res) => {
@@ -4939,6 +4939,52 @@ async function handleBotSailorWebhook(req, res) {
 }
 app.post("/api/webhook/botsailor", handleBotSailorWebhook);
 
+
+// Reuse the existing 4h -> 2h opt-in and opposite-choice confirmation engine.
+// Meta supplies the exact original prompt ID which BotSailor's inbound webhook lacks.
+async function sendMetaManual4hYesPrompt({ test, mobile }) {
+  if (test.stage !== '4h') return {success:false,status:'not_applicable'};
+  const claimed = await pool.query(`INSERT INTO booking_smart_4h_followup_choices
+    (manual_test_id,booking_id,appointment_revision)
+    SELECT t.id,b.id,b.appointment_revision::text
+    FROM booking_smart_reminder_manual_tests t JOIN student_bookings b ON b.id=t.booking_id
+    WHERE t.id=$1 AND t.recipient_type IN ('student','parent') AND t.stage='4h'
+      AND t.channel='whatsapp' AND t.status='accepted'
+      AND b.starts_at>NOW() AND b.status IN ('approved','confirmed','rescheduled')
+      AND RIGHT(REGEXP_REPLACE(COALESCE(CASE WHEN t.recipient_type='parent'
+        THEN b.parent_mobile ELSE b.student_mobile END,''),'[^0-9]','','g'),10)=$2
+    ON CONFLICT(manual_test_id) DO NOTHING RETURNING manual_test_id`,[test.id,String(mobile).replace(/\D/g,'').slice(-10)]);
+  if (!claimed.rowCount) return {success:false,status:'already_claimed_or_ineligible'};
+  const r=await pool.query(`SELECT b.starts_at,b.student_mobile,b.parent_mobile,t.recipient_type
+    FROM booking_smart_4h_followup_choices f
+    JOIN booking_smart_reminder_manual_tests t ON t.id=f.manual_test_id
+    JOIN student_bookings b ON b.id=f.booking_id
+    WHERE f.manual_test_id=$1 AND b.appointment_revision::text=f.appointment_revision
+      AND b.starts_at>NOW() AND b.status IN ('approved','confirmed','rescheduled') LIMIT 1`,[test.id]);
+  if(!r.rowCount) return {success:false,status:'booking_ineligible'};
+  const b=r.rows[0];
+  const time=new Date(b.starts_at).toLocaleTimeString('en-IN',{
+    timeZone:'Asia/Kolkata',hour:'numeric',minute:'2-digit',hour12:true});
+  const prompt=`Thank you for confirming your attendance!\n\nWould you like to receive a reminder 2 hours before your booked appointment time at ${time}?`;
+  const response=await sendBotSailorReplyButtons({mobile:b.recipient_type==='parent'?b.parent_mobile:b.student_mobile},prompt,
+    [{id:'gv_smart_2h_optin_yes',title:'Yes'},{id:'gv_smart_2h_optin_no',title:'No'}],
+    'smart_4h_followup_yes_no');
+  const promptId=bookingProviderMessageId(response);
+  const sent=response?.success===true && Boolean(promptId);
+  await pool.query(`UPDATE booking_smart_4h_followup_choices
+    SET prompt_status=$2,prompt_provider_message_id=$3,
+      prompt_sent_at=CASE WHEN $2='sent' THEN NOW() ELSE NULL END
+    WHERE manual_test_id=$1`,[test.id,sent?'sent':'failed',promptId||null]);
+  console.info('GV META 4H FOLLOWUP PROMPT',{manualTestId:test.id,accepted:sent});
+  return {success:sent,status:sent?'sent':'failed'};
+}
+async function handleMeta4hPreferenceReply({message,choice}) {
+  return smartPreferenceChange.handlePreference({pool,
+    mobile:String(message.from||''),contextId:String(message.context?.id||''),
+    eventId:String(message.id||''),raw:choice,
+    sendButtons:sendBotSailorReplyButtons,sendText:sendBotSailorText,
+    providerId:bookingProviderMessageId});
+}
 
 // Meta Smart Reminder clicks reuse the existing Need to Change graphic and secure
 // booking-management form. No appointment is cancelled/rescheduled by a click.

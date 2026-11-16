@@ -12,3 +12,8 @@ test('Meta interactive reply resolves and conflicts are rejected', () => {
   assert.equal(metaButtonSelection({type:'text',text:{body:'Reschedule'}}),null);
   assert.equal(metaButtonSelection({type:'button',button:{payload:'unknown'}}),null);
 });
+
+test('Meta preference replies are not mistaken for reminder template actions', () => {
+  assert.equal(metaButtonSelection({type:'interactive',interactive:{type:'button_reply',button_reply:{id:'gv_smart_2h_optin_yes',title:'Yes'}}}),null);
+  assert.equal(metaButtonSelection({type:'interactive',interactive:{type:'button_reply',button_reply:{id:'gv_pref_turn_off',title:'Yes, Turn Off'}}}),null);
+});
