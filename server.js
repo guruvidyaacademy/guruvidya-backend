@@ -4215,6 +4215,25 @@ async function handleBotSailorWebhook(req, res) {
             reminderReplySource=matched;
           }
         }
+        // Booking confirmation's separate "Need to make a change?" card is
+        // not a Smart Reminder. Resolve its exact outbound WhatsApp message ID
+        // from the booking state before declaring the context unresolved.
+        // Never infer a booking from the phone number alone for contextual replies.
+        if(!bookingRef && matches.rowCount===0){
+          const changeCard=await pool.query(`
+            SELECT s.booking_ref,s.booking_id,b.student_mobile,b.parent_mobile
+            FROM booking_whatsapp_states s
+            JOIN student_bookings b ON b.id=s.booking_id AND b.booking_ref=s.booking_ref
+            WHERE s.mobile=$1 AND s.payload->>'change_options_message_id'=$2
+            LIMIT 2`,[canonical,reminderContextId]);
+          if(changeCard.rowCount===1){
+            const candidate=changeCard.rows[0];
+            if([candidate.student_mobile,candidate.parent_mobile].some(phone=>botSailorPhone(phone)===canonical)){
+              bookingRef=candidate.booking_ref;
+              console.info('BOOKING CHANGE CARD CONTEXT MATCHED',{action:bookingActionType,matched:1});
+            }
+          }
+        }
         // A contextual button reply must never silently target another booking.
         if(!bookingRef){
           console.warn('BOOKING ACTION CONTEXT UNRESOLVED',{action:bookingActionType,hasContext:true,matches:matches.rowCount});
@@ -5380,10 +5399,15 @@ async function sendBookingSessionConfirmation(b, token, action='booking_confirma
     });
     if(manageResult.success){
       const canonical=botSailorPhone(recipientMobile);
+      const changeOptionsMessageId=bookingProviderMessageId(manageResult);
+      // Store the ID of the *change-options* card, not the earlier booking
+      // confirmation card. This is what Meta/BotSailor returns as reply_message_id.
+      // No DB migration: the existing state payload is JSONB.
       await pool.query(`INSERT INTO booking_whatsapp_states(mobile,booking_id,booking_ref,state,payload,updated_at)
         VALUES($1,$2,$3,'change_options',$4::jsonb,NOW())
         ON CONFLICT(mobile) DO UPDATE SET booking_id=EXCLUDED.booking_id,booking_ref=EXCLUDED.booking_ref,state='change_options',payload=EXCLUDED.payload,updated_at=NOW()`,
-        [canonical,b.id,b.booking_ref,JSON.stringify({manage_token:String(token||'')})]);
+        [canonical,b.id,b.booking_ref,JSON.stringify({manage_token:String(token||''),change_options_message_id:changeOptionsMessageId||''})]);
+      console.info('BOOKING CHANGE CARD CONTEXT SAVED',{hasMessageId:Boolean(changeOptionsMessageId),recipient:recipientKind});
     }
   }
 
