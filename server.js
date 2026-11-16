@@ -4211,6 +4211,18 @@ async function handleBotSailorWebhook(req, res) {
           const candidate=refRow.rows[0];
           const matchedPhone=matched.recipient_type==='parent'?candidate?.parent_mobile:candidate?.student_mobile;
           if(candidate && botSailorPhone(matchedPhone)===canonical){
+            // Manual Smart Reminder button replies arrive through BOTH Meta and
+            // BotSailor. The signed Meta webhook owns the manual click audit and
+            // its Reschedule/Cancel follow-up. Do not send the same secure link
+            // again from this BotSailor booking-action handler. This applies
+            // only to an exact manual-test outbound message + verified recipient;
+            // scheduled reminders and normal booking change cards stay here.
+            if(matched.source_kind==='manual'){
+              console.info('SMART MANUAL BOTSAILOR DUPLICATE ACTION SUPPRESSED',{
+                action:bookingActionType,manualTestId:matched.source_id,stage:matched.stage
+              });
+              return res.status(200).json({status:'ok',action:'smart_manual_action_handled_by_meta'});
+            }
             bookingRef=candidate.booking_ref;
             reminderReplySource=matched;
           }
