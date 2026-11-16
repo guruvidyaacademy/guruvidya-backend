@@ -4245,7 +4245,7 @@ async function handleBotSailorWebhook(req, res) {
         const stateQ=await pool.query(`SELECT booking_ref,payload FROM booking_whatsapp_states WHERE mobile=$1 LIMIT 1`,[canonical]);
         bookingRef=String(stateQ.rows[0]?.booking_ref||'').trim();
       }
-      if(['cancel','reschedule'].includes(bookingActionType) && !reminderReplySource){
+      if(['cancel','reschedule'].includes(bookingActionType) && !reminderReplySource && !bookingRef){
         const activeBookings=await pool.query(`SELECT booking_ref FROM student_bookings
           WHERE (regexp_replace(COALESCE(student_mobile,''),'[^0-9]','','g') IN ($1,$2)
             OR regexp_replace(COALESCE(parent_mobile,''),'[^0-9]','','g') IN ($1,$2))
