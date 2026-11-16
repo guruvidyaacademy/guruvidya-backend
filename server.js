@@ -50,7 +50,7 @@ app.use(express.json({ limit: "25mb", verify: (req, res, buf) => { if (req.origi
 
 // Isolated Meta webhook verification and authenticated diagnostic receiver.
 // Does not change existing BotSailor routing or take booking actions.
-installMetaWhatsAppWebhook(app);
+installMetaWhatsAppWebhook(app, { pool });
 
 // Resend/Svix signed events: never trust unverified delivery receipts.
 app.post('/api/webhook/resend', async (req, res) => {
