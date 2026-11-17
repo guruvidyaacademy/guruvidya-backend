@@ -6646,20 +6646,23 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
       const mediaToken=createActivationImageToken({stage,name:booking.student_name||name,date:dateText,time:timeText,course:booking.course});
       const url=String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'')+'/api/public/booking/activation-dynamic/'+mediaToken+'.png';
       const caption=`Keep your appointment reminders active for ${dateText} at ${timeText} by tapping the button below.`;
-      const payload={apiToken:config.botsailorToken,phone_number_id:config.botsailorInstanceId,phone_number:phone,media_url:url,media_type:'image',media_caption_text:caption};
-      const sent=await botSailorPost('https://botsailor.com/api/v1/whatsapp/send/file',payload);
-      await addIntegrationLog('whatsapp','smart_activation_manual_'+stage,sent?.success?'success':'failed',{...payload,apiToken:'***',media_url:'[signed dynamic activation graphic]'},sent?.response||{error:sent?.error||sent?.message});
-      if(!sent?.success)return {success:false,status:'provider_rejected',message:sent?.message||'Activation graphic rejected',message_id:bookingProviderMessageId(sent)||null};
-      // WhatsApp quick-reply labels are limited to 20 characters. Approved 21-char
-      // wording is shortened by one character, without changing the user-facing intent.
-      // Send as a separate interactive message: the image itself cannot contain a clickable button.
-      const action=await sendBotSailorReplyButtons({mobile:destination},
-        'Tap below to keep your appointment reminders active.',
+      // Send ONE WhatsApp interactive media message: image header, caption body,
+      // and the native quick-reply button. Do not send a separate file message.
+      const action=await sendBotSailorReplyButtons(
+        {mobile:destination},
+        caption,
         [{id:'gv_keep_reminders_active',title:'Keep Reminder Active'}],
-        'smart_activation_manual_'+stage+'_reply_button');
-      return {success:action?.success===true,status:action?.success?'accepted':'button_send_failed',
-        message:action?.success?'Activation graphic and quick reply accepted by provider':'Graphic accepted, but WhatsApp quick-reply button was not accepted',
-        message_id:bookingProviderMessageId(sent)||null};
+        'smart_activation_manual_'+stage+'_image_reply',
+        {mediaUrl:url,mediaType:'image'}
+      );
+      return {
+        success:action?.success===true,
+        status:action?.success?'accepted':'provider_rejected',
+        message:action?.success
+          ?'Single activation image, caption and reply button accepted by provider'
+          :'Single interactive activation message rejected; no separate graphic or button fallback was sent',
+        message_id:bookingProviderMessageId(action)||null
+      };
     }
     // Explicit, supervised 4h template test is independent of the real Meta window.
     // It does not change the Meta window, verification, consent or scheduled dispatch.
