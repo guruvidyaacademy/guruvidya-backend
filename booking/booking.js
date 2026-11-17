@@ -1207,8 +1207,9 @@ export function installBookingRoutes(app,pool,hooks={}) {
   app.post('/api/admin/booking/smart-reminders/manual-test',admin,async(req,res)=>{
     if(process.env.SMART_REMINDER_MANUAL_TEST_ENABLED!=='true')return fail(res,403,'Manual test is disabled on the server. Set SMART_REMINDER_MANUAL_TEST_ENABLED=true only for a supervised test.');
     const {booking_id,recipient_type,channel,stage,confirm,sending_mode='auto'}=req.body||{};
-    if(confirm!=='SEND_REAL_TEST'||!['student','parent'].includes(recipient_type)||!['email','whatsapp'].includes(channel)||!['4h','2h','1h','5min'].includes(stage)||!Number.isSafeInteger(Number(booking_id))||Number(booking_id)<1)return fail(res,400,'Invalid manual test request');
+    if(confirm!=='SEND_REAL_TEST'||!['student','parent'].includes(recipient_type)||!['email','whatsapp'].includes(channel)||!['4h','2h','1h','5min','day3','day2','day1'].includes(stage)||!Number.isSafeInteger(Number(booking_id))||Number(booking_id)<1)return fail(res,400,'Invalid manual test request');
     if(!['auto','approved_template'].includes(sending_mode) || (sending_mode==='approved_template' && (channel!=='whatsapp'||stage!=='4h')))return fail(res,400,'Approved template mode is available only for the 4h WhatsApp manual test');
+    if(['day3','day2','day1'].includes(stage)&&channel!=='whatsapp')return fail(res,400,'Activation manual tests support WhatsApp only');
     if(typeof hooks.sendSmartReminderManualTest!=='function')return fail(res,503,'Manual test provider not configured');
     let record;
     try {
