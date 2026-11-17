@@ -4068,6 +4068,17 @@ async function handleBotSailorWebhook(req, res) {
           messageId,
           bookingVerificationMatched: Boolean(verifiedSession)
         });
+        // Only a real, deduplicated inbound quick reply triggers confirmation.
+        // The inbound event above is what renews the 24h window, not this outbound reply.
+        const activationReply=String(buttonReplyId||buttonReplyTitle||webhookUserMessageRaw||'').trim().toLowerCase();
+        if(activationReply==='gv_keep_reminders_active'||activationReply==='keep reminder active'){
+          const confirmation='✅ Your WhatsApp reminder window is now active for 24 hours.\n\nIf your appointment is later, you may receive another activation request to keep your reminders active.';
+          try{
+            await sendBotSailorText({mobile:canonical},confirmation,'smart_activation_24h_confirmed');
+          }catch(activationConfirmationError){
+            console.error('SMART ACTIVATION CONFIRMATION FAILED',activationConfirmationError?.message||activationConfirmationError);
+          }
+        }
       } else {
         console.log("WHATSAPP WINDOW DUPLICATE", { mobile: canonical, messageId });
       }
@@ -6634,11 +6645,21 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
       const timeText=new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',hour:'numeric',minute:'2-digit',hour12:true}).format(new Date(booking.starts_at));
       const mediaToken=createActivationImageToken({stage,name:booking.student_name||name,date:dateText,time:timeText,course:booking.course});
       const url=String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'')+'/api/public/booking/activation-dynamic/'+mediaToken+'.png';
-      const caption=`Keep your appointment reminders active for ${dateText} at ${timeText} by tapping the button below.${stage==='day3'?'':'\n\nPlease tap again, as each WhatsApp reply keeps your messaging window active for only 24 hours.'}`;
+      const caption=`Keep your appointment reminders active for ${dateText} at ${timeText} by tapping the button below.`;
       const payload={apiToken:config.botsailorToken,phone_number_id:config.botsailorInstanceId,phone_number:phone,media_url:url,media_type:'image',media_caption_text:caption};
       const sent=await botSailorPost('https://botsailor.com/api/v1/whatsapp/send/file',payload);
       await addIntegrationLog('whatsapp','smart_activation_manual_'+stage,sent?.success?'success':'failed',{...payload,apiToken:'***',media_url:'[signed dynamic activation graphic]'},sent?.response||{error:sent?.error||sent?.message});
-      return {success:sent?.success===true,status:sent?.success?'accepted':'provider_rejected',message:sent?.message||'Activation graphic provider response',message_id:bookingProviderMessageId(sent)||null};
+      if(!sent?.success)return {success:false,status:'provider_rejected',message:sent?.message||'Activation graphic rejected',message_id:bookingProviderMessageId(sent)||null};
+      // WhatsApp quick-reply labels are limited to 20 characters. Approved 21-char
+      // wording is shortened by one character, without changing the user-facing intent.
+      // Send as a separate interactive message: the image itself cannot contain a clickable button.
+      const action=await sendBotSailorReplyButtons({mobile:destination},
+        'Tap below to keep your appointment reminders active.',
+        [{id:'gv_keep_reminders_active',title:'Keep Reminder Active'}],
+        'smart_activation_manual_'+stage+'_reply_button');
+      return {success:action?.success===true,status:action?.success?'accepted':'button_send_failed',
+        message:action?.success?'Activation graphic and quick reply accepted by provider':'Graphic accepted, but WhatsApp quick-reply button was not accepted',
+        message_id:bookingProviderMessageId(sent)||null};
     }
     // Explicit, supervised 4h template test is independent of the real Meta window.
     // It does not change the Meta window, verification, consent or scheduled dispatch.
