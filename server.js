@@ -6634,7 +6634,7 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
       const timeText=new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',hour:'numeric',minute:'2-digit',hour12:true}).format(new Date(booking.starts_at));
       const mediaToken=createActivationImageToken({stage,name:booking.student_name||name,date:dateText,time:timeText,course:booking.course});
       const url=String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'')+'/api/public/booking/activation-dynamic/'+mediaToken+'.png';
-      const caption=`Dear ${name},\n\nKeep your appointment reminders active for ${dateText} at ${timeText} by tapping the button below.${stage==='day3'?'':'\n\nPlease tap again, as each WhatsApp reply keeps your messaging window active for only 24 hours.'}\n\nReply REMINDER to renew your WhatsApp window.\n\nManual Test`;
+      const caption=`Keep your appointment reminders active for ${dateText} at ${timeText} by tapping the button below.${stage==='day3'?'':'\n\nPlease tap again, as each WhatsApp reply keeps your messaging window active for only 24 hours.'}`;
       const payload={apiToken:config.botsailorToken,phone_number_id:config.botsailorInstanceId,phone_number:phone,media_url:url,media_type:'image',media_caption_text:caption};
       const sent=await botSailorPost('https://botsailor.com/api/v1/whatsapp/send/file',payload);
       await addIntegrationLog('whatsapp','smart_activation_manual_'+stage,sent?.success?'success':'failed',{...payload,apiToken:'***',media_url:'[signed dynamic activation graphic]'},sent?.response||{error:sent?.error||sent?.message});
