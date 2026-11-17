@@ -4080,7 +4080,7 @@ async function handleBotSailorWebhook(req, res) {
           value === 'keep reminder active'
         );
         if (isActivationReply) {
-          const confirmation = '✅ Your WhatsApp reminder window is now active for 24 hours.\\n\\nIf your appointment is later, you may receive another activation request to keep your reminders active.';
+          const confirmation = '✅ Your WhatsApp reminder window is now active for 24 hours.\n\nIf your appointment is later, you\'ll receive another activation request to keep your reminders active.';
           try {
             const confirmationResult = await sendBotSailorText(
               { mobile: canonical },
