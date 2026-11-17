@@ -4070,13 +4070,33 @@ async function handleBotSailorWebhook(req, res) {
         });
         // Only a real, deduplicated inbound quick reply triggers confirmation.
         // The inbound event above is what renews the 24h window, not this outbound reply.
-        const activationReply=String(buttonReplyId||buttonReplyTitle||webhookUserMessageRaw||'').trim().toLowerCase();
-        if(activationReply==='gv_keep_reminders_active'||activationReply==='keep reminder active'){
-          const confirmation='✅ Your WhatsApp reminder window is now active for 24 hours.\n\nIf your appointment is later, you may receive another activation request to keep your reminders active.';
-          try{
-            await sendBotSailorText({mobile:canonical},confirmation,'smart_activation_24h_confirmed');
-          }catch(activationConfirmationError){
-            console.error('SMART ACTIVATION CONFIRMATION FAILED',activationConfirmationError?.message||activationConfirmationError);
+        // BotSailor can encode a quick reply as "#button reply#Keep Reminder Active"
+        // or return its ID/title in separate fields. Compare each signal, rather
+        // than preferring a non-matching ID over a matching title.
+        const activationSignals = [buttonReplyId, buttonReplyTitle, webhookUserMessage]
+          .map(value => String(value || '').trim().toLowerCase());
+        const isActivationReply = activationSignals.some(value =>
+          value === 'gv_keep_reminders_active' ||
+          value === 'keep reminder active'
+        );
+        if (isActivationReply) {
+          const confirmation = '✅ Your WhatsApp reminder window is now active for 24 hours.\\n\\nIf your appointment is later, you may receive another activation request to keep your reminders active.';
+          try {
+            const confirmationResult = await sendBotSailorText(
+              { mobile: canonical },
+              confirmation,
+              'smart_activation_24h_confirmed'
+            );
+            if (!confirmationResult?.success) {
+              console.error('SMART ACTIVATION CONFIRMATION PROVIDER REJECTED', {
+                status: confirmationResult?.status,
+                message: confirmationResult?.message,
+              });
+            } else {
+              console.info('SMART ACTIVATION CONFIRMATION SENT', { mobile: canonical, messageId });
+            }
+          } catch (activationConfirmationError) {
+            console.error('SMART ACTIVATION CONFIRMATION FAILED', activationConfirmationError?.message || activationConfirmationError);
           }
         }
       } else {
