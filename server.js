@@ -1,3 +1,4 @@
+import {createActivationImageToken,installActivationDynamicMedia} from './booking/activation-dynamic-media.js';
 import * as smartPreferenceChange from './booking/smart-reminder-preference-change.js';
 import { startSmartReminderStep6JReadinessMonitor } from './booking/smart-reminder-step6j-worker-readiness.js';
 import { startSmartReminderStep6EQueueWorker } from './booking/smart-reminder-step6e-queue-worker.js';
@@ -6597,6 +6598,7 @@ app.get('/api/public/booking/activation-test/:day.png',(req,res)=>{
   return res.type('png').sendFile(req.params.day+'.png',{root:process.cwd()+'/booking/activation-test'});
 });
 installSmartReminderTestMediaRoute(app, pool);
+installActivationDynamicMedia(app);
 
 installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminderBookingSlots=fn;}, verifySmartReminderAction:smartOpenActionVerify, onBookingCreated: onBookingCreatedWhatsApp, onBookingRescheduled: onBookingRescheduledWhatsApp, onBookingCancelled: onBookingCancelledRebook, onRebookLinkRequested: ({booking_ref,mobile})=>sendGuruVidyaRebookingCard({mobile},booking_ref), onInternalAppointmentEvent: sendInternalAppointmentAlert,
   sendSmartReminderManualTest: async ({booking,recipient_type,channel,stage,destination,manual_test_id,sending_mode="auto"}) => {
@@ -6628,11 +6630,14 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
       const last=win.rows[0]?.last_incoming;
       const age=last?Date.now()-new Date(last).getTime():Infinity;
       if(!Number.isFinite(age)||age<0||age>=86400000)return {success:false,status:'window_closed',message:'Real 24h WhatsApp window CLOSED / NOT VERIFIED. No activation graphic sent.'};
-      const url=String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'')+'/api/public/booking/activation-test/'+stage+'.png';
-      const caption=`Guruvidya Academy | Manual ${stage.toUpperCase()} Activation Test\nDear ${name},\nBooking: ${booking.booking_ref}\nCourse: ${booking.course}\nAppointment: ${when} IST\n\nTo keep receiving WhatsApp updates, reply REMINDER to this chat.\nThis is a manually requested test.`;
+      const dateText=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Kolkata',day:'2-digit',month:'long',year:'numeric'}).format(new Date(booking.starts_at));
+      const timeText=new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',hour:'numeric',minute:'2-digit',hour12:true}).format(new Date(booking.starts_at));
+      const mediaToken=createActivationImageToken({stage,name:booking.student_name||name,date:dateText,time:timeText,course:booking.course});
+      const url=String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,'')+'/api/public/booking/activation-dynamic/'+mediaToken+'.png';
+      const caption=`Dear ${name},\n\nKeep your appointment reminders active for ${dateText} at ${timeText} by tapping the button below.${stage==='day3'?'':'\n\nPlease tap again, as each WhatsApp reply keeps your messaging window active for only 24 hours.'}\n\nReply REMINDER to renew your WhatsApp window.\n\nManual Test`;
       const payload={apiToken:config.botsailorToken,phone_number_id:config.botsailorInstanceId,phone_number:phone,media_url:url,media_type:'image',media_caption_text:caption};
       const sent=await botSailorPost('https://botsailor.com/api/v1/whatsapp/send/file',payload);
-      await addIntegrationLog('whatsapp','smart_activation_manual_'+stage,sent?.success?'success':'failed',{...payload,apiToken:'***'},sent?.response||{error:sent?.error||sent?.message});
+      await addIntegrationLog('whatsapp','smart_activation_manual_'+stage,sent?.success?'success':'failed',{...payload,apiToken:'***',media_url:'[signed dynamic activation graphic]'},sent?.response||{error:sent?.error||sent?.message});
       return {success:sent?.success===true,status:sent?.success?'accepted':'provider_rejected',message:sent?.message||'Activation graphic provider response',message_id:bookingProviderMessageId(sent)||null};
     }
     // Explicit, supervised 4h template test is independent of the real Meta window.
