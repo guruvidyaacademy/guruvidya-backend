@@ -6749,9 +6749,10 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
               ? 'Your online appointment is approaching. Please confirm your attendance using the options below.'
               : 'Your appointment is approaching. Please confirm your attendance using the options below.'
             : 'Please confirm your attendance using the options below.';
+      const stageHeading=stage==='5min'?'5 Minutes':stage==='1h'?'1 Hour':stage==='2h'?'2 Hours':'4 Hours';
       const caption=[
-        stage==='5min'?'🔔 *Your Online Meeting Starts Soon*':'⏰ *Appointment Reminder*',
-        '',`Dear ${name},`,'',
+        `Dear ${name},`,'',
+        `⏳ *Your Appointment Is in ${stageHeading}*`,'',
         stage==='5min'
           ? `Your ${booking.course||'course'} online appointment is about to begin.`
           : `Your ${booking.course||'course'} appointment is scheduled for:`,
