@@ -6733,9 +6733,31 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
       let media;
       try{media=await createSmartReminderTestMedia(pool,booking,String(process.env.PUBLIC_API_URL||'https://guruvidya-backend.onrender.com').replace(/\/$/,''));}
       catch(e){return {success:false,status:'open_attend_setup_error',message:e.message};}
-      const caption=stage==='5min'
-        ? `Dear ${name},\n\nYour online admission counselling session starts in *5 minutes*.\nPlease select *Join Online Meeting* below to receive your meeting link.`
-        : `Guruvidya Academy | TEST ${stage} Reminder\nDear ${name},\nBooking: ${booking.booking_ref}\nCourse: ${booking.course}\nTime: ${when} IST`;
+      // Approved stage-specific WhatsApp caption. TEST labels remain in Admin only.
+      const online=String(booking.mode||'').toLowerCase()==='online';
+      const startsAt=new Date(booking.starts_at);
+      const reminderDate=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Kolkata',day:'numeric',month:'short',year:'numeric'}).format(startsAt);
+      const reminderTime=new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Kolkata',hour:'numeric',minute:'2-digit',hour12:true}).format(startsAt);
+      const stageCopy=stage==='5min'
+        ? 'Your meeting starts in 5 minutes. Please join using the button below.'
+        : stage==='1h'
+          ? online
+            ? 'Your online appointment starts in approximately 1 hour. Please be ready to join on time.'
+            : "Your appointment starts in approximately 1 hour. Please confirm that you're on your way."
+          : stage==='2h'
+            ? online
+              ? 'Your online appointment is approaching. Please confirm your attendance using the options below.'
+              : 'Your appointment is approaching. Please confirm your attendance using the options below.'
+            : 'Please confirm your attendance using the options below.';
+      const caption=[
+        stage==='5min'?'🔔 *Your Online Meeting Starts Soon*':'⏰ *Appointment Reminder*',
+        '',`Dear ${name},`,'',
+        stage==='5min'
+          ? `Your ${booking.course||'course'} online appointment is about to begin.`
+          : `Your ${booking.course||'course'} appointment is scheduled for:`,
+        '',`🗓️ *Date:* ${reminderDate}`,'',`🕘 *Time:* ${reminderTime} IST`,
+        '',`${online?'🖥️':'🏛️'} *Mode:* ${online?'Online':'Offline'}`,'',stageCopy
+      ].join('\n');
       // One image-header interactive message: approved graphic + existing caption
       // + native reply button. Keep its provider ID for the existing click routing.
       // This endpoint already supports mediaUrl/mediaType for other booking flows.
@@ -6746,7 +6768,7 @@ installBookingRoutes(app, pool, { setSmartReminderBookingSlots:fn=>{smartReminde
           ? [{id:'booking_maps',title:'Join Online Meeting'},
              {id:'booking_reschedule',title:'Reschedule'},
              {id:'booking_cancel',title:'Cancel Appointment'}]
-          : [{id:stage==='1h'?(String(booking.mode||'').toLowerCase()==='online'?'gv_smart_1h_im_ready':'gv_smart_1h_on_my_way'):(stage==='2h'?'gv_smart_2h_yes_be_there':'gv_smart_4h_yes_attend'),title:stage==='1h'?(String(booking.mode||'').toLowerCase()==='online'?"Yes, I'm Ready":"Yes, I'm On My Way"):(stage==='2h'?"Yes, I'll Be There":"Yes, I'll Attend") },
+          : [{id:stage==='1h'?(String(booking.mode||'').toLowerCase()==='online'?'gv_smart_1h_im_ready':'gv_smart_1h_on_my_way'):(stage==='2h'?'gv_smart_2h_yes_be_there':'gv_smart_4h_yes_attend'),title:stage==='1h'?(String(booking.mode||'').toLowerCase()==='online'?"I'll Be Ready":"Yes, I'm On My Way"):(stage==='2h'?"Yes, I'll Be There":"Yes, I'll Attend") },
              {id:'booking_reschedule',title:'Reschedule'},
              {id:'booking_cancel',title:'Cancel Appointment'}],
         `smart_reminder_manual_${stage}_native_buttons`,
