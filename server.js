@@ -4080,6 +4080,42 @@ async function handleBotSailorWebhook(req, res) {
           value === 'keep reminder active'
         );
         if (isActivationReply) {
+          // Activation quick replies also complete the matching Day 3/2/1 manual
+          // tracking record. Window renewal and the existing confirmation remain
+          // independent: a tracking DB failure must not suppress the reply.
+          // The latest accepted activation test for this exact recipient phone
+          // wins; never mark another booking/recipient or an older day as clicked.
+          try {
+            const activationClick = await pool.query(`
+              WITH latest AS (
+                SELECT t.id
+                FROM booking_smart_reminder_manual_tests t
+                JOIN student_bookings b ON b.id=t.booking_id
+                WHERE t.channel='whatsapp'
+                  AND t.stage IN ('day3','day2','day1')
+                  AND t.status='accepted'
+                  AND t.created_at <= $2::timestamptz
+                  AND t.created_at >= $2::timestamptz - INTERVAL '7 days'
+                  AND right(regexp_replace(CASE
+                    WHEN t.recipient_type='parent' THEN COALESCE(b.parent_mobile,'')
+                    ELSE COALESCE(b.student_mobile,'') END,'[^0-9]','','g'),10)=$1
+                ORDER BY t.created_at DESC,t.id DESC LIMIT 1
+              )
+              UPDATE booking_smart_reminder_manual_tests t
+              SET provider_clicked_at=COALESCE(t.provider_clicked_at,$2::timestamptz)
+              FROM latest WHERE t.id=latest.id
+              RETURNING t.id,t.booking_ref,t.recipient_type,t.stage,t.provider_clicked_at`,
+              [national,receivedAt]
+            );
+            console.info('SMART ACTIVATION BUTTON TRACKED', {
+              matched:activationClick.rowCount,
+              testId:activationClick.rows[0]?.id||null,
+              stage:activationClick.rows[0]?.stage||null,
+              recipient:activationClick.rows[0]?.recipient_type||null,
+            });
+          } catch (activationTrackingError) {
+            console.error('SMART ACTIVATION BUTTON TRACKING FAILED',activationTrackingError?.message||activationTrackingError);
+          }
           const confirmation = '✅ Your WhatsApp reminder window is now active for 24 hours.\n\nIf your appointment is later, you\'ll receive another activation request to keep your reminders active.';
           try {
             const confirmationResult = await sendBotSailorText(
